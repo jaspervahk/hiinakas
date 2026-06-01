@@ -8,7 +8,7 @@ import { ScoreView } from '../components/ScoreView'
 import { CoachPanel } from '../components/CoachPanel'
 import { useCoach } from '../coach/useCoach'
 import type { AppPage } from '../App'
-import type { Difficulty, StreetLog, HandLog } from '../game/types'
+import type { StreetLog, HandLog } from '../game/types'
 import { saveHand } from '../firestore/persistence'
 
 function playerLabels(playerCount: number): string[] {
@@ -21,7 +21,7 @@ function bonusQualifierLabel(q: string): string {
   return 'Aces / Trips — 15 cards, 2 discards'
 }
 
-const COACH_ROLLOUTS: Record<Difficulty, number> = { easy: 100, medium: 200, hard: 500 }
+const COACH_ROLLOUTS = 500
 
 interface GamePageProps {
   onNavigate: (p: AppPage) => void
@@ -54,8 +54,7 @@ export default function GamePage({ onNavigate }: GamePageProps) {
   const botCount = state.playerCount - 1
   const botLabels = labels.slice(1)
 
-  const coachRollouts = COACH_ROLLOUTS[state.appSettings.difficulty]
-  const coach = useCoach(state, state.appSettings.coachEnabled, coachRollouts)
+  const coach = useCoach(state, state.appSettings.coachEnabled, COACH_ROLLOUTS)
 
   // Best bonus board (for bonus_oneshot coaching)
   const bonusOptimal = useMemo<PartialBoard | null>(() => {
@@ -148,9 +147,7 @@ export default function GamePage({ onNavigate }: GamePageProps) {
   if (state.phase === 'setup') {
     return <SetupScreen
       onStart={(playerCount) => dispatch({ type: 'START_GAME', playerCount })}
-      difficulty={state.appSettings.difficulty}
       coachEnabled={state.appSettings.coachEnabled}
-      onChangeDifficulty={(difficulty) => dispatch({ type: 'UPDATE_SETTINGS', settings: { difficulty } })}
       onToggleCoach={() => dispatch({ type: 'UPDATE_SETTINGS', settings: { coachEnabled: !state.appSettings.coachEnabled } })}
       onNavigate={onNavigate}
     />
@@ -482,40 +479,17 @@ export default function GamePage({ onNavigate }: GamePageProps) {
 // ── Setup screen ────────────────────────────────────────────────────────────
 interface SetupScreenProps {
   onStart: (playerCount: 2 | 3) => void
-  difficulty: Difficulty
   coachEnabled: boolean
-  onChangeDifficulty: (d: Difficulty) => void
   onToggleCoach: () => void
   onNavigate: (p: AppPage) => void
 }
 
-function SetupScreen({ onStart, difficulty, coachEnabled, onChangeDifficulty, onToggleCoach, onNavigate }: SetupScreenProps) {
-  const diffs: Difficulty[] = ['easy', 'medium', 'hard']
+function SetupScreen({ onStart, coachEnabled, onToggleCoach, onNavigate }: SetupScreenProps) {
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center gap-10 p-6">
       <div className="flex flex-col items-center gap-2">
         <h1 className="text-4xl font-bold tracking-tight text-gray-100">Hiinakas</h1>
         <p className="text-gray-500 text-sm tracking-wide">Open-Face Chinese Poker</p>
-      </div>
-
-      <div className="flex flex-col items-center gap-3">
-        <span className="text-[11px] text-gray-500 uppercase tracking-widest">Difficulty</span>
-        <div className="flex gap-2">
-          {diffs.map(d => (
-            <button
-              key={d}
-              onClick={() => onChangeDifficulty(d)}
-              className={[
-                'px-4 py-1.5 rounded-md text-xs font-medium uppercase tracking-wider transition-colors',
-                d === difficulty
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200',
-              ].join(' ')}
-            >
-              {d}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="flex items-center gap-2 text-xs">

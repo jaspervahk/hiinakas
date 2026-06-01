@@ -101,7 +101,7 @@ export function makeInitialState(): GameState {
     bonusScores: [],
     totalScores: [],
     currentStreetLogs: [],
-    appSettings: { coachEnabled: true, playerCount: 2, difficulty: 'medium' },
+    appSettings: { coachEnabled: true, playerCount: 2 },
   }
 }
 

@@ -101,10 +101,7 @@ export interface HandLog {
   cumEvLoss: number
 }
 
-export type Difficulty = 'easy' | 'medium' | 'hard'
-
 export interface AppSettings {
   coachEnabled: boolean
   playerCount: 2 | 3
-  difficulty: Difficulty
 }

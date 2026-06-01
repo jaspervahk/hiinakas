@@ -113,13 +113,11 @@ export async function loadSettings(): Promise<AppSettings | null> {
     const data = snap.data() as Partial<AppSettings>
     if (
       typeof data.coachEnabled === 'boolean' &&
-      (data.playerCount === 2 || data.playerCount === 3) &&
-      (data.difficulty === 'easy' || data.difficulty === 'medium' || data.difficulty === 'hard')
+      (data.playerCount === 2 || data.playerCount === 3)
     ) {
       return {
         coachEnabled: data.coachEnabled,
         playerCount: data.playerCount,
-        difficulty: data.difficulty,
       }
     }
     return null
