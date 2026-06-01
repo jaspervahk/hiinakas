@@ -1,0 +1,89 @@
+name: GTO Training
+
+# Runs every 6 hours automatically, or manually from GitHub Actions tab.
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      games:
+        description: 'Self-play games per iteration'
+        default: '50000'
+      epochs:
+        description: 'Training epochs'
+        default: '30'
+
+env:
+  GAMES: ${{ github.event.inputs.games || '50000' }}
+  EPOCHS: ${{ github.event.inputs.epochs || '30' }}
+
+jobs:
+  train-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Download current deployed model (warm-start)
+        # Fetch the latest model from Firebase Hosting for iterative self-play.
+        # On first run this will 404 and we fall back to heuristic — that's fine.
+        run: |
+          mkdir -p models
+          curl -sf https://hiinakas-355.web.app/models/policy.bin \
+            -o models/policy.bin && echo "Downloaded existing model for warm-start" \
+            || echo "No existing model — first run, using heuristic policy"
+
+      - name: Self-play
+        run: |
+          mkdir -p data
+          npx tsx scripts/selfplay.ts \
+            --games "$GAMES" \
+            --players 2 \
+            --out data/batch_${{ github.run_number }}.bin
+
+      - name: Train value network
+        run: |
+          python scripts/train.py \
+            --data data/batch_${{ github.run_number }}.bin \
+            --out models/policy.bin \
+            --resume models/policy.bin \
+            --epochs "$EPOCHS" \
+            --batch 512
+
+      - name: Deploy model via Firebase Hosting
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          mkdir -p dist/models
+          cp models/policy.bin dist/models/policy.bin
+          npx firebase deploy --only hosting \
+            --token "$FIREBASE_TOKEN" \
+            --non-interactive \
+            --project hiinakas-355
+
+      - name: Report
+        run: |
+          SIZE=$(wc -c < models/policy.bin)
+          echo "Model size: $(( SIZE / 1024 )) KB"
+          echo "Run ${{ github.run_number }} complete — model deployed to https://hiinakas-355.web.app/models/policy.bin"
