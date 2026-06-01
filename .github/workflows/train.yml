@@ -40,7 +40,7 @@ jobs:
           cache-dependency-path: scripts/requirements.txt
 
       - name: Install Node dependencies
-        run: npm ci
+        run: npm install
 
       - name: Install Python dependencies
         run: pip install -r scripts/requirements.txt

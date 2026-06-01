@@ -5,7 +5,7 @@ import { auth, googleProvider, ALLOWED_UID } from './firebase'
 type AuthState =
   | { status: 'loading' }
   | { status: 'signed-out' }
-  | { status: 'denied'; email: string | null }
+  | { status: 'denied'; email: string | null; uid: string }
   | { status: 'allowed'; user: User }
 
 function useAuthState(): AuthState {
@@ -18,7 +18,7 @@ function useAuthState(): AuthState {
       } else if (user.uid === ALLOWED_UID) {
         setState({ status: 'allowed', user })
       } else {
-        setState({ status: 'denied', email: user.email })
+        setState({ status: 'denied', email: user.email, uid: user.uid })
       }
     })
   }, [])
@@ -42,7 +42,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }
 
   if (state.status === 'denied') {
-    return <DeniedScreen email={state.email} />
+    return <DeniedScreen email={state.email} uid={state.uid} />
   }
 
   return <>{children}</>
@@ -77,7 +77,7 @@ function SignInScreen() {
   )
 }
 
-function DeniedScreen({ email }: { email: string | null }) {
+function DeniedScreen({ email, uid }: { email: string | null; uid: string }) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950">
       <div className="bg-gray-900 rounded-2xl p-10 flex flex-col items-center gap-6 shadow-xl max-w-sm w-full mx-4">
@@ -85,6 +85,10 @@ function DeniedScreen({ email }: { email: string | null }) {
         <p className="text-gray-400 text-sm text-center">
           {email ? `${email} is not authorized.` : 'This account is not authorized.'}
         </p>
+        <div className="w-full bg-gray-800 rounded-lg p-3">
+          <p className="text-gray-500 text-xs mb-1">Your UID (copy this):</p>
+          <p className="text-gray-300 text-xs font-mono break-all select-all">{uid}</p>
+        </div>
         <button
           onClick={() => void signOut(auth)}
           className="text-gray-500 hover:text-gray-300 text-sm transition-colors"
