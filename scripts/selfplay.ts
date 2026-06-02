@@ -111,10 +111,14 @@ console.log(`Feature dim: ${ENCODE_DIM}, seed: ${SEED}`)
 // Load NN policy if a trained model is available; otherwise fall back to heuristic.
 let policy: SimPolicy = heuristicPolicy
 if (fs.existsSync(MODEL_PATH)) {
-  const buf = fs.readFileSync(MODEL_PATH)
-  const weights = parseMLPWeights(buf.buffer as ArrayBuffer)
-  policy = (info) => nnPickPlacement(weights, info.board, info.hand, info.street, info.revealedOpponentBoards)
-  console.log(`Policy: NN (${MODEL_PATH})`)
+  try {
+    const buf = fs.readFileSync(MODEL_PATH)
+    const weights = parseMLPWeights(buf.buffer as ArrayBuffer)
+    policy = (info) => nnPickPlacement(weights, info.board, info.hand, info.street, info.revealedOpponentBoards)
+    console.log(`Policy: NN (${MODEL_PATH})`)
+  } catch (e) {
+    console.log(`Warning: model at ${MODEL_PATH} is invalid (${e instanceof Error ? e.message : e}) — using heuristic`)
+  }
 } else {
   console.log('Policy: heuristic (no model found at ' + MODEL_PATH + ')')
 }

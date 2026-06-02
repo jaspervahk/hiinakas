@@ -47,12 +47,27 @@ jobs:
 
       - name: Download current deployed model (warm-start)
         # Fetch the latest model from Firebase Hosting for iterative self-play.
-        # On first run this will 404 and we fall back to heuristic — that's fine.
+        # Firebase's SPA catch-all rewrite returns index.html (200) for missing
+        # paths, so we can't rely on the HTTP status code alone — we verify the
+        # OFCW magic bytes and discard the file if it's not a real model.
         run: |
           mkdir -p models
-          curl -sf https://hiinakas-355.web.app/models/policy.bin \
-            -o models/policy.bin && echo "Downloaded existing model for warm-start" \
-            || echo "No existing model — first run, using heuristic policy"
+          curl -sf https://hiinakas-355.web.app/models/policy.bin -o models/policy.bin || true
+          python3 - <<'EOF'
+          import os, sys
+          path = 'models/policy.bin'
+          try:
+              with open(path, 'rb') as f:
+                  magic = f.read(4)
+              if magic == b'OFCW':
+                  size = os.path.getsize(path)
+                  print(f'Downloaded valid model ({size // 1024} KB) — warm-starting')
+              else:
+                  os.remove(path)
+                  print(f'Downloaded file is not a valid OFCW model (magic={magic!r}) — first run, using heuristic')
+          except FileNotFoundError:
+              print('No model file — first run, using heuristic policy')
+          EOF
 
       - name: Self-play
         run: |
