@@ -8,13 +8,13 @@ on:
     inputs:
       games:
         description: 'Self-play games per iteration'
-        default: '50000'
+        default: '5000'
       epochs:
         description: 'Training epochs'
         default: '30'
 
 env:
-  GAMES: ${{ github.event.inputs.games || '50000' }}
+  GAMES: ${{ github.event.inputs.games || '5000' }}
   EPOCHS: ${{ github.event.inputs.epochs || '30' }}
 
 jobs:
