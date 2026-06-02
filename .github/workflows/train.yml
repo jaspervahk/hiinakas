@@ -106,6 +106,7 @@ jobs:
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
+          mkdir -p dist/models
           cp models/policy.bin dist/models/policy.bin
           firebase deploy --only hosting \
             --token "$FIREBASE_TOKEN" \
