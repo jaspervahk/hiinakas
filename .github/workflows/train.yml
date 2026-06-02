@@ -86,13 +86,16 @@ jobs:
             --epochs "$EPOCHS" \
             --batch 512
 
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools --ignore-scripts
+
       - name: Deploy model via Firebase Hosting
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
           mkdir -p dist/models
           cp models/policy.bin dist/models/policy.bin
-          npx firebase deploy --only hosting \
+          firebase deploy --only hosting \
             --token "$FIREBASE_TOKEN" \
             --non-interactive \
             --project hiinakas-355
