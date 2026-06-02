@@ -86,14 +86,26 @@ jobs:
             --epochs "$EPOCHS" \
             --batch 512
 
+      - name: Build app
+        # Build the full SPA so dist/ contains the app + model together.
+        # Firebase client config is public by design (visible in any browser).
+        env:
+          VITE_FIREBASE_API_KEY: AIzaSyAZJ6kZHk--spDOJg3YqYzukftMXr0JYdA
+          VITE_FIREBASE_AUTH_DOMAIN: hiinakas-355.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: hiinakas-355
+          VITE_FIREBASE_STORAGE_BUCKET: hiinakas-355.firebasestorage.app
+          VITE_FIREBASE_MESSAGING_SENDER_ID: "17827635816"
+          VITE_FIREBASE_APP_ID: 1:17827635816:web:fdfd222e409323ac6cd1dd
+          VITE_ALLOWED_UID: 7d3zgIRy43OClSXUDhnsLmhDNwg2
+        run: npm run build
+
       - name: Install Firebase CLI
         run: npm install -g firebase-tools --ignore-scripts
 
-      - name: Deploy model via Firebase Hosting
+      - name: Deploy model + app via Firebase Hosting
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
-          mkdir -p dist/models
           cp models/policy.bin dist/models/policy.bin
           firebase deploy --only hosting \
             --token "$FIREBASE_TOKEN" \
