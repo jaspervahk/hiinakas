@@ -719,14 +719,12 @@ function SessionTabInner() {
     setAnalyzing(true); setNoModel(false)
     try {
       const url = MODEL_URLS[modelVariant]
+      // Always reload the model so switching variants takes effect.
+      const loaded = await workerClient.loadModel(url)
+      if (!loaded) { setNoModel(true); return }
       const positions = decisions.map(d => ({ id: d.id, state: d.infoState }))
-      let results = await workerClient.analyzePositions(positions)
-      if (results.length > 0 && !results[0]!.hasModel) {
-        const loaded = await workerClient.loadModel(url)
-        if (!loaded) { setNoModel(true); return }
-        results = await workerClient.analyzePositions(positions)
-        if (results.length > 0 && !results[0]!.hasModel) { setNoModel(true); return }
-      }
+      const results = await workerClient.analyzePositions(positions)
+      if (results.length > 0 && !results[0]!.hasModel) { setNoModel(true); return }
       const map = new Map(results.map(r => [r.id, r.candidates]))
       const built = buildAnalyzed(decisions, map)
       setAnalyzed(built)
