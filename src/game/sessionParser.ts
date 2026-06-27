@@ -1,6 +1,6 @@
 // Parse pokker6 JSON export into engine-compatible structures for EV analysis.
-// Only handles 'normal_play' and 'bonus_play' move types — 'bonus_submit' is
-// one-shot and used only as the revealed opponent board for side-game decisions.
+// Supports 2- and 3-player games. 'bonus_submit' is used only as the revealed
+// opponent board for side-game decisions, never analysed directly.
 
 import type { Card, Rank, Suit, PartialBoard } from '../engine/types'
 import type { InfoState } from '../engine/mc'
@@ -87,12 +87,10 @@ export interface DecisionPoint {
 export interface GameSummary {
   gameId: string
   gameTime: string
-  p1Points: number
-  p2Points: number
-  p1Bust: boolean
-  p2Bust: boolean
-  p1Run: number
-  p2Run: number
+  playerNames: string[]              // ordered list matching the group
+  points: Record<string, number>     // cpGamePoints per player this hand
+  busts: Record<string, boolean>     // fouled? per player
+  runs: Record<string, number>       // cumulative running totals
   normalBreakdown: P6NormalBreakdown[] | null
 }
 
@@ -157,7 +155,7 @@ function toPlacement(m: P6Move): Placement {
 }
 
 // Parse one player's sequence of moves into DecisionPoints.
-// getOppBoard(turn) returns the revealed opponent board at the start of that turn.
+// getOppBoards(turn) returns all revealed opponent boards at the start of that turn.
 function parseMovesToDecisions(
   gameId: string,
   gameTime: string,
@@ -165,7 +163,7 @@ function parseMovesToDecisions(
   uid: string,
   segment: 'normal_play' | 'bonus_play',
   moves: P6Move[],
-  getOppBoard: (turn: number) => PartialBoard | null,
+  getOppBoards: (turn: number) => PartialBoard[],
 ): DecisionPoint[] {
   const sorted = [...moves].sort((a, b) => (a.turn ?? 0) - (b.turn ?? 0))
   const decisions: DecisionPoint[] = []
@@ -178,7 +176,7 @@ function parseMovesToDecisions(
     const board = boardBeforeTurn(sorted, turn)
     const hand = m.hand.map(toCard)
     const actualPlacement = toPlacement(m)
-    const oppBoard = getOppBoard(turn)
+    const oppBoards = getOppBoards(turn)
 
     decisions.push({
       id: `${gameId}:${uid}:${segment}:${turn}`,
@@ -192,7 +190,7 @@ function parseMovesToDecisions(
         board,
         hand,
         street: turn,
-        revealedOpponentBoards: oppBoard ? [oppBoard] : [],
+        revealedOpponentBoards: oppBoards,
         discards: [...priorDiscards],
       },
       actualPlacement,
@@ -208,92 +206,113 @@ function parseMovesToDecisions(
 
 export function parseSessionGames(
   games: P6Game[],
-  player1: string,
-  player2: string,
+  playerNames: string[],
 ): { decisions: DecisionPoint[]; summaries: GameSummary[] } {
+  if (playerNames.length < 2) return { decisions: [], summaries: [] }
+
   const filtered = games
     .filter(g => {
       const names = new Set(g.players.map(p => p.username))
-      return names.has(player1) && names.has(player2)
+      return playerNames.every(n => names.has(n))
     })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 
   const decisions: DecisionPoint[] = []
   const summaries: GameSummary[] = []
-  let p1Run = 0
-  let p2Run = 0
+  const runs: Record<string, number> = {}
+  for (const n of playerNames) runs[n] = 0
 
   for (const game of filtered) {
-    const p1Player = game.players.find(p => p.username === player1)
-    const p2Player = game.players.find(p => p.username === player2)
-    const p1Result = game.results.find(r => r.username === player1)
-    const p2Result = game.results.find(r => r.username === player2)
-    if (!p1Player || !p2Player || !p1Result || !p2Result) continue
+    // Gather uid + result for every player in the group
+    const playerData = new Map<string, { uid: string; points: number; bust: boolean }>()
+    let skip = false
+    for (const pname of playerNames) {
+      const player = game.players.find(p => p.username === pname)
+      const result = game.results.find(r => r.username === pname)
+      if (!player || !result) { skip = true; break }
+      playerData.set(pname, {
+        uid: player.uid,
+        points: result.cpGamePoints,
+        bust: player.status === 'bust',
+      })
+    }
+    if (skip) continue
 
-    const uid1 = p1Player.uid
-    const uid2 = p2Player.uid
-
-    p1Run += p1Result.cpGamePoints
-    p2Run += p2Result.cpGamePoints
+    // Update running totals
+    const points: Record<string, number> = {}
+    const busts: Record<string, boolean> = {}
+    for (const [pname, data] of playerData) {
+      runs[pname] = (runs[pname] ?? 0) + data.points
+      points[pname] = data.points
+      busts[pname] = data.bust
+    }
 
     const cp = game.chinesePoker
-
     summaries.push({
       gameId: game.gameId,
       gameTime: game.createdAt,
-      p1Points: p1Result.cpGamePoints,
-      p2Points: p2Result.cpGamePoints,
-      p1Bust: p1Player.status === 'bust',
-      p2Bust: p2Player.status === 'bust',
-      p1Run,
-      p2Run,
+      playerNames: [...playerNames],
+      points,
+      busts,
+      runs: { ...runs },
       normalBreakdown: cp?.normalBreakdown ?? null,
     })
 
-    // Skip games without move data (older export format)
+    // Skip games without move data
     const moves = cp?.moves
     if (!Array.isArray(moves) || moves.length === 0) continue
 
-    // ── Normal game ────────────────────────────────────────────────────────
-    const p1Normal = moves.filter(m => m.uid === uid1 && m.segment === 'normal_play' && m.placements)
-    const p2Normal = moves.filter(m => m.uid === uid2 && m.segment === 'normal_play' && m.placements)
-
-    decisions.push(
-      ...parseMovesToDecisions(game.gameId, game.createdAt, player1, uid1, 'normal_play',
-        p1Normal, (t) => boardBeforeTurn(p2Normal, t)),
-      ...parseMovesToDecisions(game.gameId, game.createdAt, player2, uid2, 'normal_play',
-        p2Normal, (t) => boardBeforeTurn(p1Normal, t)),
-    )
-
-    // ── Bonus / side game ──────────────────────────────────────────────────
-    const p1BonusPlay = moves.filter(m => m.uid === uid1 && m.segment === 'bonus_play' && m.placements)
-    const p2BonusPlay = moves.filter(m => m.uid === uid2 && m.segment === 'bonus_play' && m.placements)
-    const p1Submit = moves.find(m => m.uid === uid1 && m.segment === 'bonus_submit')
-    const p2Submit = moves.find(m => m.uid === uid2 && m.segment === 'bonus_submit')
-
-    // p1 played side game (bonus_play) against p2's fixed bonus board
-    if (p1BonusPlay.length > 0 && p2Submit) {
-      const oppBoard = toPartialBoard({
-        top: p2Submit.top ?? [],
-        middle: p2Submit.middle ?? [],
-        bottom: p2Submit.bottom ?? [],
-      })
-      decisions.push(
-        ...parseMovesToDecisions(game.gameId, game.createdAt, player1, uid1, 'bonus_play',
-          p1BonusPlay, () => oppBoard),
+    // Collect normal_play moves per player
+    const normalMoves = new Map<string, P6Move[]>()
+    for (const [pname, data] of playerData) {
+      normalMoves.set(
+        pname,
+        moves.filter(m => m.uid === data.uid && m.segment === 'normal_play' && m.placements),
       )
     }
 
-    // p2 played side game against p1's fixed bonus board
-    if (p2BonusPlay.length > 0 && p1Submit) {
-      const oppBoard = toPartialBoard({
-        top: p1Submit.top ?? [],
-        middle: p1Submit.middle ?? [],
-        bottom: p1Submit.bottom ?? [],
-      })
+    // Parse normal game decisions — each player sees all opponents' revealed boards
+    for (const [pname, data] of playerData) {
+      const pMoves = normalMoves.get(pname) ?? []
+      const oppNames = playerNames.filter(n => n !== pname)
       decisions.push(
-        ...parseMovesToDecisions(game.gameId, game.createdAt, player2, uid2, 'bonus_play',
-          p2BonusPlay, () => oppBoard),
+        ...parseMovesToDecisions(
+          game.gameId, game.createdAt, pname, data.uid, 'normal_play',
+          pMoves,
+          (t) => oppNames.map(n => boardBeforeTurn(normalMoves.get(n) ?? [], t)),
+        )
+      )
+    }
+
+    // Bonus / side-game — analyse bonus_play decisions for any player
+    // Each bonus_play player faces each opponent's bonus_submit board.
+    for (const [pname, data] of playerData) {
+      const bonusPlay = moves.filter(
+        m => m.uid === data.uid && m.segment === 'bonus_play' && m.placements,
+      )
+      if (bonusPlay.length === 0) continue
+
+      // Collect all opponent submitted boards
+      const oppBoards: PartialBoard[] = []
+      for (const [oppName, oppData] of playerData) {
+        if (oppName === pname) continue
+        const sub = moves.find(m => m.uid === oppData.uid && m.segment === 'bonus_submit')
+        if (sub) {
+          oppBoards.push(toPartialBoard({
+            top: sub.top ?? [],
+            middle: sub.middle ?? [],
+            bottom: sub.bottom ?? [],
+          }))
+        }
+      }
+      if (oppBoards.length === 0) continue
+
+      decisions.push(
+        ...parseMovesToDecisions(
+          game.gameId, game.createdAt, pname, data.uid, 'bonus_play',
+          bonusPlay,
+          () => oppBoards,
+        )
       )
     }
   }
@@ -303,20 +322,19 @@ export function parseSessionGames(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-export function detectPlayerPairs(games: P6Game[]): Array<{ p1: string; p2: string; count: number }> {
+// Detect all player groups (2–4 players) that appear together, sorted by frequency.
+export function detectPlayerGroups(
+  games: P6Game[],
+): Array<{ players: string[]; count: number }> {
   const counts = new Map<string, number>()
   for (const g of games) {
-    if (g.players.length === 2) {
-      const [a, b] = g.players.map(p => p.username).sort()
-      const key = `${a}|${b}`
-      counts.set(key, (counts.get(key) ?? 0) + 1)
-    }
+    if (g.players.length < 2) continue
+    const sorted = g.players.map(p => p.username).sort()
+    const key = sorted.join('|')
+    counts.set(key, (counts.get(key) ?? 0) + 1)
   }
   return [...counts.entries()]
-    .map(([key, count]) => {
-      const [p1, p2] = key.split('|') as [string, string]
-      return { p1, p2, count }
-    })
+    .map(([key, count]) => ({ players: key.split('|'), count }))
     .sort((a, b) => b.count - a.count)
 }
 

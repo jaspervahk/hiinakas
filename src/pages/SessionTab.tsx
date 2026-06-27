@@ -1,5 +1,6 @@
 // Session analysis tab: load a pokker6 JSON export, reconstruct per-decision
 // InfoStates, run bulk NN evaluation, and surface EV-loss blunders + score stats.
+// Supports 2- and 3-player game sessions.
 
 import { Component, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -8,7 +9,7 @@ import type { ScoredPlacement } from '../engine/mc'
 import type { Placement } from '../engine/placement'
 import {
   parseSessionGames,
-  detectPlayerPairs,
+  detectPlayerGroups,
   matchesActual,
   type P6Export,
   type DecisionPoint,
@@ -41,6 +42,16 @@ class SessionErrorBoundary extends Component<{ children: ReactNode }, { error: s
     return this.props.children
   }
 }
+
+// ── Player colour palette (up to 4 players) ───────────────────────────────────
+
+const PLAYER_COLORS = [
+  { text: 'text-indigo-400', bg: 'bg-indigo-900/20', border: 'border-indigo-800/40', dim: 'text-indigo-400/60', stroke: '#818cf8' },
+  { text: 'text-amber-400',  bg: 'bg-amber-900/20',  border: 'border-amber-800/40',  dim: 'text-amber-400/60',  stroke: '#fbbf24' },
+  { text: 'text-emerald-400',bg: 'bg-emerald-900/20',border: 'border-emerald-800/40',dim: 'text-emerald-400/60',stroke: '#34d399' },
+  { text: 'text-rose-400',   bg: 'bg-rose-900/20',   border: 'border-rose-800/40',   dim: 'text-rose-400/60',   stroke: '#fb7185' },
+]
+function pc(i: number) { return PLAYER_COLORS[i % PLAYER_COLORS.length]! }
 
 // ── Card display ──────────────────────────────────────────────────────────────
 
@@ -139,33 +150,24 @@ function CandidateList({ topCandidates, actualPlacement, bestEV }: {
   )
 }
 
-// ── Running score SVG chart ───────────────────────────────────────────────────
+// ── Running score SVG chart (N players) ──────────────────────────────────────
 
-function RunningChart({ summaries, p1, p2 }: { summaries: GameSummary[]; p1: string; p2: string }) {
-  const W = 560; const H = 120
-  const PL = 36; const PR = 8; const PT = 12; const PB = 20
+function RunningChart({ summaries, players }: { summaries: GameSummary[]; players: string[] }) {
+  const W = 560; const H = 130
+  const PL = 36; const PR = 8; const PT = 16; const PB = 20
 
-  const values = [0, ...summaries.map(s => s.p2Run)]
-  const yMin = Math.min(...values)
-  const yMax = Math.max(0, ...values)
+  const allValues = [0, ...summaries.flatMap(s => players.map(p => s.runs[p] ?? 0))]
+  const yMin = Math.min(...allValues)
+  const yMax = Math.max(0, ...allValues)
   const yRange = yMax - yMin || 1
 
-  const toX = (i: number) => PL + (i / (values.length - 1)) * (W - PL - PR)
+  const toX = (i: number) => PL + (i / summaries.length) * (W - PL - PR)
   const toY = (v: number) => PT + ((yMax - v) / yRange) * (H - PT - PB)
   const zeroY = toY(0)
-
-  const linePoints = values.map((v, i) => `${toX(i)},${toY(v)}`).join(' ')
-  const areaPath =
-    `M${toX(0)},${zeroY} ` +
-    values.map((v, i) => `L${toX(i)},${toY(v)}`).join(' ') +
-    ` L${toX(values.length - 1)},${zeroY} Z`
-
-  const final = summaries.at(-1)?.p1Run ?? 0
-  const areaColor = final >= 0 ? '#10b981' : '#ef4444'
   const yTicks = [yMin, 0, yMax].filter((v, i, a) => a.indexOf(v) === i && Math.abs(v) > 2)
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 140 }}>
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 150 }}>
       {yTicks.map(v => {
         const y = toY(v)
         return (
@@ -178,28 +180,49 @@ function RunningChart({ summaries, p1, p2 }: { summaries: GameSummary[]; p1: str
         )
       })}
       <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="#374151" strokeWidth="0.8" strokeDasharray="3,3" />
-      <path d={areaPath} fill={areaColor} fillOpacity="0.12" />
-      <polyline points={linePoints} fill="none" stroke="#818cf8" strokeWidth="1.2" />
-      {summaries.map((s, i) => {
-        if (!s.p1Bust && !s.p2Bust) return null
-        const x = toX(i + 1); const y = toY(s.p2Run)
-        return <circle key={i} cx={x} cy={y} r="2.5"
-          fill={s.p1Bust && s.p2Bust ? '#9333ea' : s.p1Bust ? '#ef4444' : '#f59e0b'}
-          stroke="#030712" strokeWidth="0.5" />
+
+      {/* Line per player */}
+      {players.map((p, pi) => {
+        const color = pc(pi)
+        const values = [0, ...summaries.map(s => s.runs[p] ?? 0)]
+        const points = values.map((v, i) => `${toX(i)},${toY(v)}`).join(' ')
+        return <polyline key={p} points={points} fill="none" stroke={color.stroke} strokeWidth="1.2" />
       })}
+
+      {/* Bust markers */}
       {summaries.map((s, i) => {
-        if (s.p1Bust || s.p2Bust) return null
-        return <circle key={i} cx={toX(i + 1)} cy={toY(s.p2Run)} r="1.5" fill="#818cf8" />
+        const bustPlayers = players.filter(p => s.busts[p])
+        if (bustPlayers.length === 0) return null
+        return bustPlayers.map((p) => {
+          const pIdx = players.indexOf(p)
+          const y = toY(s.runs[p] ?? 0)
+          return <circle key={`${i}-${p}`} cx={toX(i + 1)} cy={y} r="2.5"
+            fill={pc(pIdx).stroke} stroke="#030712" strokeWidth="0.8" />
+        })
       })}
+
+      {/* Regular dots */}
+      {summaries.map((s, i) => {
+        return players.map((p, pi) => {
+          if (s.busts[p]) return null
+          return <circle key={`${i}-${p}`} cx={toX(i + 1)} cy={toY(s.runs[p] ?? 0)} r="1.5" fill={pc(pi).stroke} />
+        })
+      })}
+
+      {/* X-axis labels */}
       {summaries.map((_, i) => {
         const n = i + 1
         if (n !== 1 && n % 5 !== 0 && n !== summaries.length) return null
         return <text key={i} x={toX(i + 1)} y={H - 4} textAnchor="middle" fontSize="7" fill="#4b5563">{n}</text>
       })}
-      <circle cx={PL + 8} cy={PT - 4} r="2" fill="#ef4444" />
-      <text x={PL + 12} y={PT - 1} fontSize="6.5" fill="#9ca3af">{p1} bust</text>
-      <circle cx={PL + 60} cy={PT - 4} r="2" fill="#f59e0b" />
-      <text x={PL + 64} y={PT - 1} fontSize="6.5" fill="#9ca3af">{p2} bust</text>
+
+      {/* Legend */}
+      {players.map((p, pi) => (
+        <g key={p}>
+          <circle cx={PL + 8 + pi * 70} cy={PT - 5} r="2" fill={pc(pi).stroke} />
+          <text x={PL + 13 + pi * 70} y={PT - 2} fontSize="6.5" fill="#9ca3af">{p}</text>
+        </g>
+      ))}
     </svg>
   )
 }
@@ -231,7 +254,7 @@ function buildAnalyzed(
   })
 }
 
-// ── Cache (localStorage) ──────────────────────────────────────────────────────
+// ── Cache ─────────────────────────────────────────────────────────────────────
 
 const CACHE_VERSION = 'v2'
 
@@ -262,7 +285,7 @@ function saveToCache(key: string, analyzed: AnalyzedDecision[]): void {
       topCandidates: d.topCandidates,
     }))
     localStorage.setItem(key, JSON.stringify(slim))
-  } catch { /* quota exceeded — silently ignore */ }
+  } catch { /* quota exceeded */ }
 }
 
 function loadFromCache(key: string): AnalyzedDecision[] | null {
@@ -284,7 +307,7 @@ function loadFromCache(key: string): AnalyzedDecision[] | null {
   } catch { return null }
 }
 
-// ── Hand decision row (per-street view inside HandDetail) ─────────────────────
+// ── Hand decision row (inside hand detail panel) ──────────────────────────────
 
 function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecision }) {
   const [open, setOpen] = useState(false)
@@ -294,7 +317,6 @@ function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecisio
 
   return (
     <div className={`border-l-2 pl-2 mb-1 ${isMistake ? 'border-amber-700/60' : isOptimal ? 'border-emerald-800/50' : 'border-gray-800'}`}>
-      {/* Summary row — always visible, always clickable */}
       <div
         className="flex items-start gap-2 cursor-pointer hover:bg-gray-800/30 rounded px-1 py-0.5 transition-colors"
         onClick={() => setOpen(o => !o)}
@@ -309,29 +331,23 @@ function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecisio
         <span className="text-gray-500 text-[10px] shrink-0 pt-0.5">→</span>
         <span className="flex-1 min-w-0 text-xs"><PlacementSummary p={dec.actualPlacement} /></span>
         {hasEV && (
-          <span className={`text-xs shrink-0 font-mono ${isOptimal ? 'text-emerald-600' : isMistake ? 'text-amber-400' : 'text-gray-500'}`}>
+          <span className={`text-xs shrink-0 font-mono ${isOptimal ? 'text-emerald-600' : 'text-amber-400'}`}>
             {isOptimal ? '✓' : `-${ev.evLost.toFixed(1)}`}
           </span>
         )}
         <span className="text-gray-700 text-[10px] shrink-0">{open ? '▲' : '▼'}</span>
       </div>
 
-      {/* Expanded detail */}
       {open && (
         <div className="ml-16 mt-1 mb-2 space-y-2">
-          {/* Board before this decision */}
           <div className="flex items-start gap-2">
             <span className="text-gray-600 text-[10px] uppercase shrink-0 w-10 pt-0.5">Board</span>
             <BoardMini board={dec.infoState.board} />
           </div>
-
-          {/* EV comparison: played vs best */}
           {hasEV && (
             <div className="space-y-0.5">
               <div className="flex items-start gap-2">
-                <span className={`text-[10px] uppercase shrink-0 w-10 pt-0.5 ${isMistake ? 'text-amber-700' : 'text-gray-600'}`}>
-                  Played
-                </span>
+                <span className={`text-[10px] uppercase shrink-0 w-10 pt-0.5 ${isMistake ? 'text-amber-700' : 'text-gray-600'}`}>Played</span>
                 <span className="text-xs flex-1"><PlacementSummary p={dec.actualPlacement} /></span>
                 <span className={`text-xs font-mono shrink-0 ${ev.playedEV >= 0 ? 'text-gray-400' : 'text-red-400'}`}>
                   {ev.playedEV >= 0 ? '+' : ''}{ev.playedEV.toFixed(1)}
@@ -348,16 +364,10 @@ function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecisio
               )}
             </div>
           )}
-
-          {/* Full candidate rankings */}
           {ev && ev.topCandidates.length > 0 && (
             <div>
               <p className="text-gray-600 text-[10px] uppercase mb-0.5">Rankings (top {ev.topCandidates.length})</p>
-              <CandidateList
-                topCandidates={ev.topCandidates}
-                actualPlacement={dec.actualPlacement}
-                bestEV={ev.bestEV}
-              />
+              <CandidateList topCandidates={ev.topCandidates} actualPlacement={dec.actualPlacement} bestEV={ev.bestEV} />
             </div>
           )}
         </div>
@@ -366,22 +376,13 @@ function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecisio
   )
 }
 
-// ── Hand detail panel (all decisions for one game) ────────────────────────────
+// ── Hand detail panel ─────────────────────────────────────────────────────────
 
-function HandDetail({ gameDecs, analyzedMap, p1, p2 }: {
+function HandDetail({ gameDecs, analyzedMap, players }: {
   gameDecs: DecisionPoint[]
   analyzedMap: Map<string, AnalyzedDecision>
-  p1: string; p2: string
+  players: string[]
 }) {
-  const p1Decs = useMemo(
-    () => gameDecs.filter(d => d.username === p1).sort((a, b) => a.street - b.street),
-    [gameDecs, p1]
-  )
-  const p2Decs = useMemo(
-    () => gameDecs.filter(d => d.username === p2).sort((a, b) => a.street - b.street),
-    [gameDecs, p2]
-  )
-
   if (gameDecs.length === 0) {
     return (
       <div className="bg-gray-950 border-t border-gray-800 px-4 py-3">
@@ -392,38 +393,33 @@ function HandDetail({ gameDecs, analyzedMap, p1, p2 }: {
 
   return (
     <div className="bg-gray-950 border-t border-gray-800 px-4 py-3">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <p className="text-indigo-400 text-[10px] uppercase tracking-wider font-medium mb-2">{p1}</p>
-          {p1Decs.length === 0
-            ? <p className="text-gray-600 text-xs italic">No data</p>
-            : p1Decs.map(d => <HandDecisionRow key={d.id} dec={d} ev={analyzedMap.get(d.id)} />)
-          }
-        </div>
-        <div>
-          <p className="text-amber-400 text-[10px] uppercase tracking-wider font-medium mb-2">{p2}</p>
-          {p2Decs.length === 0
-            ? <p className="text-gray-600 text-xs italic">No data</p>
-            : p2Decs.map(d => <HandDecisionRow key={d.id} dec={d} ev={analyzedMap.get(d.id)} />)
-          }
-        </div>
+      <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+        {players.map((pname, pi) => {
+          const pDecs = gameDecs.filter(d => d.username === pname).sort((a, b) => a.street - b.street)
+          return (
+            <div key={pname}>
+              <p className={`${pc(pi).text} text-[10px] uppercase tracking-wider font-medium mb-2`}>{pname}</p>
+              {pDecs.length === 0
+                ? <p className="text-gray-600 text-xs italic">No data</p>
+                : pDecs.map(d => <HandDecisionRow key={d.id} dec={d} ev={analyzedMap.get(d.id)} />)
+              }
+            </div>
+          )
+        })}
       </div>
     </div>
   )
 }
 
-// ── Blunder card (expandable) ─────────────────────────────────────────────────
+// ── Blunder card ──────────────────────────────────────────────────────────────
 
 function BlunderCard({ d, dec, rank }: { d: AnalyzedDecision; dec?: DecisionPoint; rank: number }) {
   const [open, setOpen] = useState(false)
   const isOptimal = d.evLost < 0.05
-  // Use the original DecisionPoint board (always has correct board; cache strips it)
   const board = dec?.infoState.board ?? d.infoState.board
-  const hand = d.infoState.hand
 
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
-      {/* Always-visible summary */}
       <div
         className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-800/30 transition-colors"
         onClick={() => setOpen(o => !o)}
@@ -444,11 +440,10 @@ function BlunderCard({ d, dec, rank }: { d: AnalyzedDecision; dec?: DecisionPoin
         </div>
       </div>
 
-      {/* Compact summary (always visible) */}
       <div className="px-3 pb-3 space-y-1">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-gray-500 w-10 shrink-0">Hand:</span>
-          <span className="flex gap-0.5">{hand.map((c, i) => <CardChip key={i} c={c} />)}</span>
+          <span className="flex gap-0.5">{d.infoState.hand.map((c, i) => <CardChip key={i} c={c} />)}</span>
         </div>
         <div className="flex items-start gap-2 text-xs">
           <span className="text-gray-500 w-10 shrink-0">Played:</span>
@@ -462,7 +457,6 @@ function BlunderCard({ d, dec, rank }: { d: AnalyzedDecision; dec?: DecisionPoin
         )}
       </div>
 
-      {/* Expanded: board context + full candidate rankings */}
       {open && (
         <div className="border-t border-gray-800 px-3 py-3 bg-gray-950/60 space-y-3">
           <div>
@@ -472,11 +466,7 @@ function BlunderCard({ d, dec, rank }: { d: AnalyzedDecision; dec?: DecisionPoin
           {d.topCandidates.length > 0 && (
             <div>
               <p className="text-gray-600 text-[10px] uppercase mb-1">All candidates (top {d.topCandidates.length})</p>
-              <CandidateList
-                topCandidates={d.topCandidates}
-                actualPlacement={d.actualPlacement}
-                bestEV={d.bestEV}
-              />
+              <CandidateList topCandidates={d.topCandidates} actualPlacement={d.actualPlacement} bestEV={d.bestEV} />
             </div>
           )}
         </div>
@@ -499,11 +489,11 @@ function StatCard({ label, value, sub, color }: {
   )
 }
 
-// ── Game log table with clickable hand drill-down ─────────────────────────────
+// ── Game log table ────────────────────────────────────────────────────────────
 
-function GameLogTable({ summaries, p1, p2, analyzed, decisions }: {
+function GameLogTable({ summaries, players, analyzed, decisions }: {
   summaries: GameSummary[]
-  p1: string; p2: string
+  players: string[]
   analyzed: AnalyzedDecision[]
   decisions: DecisionPoint[]
 }) {
@@ -526,18 +516,19 @@ function GameLogTable({ summaries, p1, p2, analyzed, decisions }: {
   }, [analyzed])
 
   const evByGame = useMemo(() => {
-    const map = new Map<string, { p1: number; p2: number }>()
+    const map = new Map<string, Record<string, number>>()
     for (const d of analyzed) {
-      const cur = map.get(d.gameId) ?? { p1: 0, p2: 0 }
-      if (d.username === p1) cur.p1 += d.evLost
-      else cur.p2 += d.evLost
+      const cur = map.get(d.gameId) ?? {}
+      cur[d.username] = (cur[d.username] ?? 0) + d.evLost
       map.set(d.gameId, cur)
     }
     return map
-  }, [analyzed, p1])
+  }, [analyzed])
 
   const hasEV = analyzed.length > 0
-  const colSpan = hasEV ? 9 : 7
+  const nPlayers = players.length
+  // columns: #, Time, [score per player], Bust, [EV per player if analysis], expand
+  const colSpan = 3 + nPlayers + (hasEV ? nPlayers : 0)
 
   return (
     <div className="overflow-x-auto">
@@ -546,14 +537,13 @@ function GameLogTable({ summaries, p1, p2, analyzed, decisions }: {
           <tr className="text-gray-500 border-b border-gray-800">
             <th className="text-left py-1.5 px-2 font-normal">#</th>
             <th className="text-left py-1.5 px-2 font-normal">Time</th>
-            <th className="text-right py-1.5 px-2 font-normal text-indigo-400">{p1}</th>
-            <th className="text-right py-1.5 px-2 font-normal text-amber-400">{p2}</th>
-            <th className="text-right py-1.5 px-2 font-normal">Running</th>
+            {players.map((p, pi) => (
+              <th key={p} className={`text-right py-1.5 px-2 font-normal ${pc(pi).text}`}>{p}</th>
+            ))}
             <th className="text-center py-1.5 px-2 font-normal">Bust</th>
-            {hasEV && <>
-              <th className="text-right py-1.5 px-2 font-normal text-indigo-400/60">EV lost</th>
-              <th className="text-right py-1.5 px-2 font-normal text-amber-400/60">EV lost</th>
-            </>}
+            {hasEV && players.map((p, pi) => (
+              <th key={`ev-${p}`} className={`text-right py-1.5 px-2 font-normal ${pc(pi).dim}`}>EV lost</th>
+            ))}
             <th className="w-5"></th>
           </tr>
         </thead>
@@ -563,6 +553,7 @@ function GameLogTable({ summaries, p1, p2, analyzed, decisions }: {
             const isSelected = selectedGame === s.gameId
             const gameDecs = decisionsByGame.get(s.gameId) ?? []
             const hasData = gameDecs.length > 0
+            const bustNames = players.filter(p => s.busts[p])
 
             return (
               <Fragment key={s.gameId}>
@@ -576,28 +567,33 @@ function GameLogTable({ summaries, p1, p2, analyzed, decisions }: {
                   <td className="py-1 px-2 text-gray-400">
                     {new Date(s.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </td>
-                  <td className={`py-1 px-2 text-right font-mono font-medium ${s.p1Points > 0 ? 'text-emerald-400' : s.p1Points < 0 ? 'text-red-400' : 'text-gray-500'}`}>
-                    {s.p1Points > 0 ? '+' : ''}{s.p1Points}
-                  </td>
-                  <td className={`py-1 px-2 text-right font-mono font-medium ${s.p2Points > 0 ? 'text-emerald-400' : s.p2Points < 0 ? 'text-red-400' : 'text-gray-500'}`}>
-                    {s.p2Points > 0 ? '+' : ''}{s.p2Points}
-                  </td>
-                  <td className={`py-1 px-2 text-right font-mono ${s.p2Run > 0 ? 'text-emerald-400' : s.p2Run < 0 ? 'text-red-400/80' : 'text-gray-500'}`}>
-                    {s.p2Run > 0 ? '+' : ''}{s.p2Run}
-                  </td>
+                  {players.map((p, pi) => {
+                    const pts = s.points[p] ?? 0
+                    // Show running total in parentheses for first player only (to keep it compact)
+                    return (
+                      <td key={p} className={`py-1 px-2 text-right font-mono font-medium ${pts > 0 ? 'text-emerald-400' : pts < 0 ? 'text-red-400' : 'text-gray-500'}`}>
+                        {pts > 0 ? '+' : ''}{pts}
+                        {pi === 0 && nPlayers === 2 && (
+                          <span className={`ml-1 text-[10px] font-normal ${(s.runs[p] ?? 0) > 0 ? 'text-emerald-600' : 'text-red-600/70'}`}>
+                            ({(s.runs[p] ?? 0) > 0 ? '+' : ''}{s.runs[p] ?? 0})
+                          </span>
+                        )}
+                      </td>
+                    )
+                  })}
                   <td className="py-1 px-2 text-center">
-                    {s.p1Bust && s.p2Bust && <span className="text-purple-400">both</span>}
-                    {s.p1Bust && !s.p2Bust && <span className="text-red-400">{p1}</span>}
-                    {s.p2Bust && !s.p1Bust && <span className="text-amber-400">{p2}</span>}
+                    {bustNames.length === 0 ? null : bustNames.length === players.length
+                      ? <span className="text-purple-400">all</span>
+                      : bustNames.map((n, bi) => (
+                        <span key={n} className={`${pc(players.indexOf(n)).text} ${bi > 0 ? 'ml-1' : ''}`}>{n}</span>
+                      ))
+                    }
                   </td>
-                  {hasEV && <>
-                    <td className="py-1 px-2 text-right font-mono text-indigo-400/60">
-                      {ev ? `-${ev.p1.toFixed(1)}` : '—'}
+                  {hasEV && players.map((p, pi) => (
+                    <td key={`ev-${p}`} className={`py-1 px-2 text-right font-mono ${pc(pi).dim}`}>
+                      {ev?.[p] != null ? `-${ev[p]!.toFixed(1)}` : '—'}
                     </td>
-                    <td className="py-1 px-2 text-right font-mono text-amber-400/60">
-                      {ev ? `-${ev.p2.toFixed(1)}` : '—'}
-                    </td>
-                  </>}
+                  ))}
                   <td className="py-1 px-2 text-gray-600 text-center">
                     {hasData && (isSelected ? '▲' : '▼')}
                   </td>
@@ -605,11 +601,7 @@ function GameLogTable({ summaries, p1, p2, analyzed, decisions }: {
                 {isSelected && (
                   <tr>
                     <td colSpan={colSpan} className="p-0">
-                      <HandDetail
-                        gameDecs={gameDecs}
-                        analyzedMap={analyzedMap}
-                        p1={p1} p2={p2}
-                      />
+                      <HandDetail gameDecs={gameDecs} analyzedMap={analyzedMap} players={players} />
                     </td>
                   </tr>
                 )}
@@ -626,7 +618,7 @@ function GameLogTable({ summaries, p1, p2, analyzed, decisions }: {
 
 function SessionTabInner() {
   const [rawData, setRawData] = useState<P6Export | null>(null)
-  const [pair, setPair] = useState<[string, string] | null>(null)
+  const [selectedGroup, setSelectedGroup] = useState<string[] | null>(null)
   const [error, setError] = useState('')
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzed, setAnalyzed] = useState<AnalyzedDecision[]>([])
@@ -634,15 +626,15 @@ function SessionTabInner() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleFile = useCallback((file: File) => {
-    setError(''); setAnalyzed([]); setNoModel(false); setPair(null)
+    setError(''); setAnalyzed([]); setNoModel(false); setSelectedGroup(null)
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
         const parsed = JSON.parse(e.target?.result as string) as P6Export
         if (!Array.isArray(parsed.games)) throw new Error('Not a valid pokker6 export')
         setRawData(parsed)
-        const pairs = detectPlayerPairs(parsed.games)
-        if (pairs.length === 1) setPair([pairs[0]!.p1, pairs[0]!.p2])
+        const groups = detectPlayerGroups(parsed.games)
+        if (groups.length === 1) setSelectedGroup(groups[0]!.players)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to parse file')
       }
@@ -658,21 +650,21 @@ function SessionTabInner() {
 
   const [parseError, setParseError] = useState('')
   const { decisions, summaries } = useMemo(() => {
-    if (!rawData || !pair) return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[] }
+    if (!rawData || !selectedGroup) return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[] }
     try {
-      return parseSessionGames(rawData.games, pair[0], pair[1])
+      setParseError('')
+      return parseSessionGames(rawData.games, selectedGroup)
     } catch (e) {
       setParseError(e instanceof Error ? e.message : String(e))
       return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[] }
     }
-  }, [rawData, pair])
+  }, [rawData, selectedGroup])
 
-  const pairs = useMemo(() => rawData ? detectPlayerPairs(rawData.games) : [], [rawData])
+  const groups = useMemo(() => rawData ? detectPlayerGroups(rawData.games) : [], [rawData])
 
-  // Map for quick lookup of original DecisionPoints (always has correct board from JSON)
   const decisionsById = useMemo(() => new Map(decisions.map(d => [d.id, d])), [decisions])
 
-  // Restore from cache, then enrich boards from freshly-parsed decisions
+  // Restore from cache, enriching boards from freshly-parsed decisions
   useEffect(() => {
     if (decisions.length === 0 || analyzed.length > 0) return
     const key = sessionCacheKey(decisions)
@@ -686,22 +678,40 @@ function SessionTabInner() {
     setAnalyzed(enriched)
   }, [decisions]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Per-player stats from summaries
   const stats = useMemo(() => {
-    if (summaries.length === 0) return null
-    let p1Wins = 0, p2Wins = 0, ties = 0
-    let p1SoloBusts = 0, p2SoloBusts = 0, bothBusts = 0
-    let p1BustCost = 0, p2BustCost = 0
+    if (!selectedGroup || summaries.length === 0) return null
+    const players = selectedGroup
+
+    // wins = times this player scored the highest among the group
+    const wins: Record<string, number> = {}
+    const soloBusts: Record<string, number> = {}
+    const bustCost: Record<string, number> = {}
+    const allBustCount: Record<string, number> = {}
+    for (const n of players) { wins[n] = 0; soloBusts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0 }
+    let ties = 0; let allBustHands = 0
+
     for (const s of summaries) {
-      if (s.p1Points > s.p2Points) p1Wins++
-      else if (s.p2Points > s.p1Points) p2Wins++
+      const scores = players.map(p => s.points[p] ?? 0)
+      const maxScore = Math.max(...scores)
+      const winners = players.filter(p => (s.points[p] ?? 0) === maxScore)
+      if (winners.length === 1) wins[winners[0]!]++
       else ties++
-      if (s.p1Bust && s.p2Bust) { bothBusts++ }
-      else if (s.p1Bust) { p1SoloBusts++; p1BustCost += s.p1Points }
-      else if (s.p2Bust) { p2SoloBusts++; p2BustCost += s.p2Points }
+
+      const bustCount = players.filter(p => s.busts[p]).length
+      if (bustCount === players.length) {
+        allBustHands++
+        for (const p of players) allBustCount[p]++
+      } else {
+        for (const p of players) {
+          if (s.busts[p]) { soloBusts[p]++; bustCost[p] += s.points[p] ?? 0 }
+        }
+      }
     }
+
     const final = summaries.at(-1)!
-    return { total: summaries.length, p1Wins, p2Wins, ties, p1Total: final.p1Run, p2Total: final.p2Run, p1SoloBusts, p2SoloBusts, bothBusts, p1BustCost, p2BustCost }
-  }, [summaries])
+    return { players, wins, ties, soloBusts, bustCost, allBustHands, allBustCount, finalRuns: final.runs }
+  }, [selectedGroup, summaries])
 
   const runAnalysis = useCallback(async () => {
     if (decisions.length === 0) return
@@ -725,21 +735,25 @@ function SessionTabInner() {
     }
   }, [decisions])
 
-  const blunders = useMemo(() => {
-    if (!pair || analyzed.length === 0) return { p1: [] as AnalyzedDecision[], p2: [] as AnalyzedDecision[] }
-    const p1 = analyzed.filter(d => d.username === pair[0]).sort((a, b) => b.evLost - a.evLost)
-    const p2 = analyzed.filter(d => d.username === pair[1]).sort((a, b) => b.evLost - a.evLost)
-    return { p1, p2 }
-  }, [analyzed, pair])
+  const blundersByPlayer = useMemo(() => {
+    if (!selectedGroup || analyzed.length === 0) return new Map<string, AnalyzedDecision[]>()
+    const map = new Map<string, AnalyzedDecision[]>()
+    for (const p of selectedGroup) {
+      map.set(p, analyzed.filter(d => d.username === p).sort((a, b) => b.evLost - a.evLost))
+    }
+    return map
+  }, [analyzed, selectedGroup])
 
-  const evTotals = useMemo(() => {
-    if (!pair || analyzed.length === 0) return null
-    const p1Lost = analyzed.filter(d => d.username === pair[0]).reduce((s, d) => s + d.evLost, 0)
-    const p2Lost = analyzed.filter(d => d.username === pair[1]).reduce((s, d) => s + d.evLost, 0)
-    return { p1: p1Lost, p2: p2Lost }
-  }, [analyzed, pair])
+  const evTotalsByPlayer = useMemo(() => {
+    if (!selectedGroup || analyzed.length === 0) return null
+    const map: Record<string, number> = {}
+    for (const d of analyzed) {
+      map[d.username] = (map[d.username] ?? 0) + d.evLost
+    }
+    return map
+  }, [analyzed, selectedGroup])
 
-  // ── No file loaded ────────────────────────────────────────────────────────
+  // ── No file ───────────────────────────────────────────────────────────────
 
   if (!rawData) {
     return (
@@ -758,23 +772,27 @@ function SessionTabInner() {
     )
   }
 
-  // ── Pair selector ─────────────────────────────────────────────────────────
+  // ── Group selector ────────────────────────────────────────────────────────
 
-  if (!pair) {
+  if (!selectedGroup) {
     return (
       <div className="space-y-4 py-8">
-        <p className="text-gray-400 text-sm text-center">Select a head-to-head matchup to analyse:</p>
+        <p className="text-gray-400 text-sm text-center">Select a game group to analyse:</p>
         <div className="flex flex-col gap-2 max-w-sm mx-auto">
-          {pairs.map(p => (
-            <button key={`${p.p1}|${p.p2}`} onClick={() => setPair([p.p1, p.p2])}
+          {groups.map(g => (
+            <button key={g.players.join('|')} onClick={() => setSelectedGroup(g.players)}
               className="px-4 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 text-left transition-colors">
-              <span className="text-gray-200 font-medium">{p.p1} vs {p.p2}</span>
-              <span className="ml-2 text-gray-500 text-sm">{p.count} games</span>
+              <span className="text-gray-200 font-medium">
+                {g.players.map((p, i) => (
+                  <span key={p} className={pc(i).text}>{i > 0 ? <span className="text-gray-500 mx-1">vs</span> : null}{p}</span>
+                ))}
+              </span>
+              <span className="ml-2 text-gray-500 text-sm">{g.count} game{g.count !== 1 ? 's' : ''}</span>
             </button>
           ))}
         </div>
         <div className="text-center">
-          <button onClick={() => { setRawData(null); setPair(null) }} className="text-gray-600 hover:text-gray-400 text-xs">
+          <button onClick={() => { setRawData(null); setSelectedGroup(null) }} className="text-gray-600 hover:text-gray-400 text-xs">
             Load different file
           </button>
         </div>
@@ -784,7 +802,7 @@ function SessionTabInner() {
 
   // ── Full analysis ─────────────────────────────────────────────────────────
 
-  const [p1, p2] = pair
+  const players = selectedGroup
 
   return (
     <div className="space-y-6">
@@ -792,9 +810,12 @@ function SessionTabInner() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-gray-100 font-semibold text-sm">
-            <span className="text-indigo-400">{p1}</span>
-            <span className="text-gray-500 mx-2">vs</span>
-            <span className="text-amber-400">{p2}</span>
+            {players.map((p, i) => (
+              <span key={p}>
+                {i > 0 && <span className="text-gray-500 mx-2">vs</span>}
+                <span className={pc(i).text}>{p}</span>
+              </span>
+            ))}
           </h2>
           {summaries.length > 0 && (
             <p className="text-gray-500 text-xs mt-0.5">
@@ -805,58 +826,55 @@ function SessionTabInner() {
             </p>
           )}
         </div>
-        <button onClick={() => { setPair(null); setAnalyzed([]) }} className="text-gray-600 hover:text-gray-400 text-xs">
+        <button onClick={() => { setSelectedGroup(null); setAnalyzed([]) }} className="text-gray-600 hover:text-gray-400 text-xs">
           ← Change
         </button>
       </div>
 
-      {/* Summary stats */}
+      {/* Summary stats — one card per player */}
       {stats && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <StatCard label={`${p1} record`}
-            value={`${stats.p1Wins}W / ${stats.p2Wins}L`}
-            sub={stats.ties > 0 ? `${stats.ties} ties` : undefined}
-            color="text-indigo-400" />
-          <StatCard label={`${p1} total`}
-            value={`${stats.p1Total > 0 ? '+' : ''}${stats.p1Total}`}
-            sub={`${p2}: ${stats.p2Total > 0 ? '+' : ''}${stats.p2Total}`}
-            color={stats.p1Total >= 0 ? 'text-emerald-400' : 'text-red-400'} />
-          <StatCard label={`${p1} busts`}
-            value={stats.p1SoloBusts}
-            sub={`cost: ${stats.p1BustCost} pts`}
-            color={stats.p1SoloBusts > 0 ? 'text-red-400' : 'text-gray-400'} />
-          <StatCard label={`${p2} busts`}
-            value={stats.p2SoloBusts}
-            sub={`cost: ${stats.p2BustCost} pts`}
-            color={stats.p2SoloBusts > 0 ? 'text-amber-400' : 'text-gray-400'} />
+        <div className={`grid gap-2 grid-cols-2 ${players.length === 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-4'}`}>
+          {players.map((p, pi) => {
+            const run = stats.finalRuns[p] ?? 0
+            return (
+              <StatCard key={p}
+                label={`${p} total`}
+                value={`${run > 0 ? '+' : ''}${run}`}
+                sub={`${stats.wins[p] ?? 0}W · ${stats.ties} ties · ${stats.soloBusts[p] ?? 0} busts`}
+                color={run >= 0 ? pc(pi).text : 'text-red-400'} />
+            )
+          })}
+          {players.length === 2 && (
+            <StatCard
+              label="record"
+              value={`${stats.wins[players[0]!] ?? 0}W / ${stats.wins[players[1]!] ?? 0}L`}
+              sub={stats.ties > 0 ? `${stats.ties} ties` : undefined}
+              color={pc(0).text} />
+          )}
         </div>
       )}
 
       {/* Bust context */}
-      {stats && (stats.p1SoloBusts > 0 || stats.p2SoloBusts > 0) && (
+      {stats && players.some(p => (stats.soloBusts[p] ?? 0) > 0) && (
         <div className="bg-gray-900/60 rounded-lg px-4 py-3 text-xs text-gray-400 space-y-1">
-          {stats.p1SoloBusts > 0 && (
-            <p>
-              <span className="text-indigo-400">{p1}</span> fouled {stats.p1SoloBusts}× (direct cost{' '}
-              <span className="text-red-400">{stats.p1BustCost} pts</span>). Without those hands{' '}
-              {p1} would be at{' '}
-              <span className={stats.p1Total - stats.p1BustCost >= 0 ? 'text-emerald-400' : 'text-gray-300'}>
-                {stats.p1Total - stats.p1BustCost > 0 ? '+' : ''}{stats.p1Total - stats.p1BustCost}
-              </span>.
-            </p>
-          )}
-          {stats.p2SoloBusts > 0 && (
-            <p>
-              <span className="text-amber-400">{p2}</span> fouled {stats.p2SoloBusts}× (direct cost{' '}
-              <span className="text-red-400">{stats.p2BustCost} pts</span>). Without those hands{' '}
-              {p2} would be at{' '}
-              <span className={stats.p2Total - stats.p2BustCost >= 0 ? 'text-emerald-400' : 'text-gray-300'}>
-                {stats.p2Total - stats.p2BustCost > 0 ? '+' : ''}{stats.p2Total - stats.p2BustCost}
-              </span>.
-            </p>
-          )}
-          {stats.bothBusts > 0 && (
-            <p className="text-gray-600">{stats.bothBusts} hand(s) where both fouled — no points either way.</p>
+          {players.map((p, pi) => {
+            const n = stats.soloBusts[p] ?? 0
+            if (n === 0) return null
+            const cost = stats.bustCost[p] ?? 0
+            const run = stats.finalRuns[p] ?? 0
+            return (
+              <p key={p}>
+                <span className={pc(pi).text}>{p}</span> fouled {n}× (direct cost{' '}
+                <span className="text-red-400">{cost} pts</span>). Without those hands{' '}
+                {p} would be at{' '}
+                <span className={run - cost >= 0 ? 'text-emerald-400' : 'text-gray-300'}>
+                  {run - cost > 0 ? '+' : ''}{run - cost}
+                </span>.
+              </p>
+            )
+          })}
+          {stats.allBustHands > 0 && (
+            <p className="text-gray-600">{stats.allBustHands} hand(s) where all players fouled — no points either way.</p>
           )}
         </div>
       )}
@@ -864,11 +882,9 @@ function SessionTabInner() {
       {/* Running chart */}
       {summaries.length > 0 && (
         <div className="bg-gray-900 rounded-lg p-3">
-          <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-2">Running total ({p2} perspective)</p>
-          <RunningChart summaries={summaries} p1={p1} p2={p2} />
-          <p className="text-[10px] text-gray-600 mt-1">
-            Red dot = {p1} bust · Amber dot = {p2} bust · Purple = both bust
-          </p>
+          <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-2">Running totals</p>
+          <RunningChart summaries={summaries} players={players} />
+          <p className="text-[10px] text-gray-600 mt-1">Solid dots = regular hands · filled dot = bust</p>
         </div>
       )}
 
@@ -877,20 +893,14 @@ function SessionTabInner() {
         <div className="flex items-center justify-between">
           <h3 className="text-gray-300 text-sm font-medium">EV Analysis</h3>
           {analyzed.length === 0 && !noModel && (
-            <button
-              onClick={runAnalysis}
-              disabled={analyzing || decisions.length === 0}
-              className="px-3 py-1 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
-            >
+            <button onClick={runAnalysis} disabled={analyzing || decisions.length === 0}
+              className="px-3 py-1 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white transition-colors">
               {analyzing ? `Analysing ${decisions.length} positions…` : `Run Analysis (${decisions.length} decisions)`}
             </button>
           )}
           {analyzed.length > 0 && (
-            <button
-              onClick={runAnalysis}
-              disabled={analyzing}
-              className="px-3 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 transition-colors"
-            >
+            <button onClick={runAnalysis} disabled={analyzing}
+              className="px-3 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 transition-colors">
               {analyzing ? 'Reanalysing…' : 'Rerun'}
             </button>
           )}
@@ -898,61 +908,59 @@ function SessionTabInner() {
 
         {noModel && (
           <div className="flex items-center justify-between bg-amber-900/20 rounded px-3 py-2">
-            <p className="text-amber-400 text-xs">
-              Model unavailable at /models/policy.bin — training may still be in progress.
-            </p>
+            <p className="text-amber-400 text-xs">Model unavailable at /models/policy.bin — training may still be in progress.</p>
             <button onClick={runAnalysis} className="ml-3 shrink-0 px-2 py-1 text-xs rounded bg-amber-800/40 hover:bg-amber-700/40 text-amber-300 transition-colors">
               Retry
             </button>
           </div>
         )}
 
-        {evTotals && (
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-gray-900 rounded-lg p-3">
-              <p className="text-[10px] text-gray-500 uppercase tracking-wider">{p1} EV lost</p>
-              <p className="text-xl font-bold text-red-400">-{evTotals.p1.toFixed(1)}</p>
-              <p className="text-xs text-gray-600">avg {(evTotals.p1 / (blunders.p1.length || 1)).toFixed(2)}/decision</p>
-            </div>
-            <div className="bg-gray-900 rounded-lg p-3">
-              <p className="text-[10px] text-gray-500 uppercase tracking-wider">{p2} EV lost</p>
-              <p className="text-xl font-bold text-red-400">-{evTotals.p2.toFixed(1)}</p>
-              <p className="text-xs text-gray-600">avg {(evTotals.p2 / (blunders.p2.length || 1)).toFixed(2)}/decision</p>
-            </div>
+        {evTotalsByPlayer && (
+          <div className={`grid gap-2 ${players.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+            {players.map((p, pi) => {
+              const lost = evTotalsByPlayer[p] ?? 0
+              const decCount = blundersByPlayer.get(p)?.length ?? 0
+              return (
+                <div key={p} className="bg-gray-900 rounded-lg p-3">
+                  <p className={`text-[10px] uppercase tracking-wider ${pc(pi).text}`}>{p} EV lost</p>
+                  <p className="text-xl font-bold text-red-400">-{lost.toFixed(1)}</p>
+                  <p className="text-xs text-gray-600">avg {(lost / (decCount || 1)).toFixed(2)}/decision</p>
+                </div>
+              )
+            })}
           </div>
         )}
 
         {analyzed.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <p className="text-indigo-400 text-xs font-medium uppercase tracking-wider">{p1} — top mistakes</p>
-              {blunders.p1.slice(0, 5).map((d, i) => (
-                <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
-              ))}
-            </div>
-            <div className="space-y-2">
-              <p className="text-amber-400 text-xs font-medium uppercase tracking-wider">{p2} — top mistakes</p>
-              {blunders.p2.slice(0, 5).map((d, i) => (
-                <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
-              ))}
-            </div>
+          <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+            {players.map((p, pi) => {
+              const blist = blundersByPlayer.get(p) ?? []
+              return (
+                <div key={p} className="space-y-2">
+                  <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — top mistakes</p>
+                  {blist.slice(0, 5).map((d, i) => (
+                    <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
+                  ))}
+                </div>
+              )
+            })}
           </div>
         )}
 
         {analyzed.length > 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <p className="text-emerald-400 text-xs font-medium uppercase tracking-wider">{p1} — best plays</p>
-              {[...blunders.p1].sort((a, b) => a.evLost - b.evLost).slice(0, 3).map((d, i) => (
-                <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
-              ))}
-            </div>
-            <div className="space-y-2">
-              <p className="text-emerald-400 text-xs font-medium uppercase tracking-wider">{p2} — best plays</p>
-              {[...blunders.p2].sort((a, b) => a.evLost - b.evLost).slice(0, 3).map((d, i) => (
-                <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
-              ))}
-            </div>
+          <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+            {players.map((p) => {
+              const blist = blundersByPlayer.get(p) ?? []
+              const best = [...blist].sort((a, b) => a.evLost - b.evLost).slice(0, 3)
+              return (
+                <div key={p} className="space-y-2">
+                  <p className="text-emerald-400 text-xs font-medium uppercase tracking-wider">{p} — best plays</p>
+                  {best.map((d, i) => (
+                    <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
+                  ))}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
@@ -961,14 +969,14 @@ function SessionTabInner() {
         <p className="text-red-400 text-xs bg-red-900/20 rounded px-3 py-2">Parse error: {parseError}</p>
       )}
 
-      {/* Game log — rows are clickable to drill into per-street hand replay */}
+      {/* Game log */}
       {summaries.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <h3 className="text-gray-300 text-sm font-medium">Game Log</h3>
             <span className="text-gray-600 text-xs">· click a row to see play-by-play</span>
           </div>
-          <GameLogTable summaries={summaries} p1={p1} p2={p2} analyzed={analyzed} decisions={decisions} />
+          <GameLogTable summaries={summaries} players={players} analyzed={analyzed} decisions={decisions} />
         </div>
       )}
     </div>
