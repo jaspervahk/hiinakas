@@ -2,9 +2,12 @@ import type { InfoState, MCOptions, ScoredPlacement } from '../engine/mc'
 import type { Placement } from '../engine/placement'
 import type { WorkerRequest, WorkerResponse } from './types'
 
-// Model served via Firebase Hosting (same origin as the app — no CORS, no billing needed).
-// Training deploys the weights here via `firebase deploy --only hosting`.
-const MODEL_URL = '/models/policy.bin'
+// Available model variants served via Firebase Hosting.
+export const MODEL_URLS = {
+  v2: '/models/policy.bin',      // 525-dim, discard-aware (current CI output)
+  v1: '/models/policy_473.bin',  // 473-dim, no discards (legacy, well-trained)
+} as const
+export type ModelVariant = keyof typeof MODEL_URLS
 
 let nextId = 0
 // Cached copy of model weights so we can reload after worker restart.
@@ -183,14 +186,14 @@ export class WorkerClient {
     }
   }
 
-  // Fetch model from Firebase Hosting and load it into the worker.
-  // Called once on app startup. Silently no-ops if the model file doesn't exist yet.
-  async loadModel(): Promise<boolean> {
+  // Fetch a model from Firebase Hosting and load it into the worker.
+  // url defaults to the current v2 model. Returns false if the file is missing
+  // or the worker rejects the weights (dim mismatch with unsupported architecture).
+  async loadModel(url: string = MODEL_URLS.v2): Promise<boolean> {
     try {
-      const resp = await fetch(MODEL_URL)
+      const resp = await fetch(url)
       if (!resp.ok) return false
       const buf = await resp.arrayBuffer()
-      // Cache a copy before transferring ownership to the worker.
       cachedModelBuf = buf.slice(0)
       const id = makeId()
       return new Promise<boolean>((resolve) => {

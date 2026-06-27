@@ -110,13 +110,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     } else if (msg.type === 'LOAD_MODEL') {
       try {
         const weights = parseMLPWeights(msg.payload)
-        if (weights.inputDim !== ENCODE_DIM) {
-          throw new Error(`Model input dim ${weights.inputDim} ≠ expected ${ENCODE_DIM} — needs retraining`)
+        // Accept 525-dim (current) and 473-dim (legacy, no discard features).
+        // nnValue() handles feature extraction for both via getFeatures().
+        if (weights.inputDim !== ENCODE_DIM && weights.inputDim !== 473) {
+          throw new Error(`Unsupported model dim ${weights.inputDim} (expected ${ENCODE_DIM} or 473)`)
         }
         loadedWeights = weights
-        // Rollouts intentionally keep using heuristic — NN forward passes inside rollouts
-        // are ~100x slower. The NN is only used for direct V(next_state) evaluation above.
-        const resp: WorkerResponse = { id: msg.id, type: 'MODEL_LOADED', payload: { ok: true } }
+        const resp: WorkerResponse = { id: msg.id, type: 'MODEL_LOADED', payload: { ok: true, inputDim: weights.inputDim } }
         self.postMessage(resp)
       } catch (e) {
         const resp: WorkerResponse = {

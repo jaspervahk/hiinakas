@@ -15,7 +15,7 @@ import {
   type DecisionPoint,
   type GameSummary,
 } from '../game/sessionParser'
-import { workerClient } from '../worker/client'
+import { workerClient, MODEL_URLS, type ModelVariant } from '../worker/client'
 
 // ── Error boundary ────────────────────────────────────────────────────────────
 
@@ -268,9 +268,9 @@ interface CachedDecision {
   topCandidates: Array<{ placement: Placement; ev: number }>
 }
 
-function sessionCacheKey(decisions: DecisionPoint[]): string {
+function sessionCacheKey(decisions: DecisionPoint[], variant: ModelVariant): string {
   if (decisions.length === 0) return ''
-  return `session_ev_${CACHE_VERSION}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
+  return `session_ev_${CACHE_VERSION}:${variant}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
 }
 
 function saveToCache(key: string, analyzed: AnalyzedDecision[]): void {
@@ -623,10 +623,11 @@ function SessionTabInner() {
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzed, setAnalyzed] = useState<AnalyzedDecision[]>([])
   const [noModel, setNoModel] = useState(false)
+  const [modelVariant, setModelVariant] = useState<ModelVariant>('v2')
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleFile = useCallback((file: File) => {
-    setError(''); setAnalyzed([]); setNoModel(false); setSelectedGroup(null)
+    setError(''); setAnalyzed([]); setNoModel(false); setSelectedGroup(null); setModelVariant('v2')
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -667,7 +668,7 @@ function SessionTabInner() {
   // Restore from cache, enriching boards from freshly-parsed decisions
   useEffect(() => {
     if (decisions.length === 0 || analyzed.length > 0) return
-    const key = sessionCacheKey(decisions)
+    const key = sessionCacheKey(decisions, modelVariant)
     const cached = key ? loadFromCache(key) : null
     if (!cached || cached.length === 0) return
     const enriched = cached.map(a => {
@@ -717,10 +718,11 @@ function SessionTabInner() {
     if (decisions.length === 0) return
     setAnalyzing(true); setNoModel(false)
     try {
+      const url = MODEL_URLS[modelVariant]
       const positions = decisions.map(d => ({ id: d.id, state: d.infoState }))
       let results = await workerClient.analyzePositions(positions)
       if (results.length > 0 && !results[0]!.hasModel) {
-        const loaded = await workerClient.loadModel()
+        const loaded = await workerClient.loadModel(url)
         if (!loaded) { setNoModel(true); return }
         results = await workerClient.analyzePositions(positions)
         if (results.length > 0 && !results[0]!.hasModel) { setNoModel(true); return }
@@ -728,12 +730,12 @@ function SessionTabInner() {
       const map = new Map(results.map(r => [r.id, r.candidates]))
       const built = buildAnalyzed(decisions, map)
       setAnalyzed(built)
-      const key = sessionCacheKey(decisions)
+      const key = sessionCacheKey(decisions, modelVariant)
       if (key) saveToCache(key, built)
     } finally {
       setAnalyzing(false)
     }
-  }, [decisions])
+  }, [decisions, modelVariant])
 
   const blundersByPlayer = useMemo(() => {
     if (!selectedGroup || analyzed.length === 0) return new Map<string, AnalyzedDecision[]>()
@@ -892,18 +894,37 @@ function SessionTabInner() {
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-gray-300 text-sm font-medium">EV Analysis</h3>
-          {analyzed.length === 0 && !noModel && (
-            <button onClick={runAnalysis} disabled={analyzing || decisions.length === 0}
-              className="px-3 py-1 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white transition-colors">
-              {analyzing ? `Analysing ${decisions.length} positions…` : `Run Analysis (${decisions.length} decisions)`}
-            </button>
-          )}
-          {analyzed.length > 0 && (
-            <button onClick={runAnalysis} disabled={analyzing}
-              className="px-3 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 transition-colors">
-              {analyzing ? 'Reanalysing…' : 'Rerun'}
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {/* Model selector */}
+            <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
+              <button
+                onClick={() => { setModelVariant('v2'); setAnalyzed([]); setNoModel(false) }}
+                className={`px-2 py-1 transition-colors ${modelVariant === 'v2' ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                title="525-dim · discard-aware · freshly started"
+              >
+                v2 (525)
+              </button>
+              <button
+                onClick={() => { setModelVariant('v1'); setAnalyzed([]); setNoModel(false) }}
+                className={`px-2 py-1 transition-colors ${modelVariant === 'v1' ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                title="473-dim · no discard features · 41.8M games trained"
+              >
+                v1 (473)
+              </button>
+            </div>
+            {(analyzed.length === 0 && !noModel) && (
+              <button onClick={runAnalysis} disabled={analyzing || decisions.length === 0}
+                className="px-3 py-1 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white transition-colors">
+                {analyzing ? `Analysing ${decisions.length} positions…` : `Run Analysis (${decisions.length})`}
+              </button>
+            )}
+            {analyzed.length > 0 && (
+              <button onClick={runAnalysis} disabled={analyzing}
+                className="px-3 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 transition-colors">
+                {analyzing ? 'Reanalysing…' : 'Rerun'}
+              </button>
+            )}
+          </div>
         </div>
 
         {noModel && (

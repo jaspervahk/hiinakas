@@ -68,7 +68,7 @@ export interface WorkerResponseError {
 export interface WorkerResponseModelLoaded {
   id: string
   type: 'MODEL_LOADED'
-  payload: { ok: true } | { ok: false; error: string }
+  payload: { ok: true; inputDim?: number } | { ok: false; error: string }
 }
 
 export interface WorkerResponseAnalysisDone {
