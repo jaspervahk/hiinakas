@@ -19,7 +19,9 @@ import { runGame, heuristicPolicy } from '../src/engine/simulate'
 import type { SimPolicy } from '../src/engine/simulate'
 import { ENCODE_DIM } from '../src/engine/encode'
 import { parseMLPWeights } from '../src/engine/mlpInference'
+import type { MLPWeights } from '../src/engine/mlpInference'
 import { nnPickPlacement } from '../src/engine/nnPolicy'
+import { mctsPickPlacement } from '../src/engine/mcts'
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -34,6 +36,9 @@ const OUT_PATH     = getArg('out', 'data/train.bin')
 const SEED         = parseInt(getArg('seed', String(Date.now() & 0x7fffffff)), 10)
 const PLAYER_COUNT = parseInt(getArg('players', '2'), 10) as 2 | 3
 const MODEL_PATH   = getArg('model', 'models/policy.bin')
+// MCTS simulations per decision (0 = disabled, use depth-1 NN).
+// 30-50 gives meaningful improvement over depth-1 with ~5× self-play cost.
+const MCTS_SIMS    = parseInt(getArg('mcts-sims', '0'), 10)
 
 // ── Seeded RNG ────────────────────────────────────────────────────────────────
 
@@ -109,24 +114,40 @@ console.log(`Self-play: ${NUM_GAMES} games × ${PLAYER_COUNT} players → ${OUT_
 console.log(`Feature dim: ${ENCODE_DIM}, seed: ${SEED}`)
 
 // Load NN policy if a trained model is available; otherwise fall back to heuristic.
-let policy: SimPolicy = heuristicPolicy
+let loadedWeights: MLPWeights | null = null
+let basePolicy: SimPolicy = heuristicPolicy
 if (fs.existsSync(MODEL_PATH)) {
   try {
     const buf = fs.readFileSync(MODEL_PATH)
-    const weights = parseMLPWeights(buf.buffer as ArrayBuffer)
-    policy = (info) => nnPickPlacement(weights, info.board, info.hand, info.street, info.revealedOpponentBoards)
-    console.log(`Policy: NN (${MODEL_PATH})`)
+    loadedWeights = parseMLPWeights(buf.buffer as ArrayBuffer)
+    basePolicy = (info) => nnPickPlacement(loadedWeights!, info.board, info.hand, info.street, info.revealedOpponentBoards)
+    const policyName = MCTS_SIMS > 0 ? `MCTS depth-2 (${MCTS_SIMS} sims)` : 'NN depth-1'
+    console.log(`Policy: ${policyName}  (${MODEL_PATH})`)
   } catch (e) {
     console.log(`Warning: model at ${MODEL_PATH} is invalid (${e instanceof Error ? e.message : e}) — using heuristic`)
   }
 } else {
   console.log('Policy: heuristic (no model found at ' + MODEL_PATH + ')')
+  if (MCTS_SIMS > 0) console.log('Note: MCTS requires a model — falling back to heuristic')
 }
 
 const t0 = Date.now()
 
 for (let g = 0; g < NUM_GAMES; g++) {
   const gameSeed = (rng() * 0x7fffffff) | 0
+
+  // When MCTS is enabled, create a per-game policy closure capturing a fresh RNG.
+  // The RNG is seeded independently from the deck so that MCTS search decisions
+  // are reproducible given the same SEED argument but vary across games.
+  const policy: SimPolicy = (MCTS_SIMS > 0 && loadedWeights)
+    ? (() => {
+        const mctsRng = mulberry32((gameSeed ^ 0xA5A5A5A5) >>> 0)
+        const w = loadedWeights!
+        return (info: Parameters<SimPolicy>[0]) =>
+          mctsPickPlacement(info, w, { nSims: MCTS_SIMS, maxDepth: 2, nnOpponents: false }, mctsRng)
+      })()
+    : basePolicy
+
   const { samples } = runGame(PLAYER_COUNT, gameSeed, policy)
   for (const s of samples) {
     writeSample(s.features, s.outcome)

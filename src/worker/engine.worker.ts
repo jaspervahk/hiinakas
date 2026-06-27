@@ -6,9 +6,11 @@ import type { InfoState, ScoredPlacement } from '../engine/mc'
 import type { WorkerRequest, WorkerResponse } from './types'
 import { parseMLPWeights } from '../engine/mlpInference'
 import type { MLPWeights } from '../engine/mlpInference'
-import { nnPickPlacement, nnValue } from '../engine/nnPolicy'
+import { nnValue } from '../engine/nnPolicy'
 import { applyPlacement } from '../engine/placement'
 import { ENCODE_DIM } from '../engine/encode'
+import { mctsPickPlacement, mctsScoredPlacements } from '../engine/mcts'
+import type { MCTSOptions } from '../engine/mcts'
 
 // Seeded RNG (mulberry32) — reproduced here to avoid circular import.
 function makeRNG(seed: number): () => number {
@@ -25,81 +27,68 @@ function makeRNG(seed: number): () => number {
 // Module-level weights reference.
 let loadedWeights: MLPWeights | null = null
 
-// Evaluate all legal placements instantly using V(next_state).
-// One forward pass per candidate — no MC rollouts, no combinatorial blowup.
-// Returns results pre-sorted best-first so the UI can display immediately.
-function evalCandidatesNN(weights: MLPWeights, state: InfoState, totalRollouts: number): ScoredPlacement[] {
+// MCTS config for the live coach (GET_EV). Fewer sims for responsiveness.
+const COACH_MCTS_OPTS: MCTSOptions = { nSims: 100, maxDepth: 2, nnOpponents: false }
+// MCTS config for session analysis — more sims since the user waits explicitly.
+const ANALYSIS_MCTS_OPTS: MCTSOptions = { nSims: 200, maxDepth: 2, nnOpponents: false }
+// MCTS config for bot moves.
+const BOT_MCTS_OPTS: MCTSOptions = { nSims: 50, maxDepth: 2, nnOpponents: false }
+
+// Depth-1 NN evaluation of all legal placements. Used as the instant baseline
+// before MCTS results are ready (keeps the "best so far" UX snappy).
+function evalCandidatesNN(weights: MLPWeights, state: InfoState): ScoredPlacement[] {
   const candidates = legalPlacements(state.board, state.hand, state.street)
   const priorDiscards = state.discards ?? []
   return candidates.map(placement => {
     const boardAfter = applyPlacement(state.board, placement)
     const allDiscards = placement.discard ? [...priorDiscards, placement.discard] : priorDiscards
     const ev = nnValue(weights, boardAfter, state.street, state.revealedOpponentBoards, allDiscards) * weights.outputScale
-    return { placement, ev, variance: 0, n: totalRollouts }
-  })
+    return { placement, ev, variance: 0, n: 0 }
+  }).sort((a, b) => b.ev - a.ev)
 }
-
-// Number of top candidates (by NN ranking) to refine with MC rollouts.
-const MC_REFINE_TOP_K = 15
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data
   try {
     if (msg.type === 'GET_EV') {
       const { state, totalRollouts, batchSize, seed } = msg.payload
+      const rng = makeRNG(seed)
 
       if (loadedWeights) {
-        // Step 1: instant NN pass — emit all candidates immediately with n=0.
-        const nnResults = evalCandidatesNN(loadedWeights, state, 0)
+        // Step 1: instant depth-1 NN pass so the UI has something to show immediately.
+        const nnResults = evalCandidatesNN(loadedWeights, state)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: nnResults } as WorkerResponse)
 
-        // Step 2: refine the top K candidates with MC rollouts.
-        // Pruning from ~232 to 15 makes each MC batch ~15× faster.
-        const topK = Math.min(MC_REFINE_TOP_K, nnResults.length)
-        const topCandidates = [...nnResults]
-          .sort((a, b) => b.ev - a.ev)
-          .slice(0, topK)
-          .map(r => r.placement)
-
-        const rng = makeRNG(seed)
-        let lastResults: typeof nnResults = nnResults
-
-        for (const mcResults of runMC(state, { totalRollouts, batchSize }, rng, topCandidates)) {
-          // Merge: MC-refined estimates for top K, NN estimates for the rest.
-          // Placement objects are the same references as in nnResults, so Map lookup is exact.
-          const refined = new Map(mcResults.map(r => [r.placement, r]))
-          const merged = nnResults.map(nr => refined.get(nr.placement) ?? nr)
-          lastResults = merged
-          self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: merged } as WorkerResponse)
-        }
-
-        self.postMessage({ id: msg.id, type: 'EV_DONE', payload: lastResults } as WorkerResponse)
+        // Step 2: MCTS refinement — depth-2 search averaged over sampled worlds.
+        const mctsResults = mctsScoredPlacements(state, loadedWeights, COACH_MCTS_OPTS, rng)
+        self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: mctsResults } as WorkerResponse)
+        self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: mctsResults } as WorkerResponse)
       } else {
-        // No NN: fall back to MC with heuristic rollouts across all candidates.
-        const rng = makeRNG(seed)
+        // No model loaded: fall back to MC with heuristic rollouts.
         let lastResults = null
-        for (const results of runMC(state, { totalRollouts, batchSize }, rng)) {
+        const fallbackRng = makeRNG(seed)
+        for (const results of runMC(state, { totalRollouts, batchSize }, fallbackRng)) {
           lastResults = results
-          const progress: WorkerResponse = { id: msg.id, type: 'EV_PROGRESS', payload: results }
-          self.postMessage(progress)
+          self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
         }
-        const done: WorkerResponse = { id: msg.id, type: 'EV_DONE', payload: lastResults ?? [] }
-        self.postMessage(done)
+        self.postMessage({ id: msg.id, type: 'EV_DONE', payload: lastResults ?? [] } as WorkerResponse)
       }
 
     } else if (msg.type === 'GET_BOT_MOVE') {
       const { state, rollouts, seed } = msg.payload
-      // NN loaded: use V(next_state) directly — one forward pass per candidate, instant.
-      // Falls back to MC with heuristic when no model is loaded.
       const placement = loadedWeights
-        ? nnPickPlacement(loadedWeights, state.board, state.hand, state.street, state.revealedOpponentBoards, state.discards)
+        ? mctsPickPlacement(state, loadedWeights, BOT_MCTS_OPTS, makeRNG(seed))
         : getBotMove(state, rollouts, makeRNG(seed))
-      const resp: WorkerResponse = { id: msg.id, type: 'BOT_MOVE', payload: placement }
-      self.postMessage(resp)
+      self.postMessage({ id: msg.id, type: 'BOT_MOVE', payload: placement } as WorkerResponse)
 
     } else if (msg.type === 'ANALYZE_POSITIONS') {
       const { positions, rollouts = 0, seed = 0 } = msg.payload
       const total = positions.length
+      // `rollouts` is kept in the message signature for back-compat but the
+      // analysis now always uses MCTS when a model is loaded.
+      const opts: MCTSOptions = rollouts > 0
+        ? { ...ANALYSIS_MCTS_OPTS, nSims: Math.max(rollouts, ANALYSIS_MCTS_OPTS.nSims) }
+        : ANALYSIS_MCTS_OPTS
       const allResults: Array<{ id: string; candidates: ScoredPlacement[]; hasModel: boolean }> = []
 
       for (let i = 0; i < total; i++) {
@@ -107,34 +96,15 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         if (!loadedWeights) {
           const item = { id, candidates: [], hasModel: false }
           allResults.push(item)
-          if (rollouts > 0) {
-            self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
-          }
+          self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
           continue
         }
 
-        let candidates: ScoredPlacement[]
-        if (rollouts > 0) {
-          // NN+MC hybrid: same pipeline as the live coach.
-          const nnResults = evalCandidatesNN(loadedWeights, state, 0)
-          const topK = Math.min(MC_REFINE_TOP_K, nnResults.length)
-          const topCandidates = [...nnResults].sort((a, b) => b.ev - a.ev).slice(0, topK).map(r => r.placement)
-          const rng = makeRNG((seed + i * 1000003) >>> 0)
-          let lastMC: ScoredPlacement[] = []
-          for (const mc of runMC(state, { totalRollouts: rollouts, batchSize: rollouts }, rng, topCandidates)) {
-            lastMC = mc
-          }
-          const refined = new Map(lastMC.map(r => [r.placement, r]))
-          candidates = nnResults.map(nr => refined.get(nr.placement) ?? nr).sort((a, b) => b.ev - a.ev)
-        } else {
-          candidates = evalCandidatesNN(loadedWeights, state, 0).sort((a, b) => b.ev - a.ev)
-        }
-
+        const rng = makeRNG((seed + i * 1000003) >>> 0)
+        const candidates = mctsScoredPlacements(state, loadedWeights, opts, rng)
         const item = { id, candidates, hasModel: true }
         allResults.push(item)
-        if (rollouts > 0) {
-          self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
-        }
+        self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
       }
 
       self.postMessage({ id: msg.id, type: 'ANALYSIS_DONE', payload: allResults } as WorkerResponse)
@@ -142,8 +112,6 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     } else if (msg.type === 'LOAD_MODEL') {
       try {
         const weights = parseMLPWeights(msg.payload)
-        // Accept 525-dim (current) and 473-dim (legacy, no discard features).
-        // nnValue() handles feature extraction for both via getFeatures().
         if (weights.inputDim !== ENCODE_DIM && weights.inputDim !== 473) {
           throw new Error(`Unsupported model dim ${weights.inputDim} (expected ${ENCODE_DIM} or 473)`)
         }

@@ -49,7 +49,7 @@ export interface ScoredPlacement {
 
 export type RNG = () => number
 
-function fisherYates<T>(arr: T[], rng: RNG): T[] {
+export function fisherYates<T>(arr: T[], rng: RNG): T[] {
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1))
@@ -62,7 +62,7 @@ function fisherYates<T>(arr: T[], rng: RNG): T[] {
 
 function cardKey(c: Card): string { return `${c.rank}${c.suit}` }
 
-function buildLiveDeck(state: InfoState): Card[] {
+export function buildLiveDeck(state: InfoState): Card[] {
   const seen = new Set<string>()
   const mark = (cards: readonly Card[]) => { for (const c of cards) seen.add(cardKey(c)) }
   mark(state.board.top)

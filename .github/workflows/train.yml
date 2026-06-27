@@ -14,8 +14,11 @@ on:
         default: '30'
 
 env:
-  GAMES: ${{ github.event.inputs.games || '5000' }}
+  # MCTS depth-2 with 30 sims is ~5× slower per decision than depth-1 NN.
+  # 1000 games × 10 decisions × 30 sims ≈ same wall-time as 5000 depth-1 games.
+  GAMES: ${{ github.event.inputs.games || '2000' }}
   EPOCHS: ${{ github.event.inputs.epochs || '30' }}
+  MCTS_SIMS: '30'
 
 jobs:
   train-and-deploy:
@@ -69,12 +72,13 @@ jobs:
               print('No model file — first run, using heuristic policy')
           EOF
 
-      - name: Self-play
+      - name: Self-play (MCTS depth-2)
         run: |
           mkdir -p data
           npx tsx scripts/selfplay.ts \
             --games "$GAMES" \
             --players 2 \
+            --mcts-sims "$MCTS_SIMS" \
             --out data/batch_${{ github.run_number }}.bin
 
       - name: Train value network
