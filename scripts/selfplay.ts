@@ -5,7 +5,7 @@
 //   npx tsx scripts/selfplay.ts [--games N] [--out path] [--seed N]
 //
 // Writes binary training data in OFCD format. Each sample encodes the board
-// state after a placement decision (473 float32 features) + the player's
+// state after a placement decision (525 float32 features) + the player's
 // final net score (1 float32 label). Run repeatedly to accumulate more data.
 //
 // Typical flow:
@@ -53,11 +53,11 @@ function mulberry32(seed: number): () => number {
 // Header (16 bytes):
 //   magic:       u8[4]  "OFCD"
 //   version:     u32 LE = 1
-//   feature_dim: u32 LE = 473
+//   feature_dim: u32 LE = 525
 //   num_samples: u32 LE  (written at end)
 //
-// Per sample (473 + 1 float32 = 1896 bytes):
-//   features: f32[473]
+// Per sample (525 + 1 float32 = 2104 bytes):
+//   features: f32[525]
 //   outcome:  f32
 
 const HEADER_BYTES = 16

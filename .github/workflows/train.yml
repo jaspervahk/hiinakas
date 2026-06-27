@@ -1,9 +1,9 @@
 name: GTO Training
 
-# Runs every 6 hours automatically, or manually from GitHub Actions tab.
+# Runs every 30 minutes automatically, or manually from GitHub Actions tab.
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       games:

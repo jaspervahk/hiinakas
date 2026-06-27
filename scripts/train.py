@@ -10,7 +10,7 @@ Usage:
     python scripts/train.py [--data data/] [--out models/policy.bin] \
         [--epochs 20] [--lr 1e-3] [--batch 512] [--hidden 256 256 128]
 
-Architecture:  473 → 256 → ReLU → 256 → ReLU → 128 → ReLU → 1 (linear)
+Architecture:  525 → 256 → ReLU → 256 → ReLU → 128 → ReLU → 1 (linear)
 Loss:          MSE on final game net score
 """
 
@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-ENCODE_DIM = 473
+ENCODE_DIM = 525
 MAGIC_DATA  = b'OFCD'
 MAGIC_MODEL = b'OFCW'
 
@@ -50,8 +50,9 @@ def load_bin_file(path: str) -> tuple[np.ndarray, np.ndarray]:
     return data[:, :feat_dim], data[:, feat_dim]
 
 
-def load_data(data_path: str) -> tuple[np.ndarray, np.ndarray]:
-    """Load all .bin files from a directory (or a single file)."""
+def load_data(data_path: str, window: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    """Load .bin files from a directory (or a single file).
+    window > 0: use only the most recent N files (sliding window for policy stability)."""
     if os.path.isdir(data_path):
         files = sorted(glob.glob(os.path.join(data_path, '*.bin')))
     else:
@@ -59,6 +60,10 @@ def load_data(data_path: str) -> tuple[np.ndarray, np.ndarray]:
 
     if not files:
         raise FileNotFoundError(f'No .bin files found in {data_path}')
+
+    if window > 0:
+        files = files[-window:]
+        print(f'  Sliding window: using last {len(files)} batches')
 
     all_x, all_y = [], []
     for f in files:
@@ -91,15 +96,16 @@ class ValueNet(nn.Module):
 
 # ── Weight export (OFCW format) ───────────────────────────────────────────────
 
-def export_weights(model: ValueNet, out_path: str, input_dim: int, hidden: list[int]) -> None:
+def export_weights(model: ValueNet, out_path: str, input_dim: int, hidden: list[int], y_scale: float) -> None:
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     layers_dims = list(zip([input_dim] + hidden, hidden + [1]))
     activations = [0] * len(hidden) + [1]  # relu × hidden, linear × output
 
     with open(out_path, 'wb') as f:
-        # Header
+        # Header (v2: adds output_scale f32 after input_dim)
         f.write(MAGIC_MODEL)
-        f.write(struct.pack('<III', 1, len(layers_dims), input_dim))
+        f.write(struct.pack('<III', 2, len(layers_dims), input_dim))
+        f.write(struct.pack('<f', y_scale))
 
         linear_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
         for lin, (in_s, out_s), act in zip(linear_layers, layers_dims, activations):
@@ -123,9 +129,9 @@ def load_ofcw_weights(path: str, model: 'ValueNet') -> None:
     if magic != MAGIC_MODEL:
         raise ValueError(f'Bad magic: {magic}')
     version, num_layers, _ = struct.unpack_from('<III', data, 4)
-    if version != 1:
+    if version not in (1, 2):
         raise ValueError(f'Unsupported version {version}')
-    off = 16
+    off = 16 + (4 if version >= 2 else 0)  # skip output_scale field in v2
     linear_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
     for lin in linear_layers:
         in_s, out_s, _ = struct.unpack_from('<III', data, off); off += 12
@@ -142,7 +148,7 @@ def train(args: argparse.Namespace) -> None:
     print(f'Device: {device}')
 
     print('Loading data…')
-    x_np, y_np = load_data(args.data)
+    x_np, y_np = load_data(args.data, window=args.window)
     print(f'Total: {len(x_np):,} samples  (label range [{y_np.min():.1f}, {y_np.max():.1f}])')
 
     # Normalise labels to roughly [-1, 1] for stable training.
@@ -208,7 +214,7 @@ def train(args: argparse.Namespace) -> None:
         marker = ' *' if val_loss < best_val else ''
         if val_loss < best_val:
             best_val = val_loss
-            export_weights(model, args.out, ENCODE_DIM, hidden)
+            export_weights(model, args.out, ENCODE_DIM, hidden, y_scale)
 
         elapsed = time.time() - t0
         print(f'Epoch {epoch:3d}/{args.epochs}  trn {trn_loss:.4f}  val {val_loss:.4f}  '
@@ -233,5 +239,7 @@ if __name__ == '__main__':
                         help='Hidden layer sizes')
     parser.add_argument('--resume', default=None,
                         help='Path to existing OFCW weights to warm-start from (iterative self-play)')
+    parser.add_argument('--window', type=int, default=0,
+                        help='Use only the last N batch files (0=all). Prevents distribution shift from old policy data.')
     args = parser.parse_args()
     train(args)

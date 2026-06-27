@@ -4,7 +4,7 @@ import {
   bonusTrigger, bonusDealCount,
   scoreTable,
 } from '../engine/index'
-import type { Card, PartialBoard, Board } from '../engine/index'
+import type { Card, PartialBoard, Board, Placement } from '../engine/index'
 import type { GameState, PendingRows, StreetLog, AppSettings } from './types'
 import { emptyPending, emptyBoard } from './types'
 
@@ -63,11 +63,14 @@ export type Action =
   | { type: 'SELECT_CARD'; card: Card }
   | { type: 'ASSIGN_TO_ROW'; row: 'top' | 'middle' | 'bottom' }
   | { type: 'REMOVE_PENDING'; row: 'top' | 'middle' | 'bottom'; index: number }
+  | { type: 'APPLY_COACH_PLACEMENT'; placement: Placement }  // apply a coach suggestion directly
   | { type: 'LOCK_IN' }
   | { type: 'ADVANCE' }          // from revealing → next street or scoring
   | { type: 'START_BONUS' }      // from scoring → bonus round (if triggered)
   | { type: 'SKIP_BONUS' }       // from scoring → bonus_scoring (no bonus needed)
   | { type: 'LOCK_BONUS_ONESHOT' }
+  | { type: 'BOT_PLACED'; placements: Placement[] }   // async MC bot results
+  | { type: 'RESTORE_SNAPSHOT'; snapshot: GameState } // undo to pre-lock state
   | { type: 'RESET' }
   | { type: 'RECORD_STREET_LOG'; log: StreetLog }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<AppSettings> }
@@ -189,6 +192,31 @@ export function gameReducer(state: GameState, action: Action): GameState {
       return { ...state, pending: newPending, humanHand: [...state.humanHand, card], selectedCard: null }
     }
 
+    case 'APPLY_COACH_PLACEMENT': {
+      if (state.phase !== 'placing') return state
+      const { placement } = action
+      // Reconstruct full hand (hand + all currently pending cards).
+      const fullHand = [
+        ...state.humanHand,
+        ...state.pending.top,
+        ...state.pending.middle,
+        ...state.pending.bottom,
+      ]
+      // Remove placed cards from the full hand; the remainder is the discard (or empty on street 0).
+      const placed = [...placement.topAdd, ...placement.middleAdd, ...placement.bottomAdd]
+      const remaining = [...fullHand]
+      for (const c of placed) {
+        const idx = remaining.findIndex(h => sameCard(h, c))
+        if (idx !== -1) remaining.splice(idx, 1)
+      }
+      return {
+        ...state,
+        pending: { top: [...placement.topAdd], middle: [...placement.middleAdd], bottom: [...placement.bottomAdd] },
+        humanHand: remaining,
+        selectedCard: null,
+      }
+    }
+
     case 'LOCK_IN': {
       if (state.phase === 'bonus_oneshot') return lockBonusOneshot(state)
       return lockNormalOrSide(state)
@@ -214,6 +242,17 @@ export function gameReducer(state: GameState, action: Action): GameState {
     case 'LOCK_BONUS_ONESHOT': {
       return lockBonusOneshot(state)
     }
+
+    case 'BOT_PLACED': {
+      if (state.phase !== 'bot_thinking') return state  // stale dispatch guard
+      const newBotBoards = state.botBoards.map((board, i) =>
+        applyPlacement(board, action.placements[i]!)
+      )
+      return { ...state, phase: 'revealing', botBoards: newBotBoards }
+    }
+
+    case 'RESTORE_SNAPSHOT':
+      return action.snapshot
 
     default:
       return state
@@ -242,19 +281,11 @@ function lockNormalOrSide(state: GameState): GameState {
 
   if (context === 'normal') {
     const newHumanBoard = applyPlacement(state.humanBoard, humanPlacement)
-
-    // Bot placements
-    const newBotBoards = state.botBoards.map((board, i) => {
-      const botHand = state.preDealt[i + 1]![street]!
-      const pl = heuristicPlacement(board, botHand, street)
-      return applyPlacement(board, pl)
-    })
-
+    // Bots compute asynchronously via MC — GamePage's useEffect dispatches BOT_PLACED.
     return {
       ...state,
-      phase: 'revealing',
+      phase: 'bot_thinking',
       humanBoard: newHumanBoard,
-      botBoards: newBotBoards,
       humanHand: [],
       pending: emptyPending(),
       selectedCard: null,

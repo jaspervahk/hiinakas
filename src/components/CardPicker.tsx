@@ -12,7 +12,12 @@ const SUIT_SYMBOLS: Record<string, string> = { s: '♠', c: '♣', h: '♥', d: 
 function sameCard(a: Card, b: Card): boolean {
   return a.rank === b.rank && a.suit === b.suit
 }
-function isRed(s: Suit): boolean { return s === 'h' || s === 'd' }
+const SUIT_COLORS: Record<string, { normal: string; selected: string }> = {
+  s: { normal: 'text-slate-300', selected: 'text-slate-100' },
+  h: { normal: 'text-red-400',   selected: 'text-red-300'   },
+  d: { normal: 'text-orange-400', selected: 'text-orange-300' },
+  c: { normal: 'text-emerald-400', selected: 'text-emerald-300' },
+}
 
 interface CardPickerProps {
   used: Card[]
@@ -26,7 +31,7 @@ export function CardPicker({ used, selected, onSelect }: CardPickerProps) {
     <div className="bg-gray-900 rounded-xl border border-gray-800 p-2">
       {SUITS_ORDER.map(suit => (
         <div key={suit} className="flex items-center gap-1 mb-1 last:mb-0">
-          <span className={`w-5 text-center text-xs ${isRed(suit) ? 'text-red-400' : 'text-slate-300'}`}>
+          <span className={`w-5 text-center text-xs ${SUIT_COLORS[suit]?.normal ?? 'text-slate-300'}`}>
             {SUIT_SYMBOLS[suit]}
           </span>
           <div className="flex gap-1 flex-wrap">
@@ -48,8 +53,8 @@ export function CardPicker({ used, selected, onSelect }: CardPickerProps) {
                     isUsed && !isSel
                       ? 'bg-gray-950 border-gray-800 text-gray-700 cursor-not-allowed'
                       : isSel
-                        ? 'bg-yellow-500/20 border-yellow-500 ring-1 ring-yellow-400 ' + (isRed(suit) ? 'text-red-300' : 'text-slate-100')
-                        : 'bg-gray-800 border-gray-700 hover:border-gray-500 ' + (isRed(suit) ? 'text-red-400' : 'text-slate-200'),
+                        ? 'bg-yellow-500/20 border-yellow-500 ring-1 ring-yellow-400 ' + (SUIT_COLORS[suit]?.selected ?? 'text-slate-100')
+                        : 'bg-gray-800 border-gray-700 hover:border-gray-500 ' + (SUIT_COLORS[suit]?.normal ?? 'text-slate-200'),
                   ].join(' ')}
                 >
                   {RANK_LABELS[rank]}

@@ -15,7 +15,6 @@ function sameCard(a: Card, b: Card): boolean {
   return a.rank === b.rank && a.suit === b.suit
 }
 
-// Compare two unordered card arrays (multisets).
 function sameUnordered(a: readonly Card[], b: readonly Card[]): boolean {
   if (a.length !== b.length) return false
   const used = new Array<boolean>(b.length).fill(false)
@@ -29,35 +28,55 @@ function sameUnordered(a: readonly Card[], b: readonly Card[]): boolean {
   return true
 }
 
+// Derive the actor's own discards from dealt history vs placed cards.
+// On streets 1..upToStreet-1, the one card dealt but not placed is the discard.
+function deriveDiscards(dealtPerStreet: Card[][], board: PartialBoard, upToStreet: number): Card[] {
+  const placed = new Set([...board.top, ...board.middle, ...board.bottom].map(c => `${c.rank}${c.suit}`))
+  const discards: Card[] = []
+  for (let s = 1; s < upToStreet; s++) {
+    const dealt = dealtPerStreet[s]
+    if (!dealt) continue
+    for (const c of dealt) {
+      if (!placed.has(`${c.rank}${c.suit}`)) {
+        discards.push(c)
+        break  // exactly 1 discard per street
+      }
+    }
+  }
+  return discards
+}
+
 function buildInfoState(state: GameState): InfoState | null {
   if (state.phase !== 'placing') return null
 
   if (state.context === 'normal') {
     const hand = state.preDealt[0]?.[state.street]
     if (!hand || hand.length === 0) return null
+    const discards = deriveDiscards(state.preDealt[0]!, state.humanBoard, state.street)
     return {
       board: state.humanBoard,
       hand,
       street: state.street,
       revealedOpponentBoards: state.botBoards,
+      discards,
     }
   }
 
-  // side context (human is in the side game ⇔ no qualifier for human)
   if (state.humanBonusQualifier !== null) return null
   const sideHand = state.sidePreDealt[0]?.[state.sideStreet]
   if (!sideHand || sideHand.length === 0) return null
-  // For side game info-set, opponents are the bots that are *also* in the side game.
-  // Qualifying bots have already revealed their bonus board (treat as revealed),
-  // non-qualifying bots reveal their side board progressively.
-  const oppBoards: PartialBoard[] = state.botBonusQualifiers.map((q, i) =>
-    q ? state.botBonusBoards[i]! : state.botSideBoards[i]!
-  )
+  // Side game uses a fresh deck — bonus-qualified opponents play a separate bonus game
+  // with their own deck. Only include other non-qualifying bots as scoring opponents.
+  const oppBoards: PartialBoard[] = state.botBonusQualifiers
+    .map((q, i) => q ? null : state.botSideBoards[i]!)
+    .filter((b): b is PartialBoard => b !== null)
+  const discards = deriveDiscards(state.sidePreDealt[0]!, state.humanSideBoard, state.sideStreet)
   return {
     board: state.humanSideBoard,
     hand: sideHand,
     street: state.sideStreet,
     revealedOpponentBoards: oppBoards,
+    discards,
   }
 }
 
@@ -82,10 +101,13 @@ function infoStateKey(s: InfoState): string {
   const oppsKey = s.revealedOpponentBoards
     .map(b => [rowKey(b.top), rowKey(b.middle), rowKey(b.bottom)].join('|'))
     .join(';')
-  return `s${s.street}|${boardKey}|${handKey}|${oppsKey}`
+  const discardKey = s.discards ? rowKey(s.discards) : ''
+  return `s${s.street}|${boardKey}|${handKey}|${oppsKey}|d${discardKey}`
 }
 
-export function useCoach(state: GameState, enabled: boolean, rollouts = 200): CoachResult {
+// `enabled` only controls the panel's visibility — computation always runs so that
+// results are ready instantly when the panel is shown, and are preserved while hidden.
+export function useCoach(state: GameState, _enabled: boolean, rollouts = 200): CoachResult {
   const [placements, setPlacements] = useState<ScoredPlacement[]>([])
   const [isComputing, setIsComputing] = useState(false)
   const [rolloutsDone, setRolloutsDone] = useState(0)
@@ -93,8 +115,8 @@ export function useCoach(state: GameState, enabled: boolean, rollouts = 200): Co
   const cancelRef = useRef<(() => void) | null>(null)
   const keyRef = useRef<string | null>(null)
 
-  // Build key from state for change detection
-  const info = enabled ? buildInfoState(state) : null
+  // Always build info regardless of enabled state so computation runs in the background.
+  const info = buildInfoState(state)
   const key = info ? infoStateKey(info) + `|r${rollouts}` : null
 
   useEffect(() => {
@@ -105,44 +127,38 @@ export function useCoach(state: GameState, enabled: boolean, rollouts = 200): Co
 
     if (!key || !info) {
       keyRef.current = null
-      // Defer to next tick so we update state without causing cascading sync renders.
-      const t = setTimeout(() => {
-        setPlacements([])
-        setIsComputing(false)
-        setRolloutsDone(0)
-      }, 0)
-      return () => clearTimeout(t)
+      setPlacements([])
+      setIsComputing(false)
+      setRolloutsDone(0)
+      return
     }
 
     keyRef.current = key
-    const startT = setTimeout(() => {
-      setPlacements([])
-      setIsComputing(true)
-      setRolloutsDone(0)
-    }, 0)
+    // Mark as computing immediately. Don't clear previous placements yet —
+    // the first onProgress will replace them, so there's no blank "loading" flash.
+    setIsComputing(true)
+    setRolloutsDone(0)
 
     const seed = (state.seed ^ (state.street * 31 + state.sideStreet * 17 + (state.context === 'side' ? 1 : 0))) | 0
     const localKey = key
 
     const onProgress = (results: ScoredPlacement[]) => {
       if (keyRef.current !== localKey) return
-      const sorted = [...results].sort((a, b) => b.ev - a.ev)
-      setPlacements(sorted)
-      const n = results[0]?.n ?? 0
-      setRolloutsDone(n)
+      setPlacements([...results].sort((a, b) => b.ev - a.ev))
+      setRolloutsDone(results[0]?.n ?? 0)
     }
     const onDone = (results: ScoredPlacement[]) => {
       if (keyRef.current !== localKey) return
-      const sorted = [...results].sort((a, b) => b.ev - a.ev)
-      setPlacements(sorted)
-      const n = results[0]?.n ?? rollouts
-      setRolloutsDone(n)
+      setPlacements([...results].sort((a, b) => b.ev - a.ev))
+      setRolloutsDone(results[0]?.n ?? rollouts)
       setIsComputing(false)
     }
 
+    // Small initial batch so first results appear almost immediately,
+    // then larger batches for efficiency.
     const cancel = workerClient.streamMC(
       info,
-      { totalRollouts: rollouts, batchSize: Math.max(5, Math.floor(rollouts / 20)) },
+      { totalRollouts: rollouts, batchSize: 10 },
       seed,
       onProgress,
       onDone,
@@ -150,7 +166,6 @@ export function useCoach(state: GameState, enabled: boolean, rollouts = 200): Co
     cancelRef.current = cancel
 
     return () => {
-      clearTimeout(startT)
       cancel()
       cancelRef.current = null
     }
@@ -159,11 +174,5 @@ export function useCoach(state: GameState, enabled: boolean, rollouts = 200): Co
 
   const matchIndex = placements.length > 0 ? findMatchIndex(placements, state.pending) : null
 
-  return {
-    placements,
-    isComputing,
-    rolloutsDone,
-    totalRollouts: rollouts,
-    matchIndex,
-  }
+  return { placements, isComputing, rolloutsDone, totalRollouts: rollouts, matchIndex }
 }

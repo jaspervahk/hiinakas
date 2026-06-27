@@ -2,10 +2,11 @@
 // Compatible with weights exported by scripts/train.py.
 //
 // Binary weight file format (little-endian):
-//   magic:      u8[4]  "OFCW"
-//   version:    u32    = 1
-//   num_layers: u32
-//   input_dim:  u32    = 473
+//   magic:        u8[4]  "OFCW"
+//   version:      u32    = 2  (v1 = original, v2 adds output_scale)
+//   num_layers:   u32
+//   input_dim:    u32    = 525
+//   output_scale: f32    (v2 only) multiply raw output to get game points
 //   Per layer:
 //     in_size:    u32
 //     out_size:   u32
@@ -24,7 +25,14 @@ export interface MLPLayer {
 export interface MLPWeights {
   layers: MLPLayer[]
   inputDim: number
+  // Multiply raw model output (≈[-1,1]) by this to get expected net score in game points.
+  // v2 models store the exact training y_scale; v1 models use the empirical estimate.
+  outputScale: number
 }
+
+// v1 models were trained with y_scale = max(|labels|) across the training window.
+// Observed range across recent batches is ~39 pts (royalties + scoop bonuses).
+const DEFAULT_OUTPUT_SCALE_V1 = 39.0
 
 export function parseMLPWeights(buffer: ArrayBuffer): MLPWeights {
   const view = new DataView(buffer)
@@ -37,10 +45,14 @@ export function parseMLPWeights(buffer: ArrayBuffer): MLPWeights {
   off += 4
 
   const version = view.getUint32(off, true); off += 4
-  if (version !== 1) throw new Error(`Unsupported version: ${version}`)
+  if (version !== 1 && version !== 2) throw new Error(`Unsupported version: ${version}`)
 
   const numLayers = view.getUint32(off, true); off += 4
   const inputDim  = view.getUint32(off, true); off += 4
+
+  const outputScale = version >= 2
+    ? view.getFloat32(off, true) + (off += 4, 0)
+    : DEFAULT_OUTPUT_SCALE_V1
 
   const layers: MLPLayer[] = []
   for (let l = 0; l < numLayers; l++) {
@@ -61,10 +73,10 @@ export function parseMLPWeights(buffer: ArrayBuffer): MLPWeights {
     })
   }
 
-  return { layers, inputDim }
+  return { layers, inputDim, outputScale }
 }
 
-// Forward pass. Returns the scalar output (expected net score).
+// Forward pass. Returns the raw scalar output (normalized, multiply by outputScale for points).
 export function mlpForward(weights: MLPWeights, input: Float32Array): number {
   let x: Float32Array = input
   for (const layer of weights.layers) {

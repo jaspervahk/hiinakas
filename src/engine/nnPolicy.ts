@@ -9,26 +9,28 @@ import type { MLPWeights } from './mlpInference'
 import { mlpForward } from './mlpInference'
 
 // Evaluate a board state (after placement) using the value network.
-// oppBoards: revealed opponent boards at the time of this decision.
+// discards: actor's own discards including the one just made on this street.
 export function nnValue(
   weights: MLPWeights,
   board: PartialBoard,
   street: number,
   oppBoards: readonly PartialBoard[],
+  discards: readonly import('./types').Card[] = [],
 ): number {
-  const features = encodeBoardState(board, street, oppBoards)
+  const features = encodeBoardState(board, street, oppBoards, discards)
   return mlpForward(weights, features)
 }
 
 // NN-guided policy: enumerate all legal placements, pick the one whose
 // resulting board state has the highest predicted value.
-// oppBoards: the visible opponent boards (for context, treated as fixed in rollout).
+// priorDiscards: actor's discards from streets before this one (current discard appended internally).
 export function nnPickPlacement(
   weights: MLPWeights,
   board: PartialBoard,
   hand: readonly import('./types').Card[],
   street: number,
   oppBoards: readonly PartialBoard[],
+  priorDiscards: readonly import('./types').Card[] = [],
 ): Placement {
   const candidates = legalPlacements(board, hand, street)
   if (candidates.length === 0) throw new Error('No legal placements')
@@ -38,7 +40,8 @@ export function nnPickPlacement(
   let bestPl = candidates[0]!
   for (const pl of candidates) {
     const boardAfter = applyPlacement(board, pl)
-    const val = nnValue(weights, boardAfter, street, oppBoards)
+    const allDiscards = pl.discard ? [...priorDiscards, pl.discard] : priorDiscards
+    const val = nnValue(weights, boardAfter, street, oppBoards, allDiscards)
     if (val > bestVal) { bestVal = val; bestPl = pl }
   }
   return bestPl

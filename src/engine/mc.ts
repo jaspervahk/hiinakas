@@ -33,6 +33,7 @@ export interface InfoState {
   readonly hand: readonly Card[]          // actor's current-street cards (not yet placed)
   readonly street: number                 // 0-4
   readonly revealedOpponentBoards: readonly PartialBoard[] // opponents' placed (revealed) cards only
+  readonly discards?: readonly Card[]     // actor's own discards from previous streets (not opponents')
 }
 
 // ── Scored placement (result of MC evaluation) ────────────────────────────
@@ -68,6 +69,7 @@ function buildLiveDeck(state: InfoState): Card[] {
   mark(state.board.middle)
   mark(state.board.bottom)
   mark(state.hand)
+  if (state.discards) mark(state.discards)
   for (const b of state.revealedOpponentBoards) {
     mark(b.top); mark(b.middle); mark(b.bottom)
   }
@@ -107,7 +109,9 @@ function rollout(
     const oppHand = shuffledLiveDeck.slice(di, di + curN)
     di += curN
     if (oppHand.length < curN) return 0 // not enough cards — degenerate rollout
-    const pl = heuristicPlacement(oppBrds[i]!, oppHand, state.street)
+    // Opponent uses the same policy as the actor for symmetric, unbiased EV estimates.
+    const visibleToOpp = [actorBrd, ...oppBrds.filter((_, j) => j !== i)]
+    const pl = pick(oppBrds[i]!, oppHand, state.street, visibleToOpp)
     oppBrds[i] = applyPlacement(oppBrds[i]!, pl)
   }
 
@@ -123,7 +127,8 @@ function rollout(
       const oppHand = shuffledLiveDeck.slice(di, di + 3)
       di += 3
       if (oppHand.length < 3) return 0
-      const pl = heuristicPlacement(oppBrds[i]!, oppHand, s)
+      const visibleToOpp = [actorBrd, ...oppBrds.filter((_, j) => j !== i)]
+      const pl = pick(oppBrds[i]!, oppHand, s, visibleToOpp)
       oppBrds[i] = applyPlacement(oppBrds[i]!, pl)
     }
   }
@@ -172,24 +177,25 @@ export function* runMC(
   state: InfoState,
   options: MCOptions,
   rng: RNG,
+  candidates?: Placement[],  // if provided, skip legalPlacements (used for pruned NN+MC hybrid)
 ): Generator<ScoredPlacement[], void, unknown> {
   const { totalRollouts, batchSize = 10 } = options
-  const candidates = legalPlacements(state.board, state.hand, state.street)
-  if (candidates.length === 0) return
+  const candidates_ = candidates ?? legalPlacements(state.board, state.hand, state.street)
+  if (candidates_.length === 0) return
 
   const liveDeck = buildLiveDeck(state)
-  const boardsAfter = candidates.map(p => applyPlacement(state.board, p))
+  const boardsAfter = candidates_.map(p => applyPlacement(state.board, p))
 
-  const sums    = new Float64Array(candidates.length)
-  const sumsSq  = new Float64Array(candidates.length)
-  const counts  = new Int32Array(candidates.length)
+  const sums    = new Float64Array(candidates_.length)
+  const sumsSq  = new Float64Array(candidates_.length)
+  const counts  = new Int32Array(candidates_.length)
 
   let done = 0
   while (done < totalRollouts) {
     const batch = Math.min(batchSize, totalRollouts - done)
     for (let r = 0; r < batch; r++) {
       const shuffled = fisherYates(liveDeck, rng)
-      for (let pi = 0; pi < candidates.length; pi++) {
+      for (let pi = 0; pi < candidates_.length; pi++) {
         const net = rollout(boardsAfter[pi]!, state, shuffled)
         sums[pi] += net
         sumsSq[pi] += net * net
@@ -198,7 +204,7 @@ export function* runMC(
     }
     done += batch
 
-    const results: ScoredPlacement[] = candidates.map((placement, pi) => {
+    const results: ScoredPlacement[] = candidates_.map((placement, pi) => {
       const n  = counts[pi]!
       const ev = n > 0 ? sums[pi]! / n : 0
       const variance = n > 1 ? sumsSq[pi]! / n - ev * ev : 0

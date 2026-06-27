@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { AuthGate } from './AuthGate'
 import GamePage from './pages/GamePage'
-import { workerClient } from './worker/client'
+import { workerClient, botWorkerClient } from './worker/client'
 
 const StatsPage = lazy(() => import('./pages/StatsPage'))
 const AnalyzerPage = lazy(() => import('./pages/AnalyzerPage'))
@@ -19,15 +19,20 @@ function PageLoader() {
 export default function App() {
   const [page, setPage] = useState<AppPage>('game')
 
-  // Attempt to load NN model weights into the worker on startup.
-  // Silently no-ops if the model hasn't been trained yet.
+  // Load NN model into both workers on startup. botWorkerClient loads from the same buffer
+  // so we only download once. Silently no-ops if the model hasn't been trained yet.
   useEffect(() => {
-    void workerClient.loadModel()
+    workerClient.loadModel().then(ok => {
+      if (ok) botWorkerClient.loadFromCache()
+    })
   }, [])
 
   return (
     <AuthGate>
-      {page === 'game' && <GamePage onNavigate={setPage} />}
+      {/* GamePage stays mounted so game state survives analyzer navigation */}
+      <div className={page !== 'game' ? 'hidden' : undefined}>
+        <GamePage onNavigate={setPage} currentPage={page} />
+      </div>
       {page === 'stats' && (
         <Suspense fallback={<PageLoader />}>
           <StatsPage onNavigate={setPage} />

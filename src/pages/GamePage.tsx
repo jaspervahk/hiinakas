@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useGame } from '../game/useGame'
 import { bonusTrigger, isFoul, royalties, bestBonusBoard } from '../engine/index'
-import type { Board, PartialBoard, Card } from '../engine/index'
+import type { Board, PartialBoard, Card, InfoState, Placement } from '../engine/index'
 import { BoardView } from '../components/BoardView'
 import { HandView } from '../components/HandView'
 import { ScoreView } from '../components/ScoreView'
 import { CoachPanel } from '../components/CoachPanel'
 import { useCoach } from '../coach/useCoach'
+import { botWorkerClient } from '../worker/client'
 import type { AppPage } from '../App'
 import type { StreetLog, HandLog } from '../game/types'
 import { saveHand } from '../firestore/persistence'
+import { analyzerBridge } from '../game/analyzerBridge'
 
 function playerLabels(playerCount: number): string[] {
   return playerCount === 2 ? ['You', 'Bot'] : ['You', 'Bot 1', 'Bot 2']
@@ -21,10 +23,11 @@ function bonusQualifierLabel(q: string): string {
   return 'Aces / Trips — 15 cards, 2 discards'
 }
 
-const COACH_ROLLOUTS = 500
+const COACH_ROLLOUTS = 2000
 
 interface GamePageProps {
   onNavigate: (p: AppPage) => void
+  currentPage: AppPage
 }
 
 function sameCard(a: Card, b: Card): boolean {
@@ -48,8 +51,8 @@ function makeHandId(seed: number): string {
   return `h-${seed}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-export default function GamePage({ onNavigate }: GamePageProps) {
-  const [state, dispatch] = useGame()
+export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
+  const [state, dispatch, { canUndo, undo }] = useGame()
   const labels = playerLabels(state.playerCount)
   const botCount = state.playerCount - 1
   const botLabels = labels.slice(1)
@@ -70,6 +73,8 @@ export default function GamePage({ onNavigate }: GamePageProps) {
       return null
     }
   }, [state.phase, state.humanBonusCards, state.humanBonusQualifier])
+
+  const lockAfterAnalyzerRef = useRef(false)
 
   // Save hand on bonus_scoring entry (fire-and-forget)
   const savedRef = useRef<string | null>(null)
@@ -98,6 +103,81 @@ export default function GamePage({ onNavigate }: GamePageProps) {
     }
     void saveHand(log)
   }, [state.phase, state.seed, state.humanBoard, state.normalScores, state.bonusScores, state.totalScores, state.playerCount, state.currentStreetLogs])
+
+  // Precomputed bot placements — set during placing phase, consumed in bot_thinking.
+  const botResultRef = useRef<Placement[] | null>(null)
+  const botPromiseRef = useRef<Promise<Placement[]> | null>(null)
+
+  // ── Precompute bot moves during placing (runs in parallel with coach) ─────
+  // The bot sees the board at the START of the street — before the human places
+  // this street's cards. That is the correct information set in simultaneous OFC.
+  useEffect(() => {
+    if (state.phase !== 'placing' || state.context !== 'normal') return
+    let cancelled = false
+    // Clear stale results from the previous street at the start of each new street.
+    botResultRef.current = null
+    botPromiseRef.current = null
+
+    const { botBoards, preDealt, street, humanBoard, playerCount } = state
+    const promises: Promise<Placement>[] = []
+
+    for (let i = 0; i < playerCount - 1; i++) {
+      const otherBotBoards = botBoards.filter((_, j) => j !== i)
+      const infoState: InfoState = {
+        board: botBoards[i]!,
+        hand: preDealt[i + 1]![street]!,
+        street,
+        // Human board at START of street (before human places this street's cards).
+        revealedOpponentBoards: [humanBoard, ...otherBotBoards],
+      }
+      const seed = ((state.seed ^ (street * 0x9e3779b9)) + i * 0x517cc1b7) | 0
+      promises.push(botWorkerClient.getBotMove(infoState, 200, seed))
+    }
+
+    const all = Promise.all(promises)
+    botPromiseRef.current = all
+    all.then(placements => {
+      if (!cancelled) botResultRef.current = placements
+    }).catch(err => {
+      console.error('Bot precompute failed:', err)
+    })
+
+    return () => {
+      cancelled = true
+      // Do NOT clear botResultRef.current here — bot_thinking reads it after this cleanup runs.
+      // botPromiseRef is kept as fallback if lock-in fires before computation finishes.
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.phase, state.street, state.context])
+
+  // ── Bot thinking: use precomputed result or await the in-flight promise ───
+  useEffect(() => {
+    if (state.phase !== 'bot_thinking') return
+    let cancelled = false
+
+    const finish = (placements: Placement[]) => {
+      if (!cancelled) {
+        botResultRef.current = null
+        botPromiseRef.current = null
+        dispatch({ type: 'BOT_PLACED', placements })
+      }
+    }
+
+    const result = botResultRef.current
+    if (result) {
+      // Already computed during placing — reveal instantly.
+      finish(result)
+      return
+    }
+
+    const promise = botPromiseRef.current
+    if (promise) {
+      promise.then(finish).catch(err => console.error('Bot move failed:', err))
+    }
+
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.phase])
 
   // ── Lock-in with coach logging ────────────────────────────────────────────
   function lockInWithLog() {
@@ -142,6 +222,29 @@ export default function GamePage({ onNavigate }: GamePageProps) {
     }
     dispatch({ type: 'LOCK_IN' })
   }
+
+  // Apply analyzer placement when returning from analyzer page
+  useEffect(() => {
+    if (currentPage !== 'game') return
+    const pl = analyzerBridge.pendingPlacement
+    if (!pl) return
+    analyzerBridge.pendingPlacement = null
+    lockAfterAnalyzerRef.current = true
+    dispatch({ type: 'APPLY_COACH_PLACEMENT', placement: pl })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage])
+
+  // Auto lock-in once the analyzer-chosen placement fills all required slots
+  useEffect(() => {
+    if (!lockAfterAnalyzerRef.current) return
+    if (state.phase !== 'placing') return
+    const total = state.pending.top.length + state.pending.middle.length + state.pending.bottom.length
+    const st = state.context === 'side' ? state.sideStreet : state.street
+    if (total !== (st === 0 ? 5 : 2)) return
+    lockAfterAnalyzerRef.current = false
+    lockInWithLog()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.pending, state.phase])
 
   // ── Setup ─────────────────────────────────────────────────────────────────
   if (state.phase === 'setup') {
@@ -322,9 +425,10 @@ export default function GamePage({ onNavigate }: GamePageProps) {
     )
   }
 
-  // ── Placing + Revealing ───────────────────────────────────────────────────
-  const isPlacing  = state.phase === 'placing'
+  // ── Placing + Bot thinking + Revealing ────────────────────────────────────
+  const isPlacing   = state.phase === 'placing'
   const isRevealing = state.phase === 'revealing'
+  const isBotThinking = state.phase === 'bot_thinking'
   const isSide = state.context === 'side'
 
   const humanBoard: PartialBoard = isSide ? state.humanSideBoard : state.humanBoard
@@ -351,9 +455,12 @@ export default function GamePage({ onNavigate }: GamePageProps) {
   const roundLabel = isSide ? 'Bonus side game' : 'Hiinakas'
   const streetLabel = `Street ${currentStreet + 1} / 5`
 
+  const coachToggle = () => dispatch({ type: 'UPDATE_SETTINGS', settings: { coachEnabled: !state.appSettings.coachEnabled } })
+  const coachSelect = (p: Placement) => dispatch({ type: 'APPLY_COACH_PLACEMENT', placement: p })
+
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col">
-      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-800/80">
+    <div className="h-dvh bg-gray-950 text-white flex flex-col overflow-hidden">
+      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-800/80 flex-shrink-0">
         <button
           onClick={() => dispatch({ type: 'RESET' })}
           className="text-gray-600 hover:text-gray-400 text-sm transition-colors"
@@ -364,113 +471,180 @@ export default function GamePage({ onNavigate }: GamePageProps) {
           <span className="text-sm font-semibold text-gray-300">{roundLabel}</span>
           {isSide && <span className="text-xs text-amber-500">Bonus side game</span>}
         </div>
-        <span className="text-xs text-gray-500 tabular-nums">{streetLabel}</span>
+        <div className="flex items-center gap-3">
+          {canUndo && (isRevealing || isBotThinking) && (
+            <button
+              onClick={undo}
+              className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+            >
+              ↩ Undo
+            </button>
+          )}
+          <span className="text-xs text-gray-500 tabular-nums">{streetLabel}</span>
+        </div>
       </header>
 
-      <div className="flex flex-col gap-5 p-4 max-w-5xl mx-auto w-full">
-        {/* Bot boards */}
-        <div>
-          <p className="text-[11px] text-gray-600 uppercase tracking-widest mb-2">
-            {botCount === 1 ? 'Opponent' : 'Opponents'}
-          </p>
-          <div className="flex gap-3 flex-wrap">
-            {botDisplayBoards.map((board, i) => (
-              <BoardView
-                key={i}
-                board={board}
-                label={botLabels[i]}
-                showStatus={isRevealing || isLastStreet}
-              />
-            ))}
-          </div>
-        </div>
+      {/* Body: side-by-side on desktop, stacked on mobile */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
 
-        <div className="border-t border-gray-800/60" />
+        {/* Left column: boards + action */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
 
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
-          <div>
-            <p className="text-[11px] text-gray-600 uppercase tracking-widest mb-2">You</p>
-            <BoardView
-              board={humanBoard}
-              pending={isPlacing ? state.pending : undefined}
-              label={undefined}
-              isHuman
-              cardSelected={isPlacing && !!state.selectedCard}
-              onRowClick={row => dispatch({ type: 'ASSIGN_TO_ROW', row })}
-              onPendingRemove={(row, idx) => dispatch({ type: 'REMOVE_PENDING', row, index: idx })}
-              showStatus={isRevealing}
-              showLiveFoul={isPlacing && (!!state.selectedCard || totalPending > 0)}
-            />
-          </div>
+          {/* Scrollable boards area */}
+          <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="flex flex-col gap-4 p-4 max-w-5xl mx-auto w-full">
+              {/* Bot boards */}
+              <div>
+                <p className="text-[11px] text-gray-600 uppercase tracking-widest mb-2">
+                  {botCount === 1 ? 'Opponent' : 'Opponents'}
+                </p>
+                <div className="flex gap-3 flex-wrap">
+                  {botDisplayBoards.map((board, i) => (
+                    <BoardView
+                      key={i}
+                      board={board}
+                      label={botLabels[i]}
+                      showStatus={isRevealing || isLastStreet}
+                    />
+                  ))}
+                </div>
+              </div>
 
-          {isPlacing && (
-            <div className="lg:sticky lg:top-4 lg:self-start">
-              <CoachPanel
-                result={coach}
-                enabled={state.appSettings.coachEnabled}
-                onToggle={() => dispatch({ type: 'UPDATE_SETTINGS', settings: { coachEnabled: !state.appSettings.coachEnabled } })}
-              />
+              <div className="border-t border-gray-800/60" />
+
+              <div>
+                <p className="text-[11px] text-gray-600 uppercase tracking-widest mb-2">You</p>
+                <BoardView
+                  board={humanBoard}
+                  pending={isPlacing ? state.pending : undefined}
+                  label={undefined}
+                  isHuman
+                  cardSelected={isPlacing && !!state.selectedCard}
+                  onRowClick={row => dispatch({ type: 'ASSIGN_TO_ROW', row })}
+                  onPendingRemove={(row, idx) => dispatch({ type: 'REMOVE_PENDING', row, index: idx })}
+                  showStatus={isRevealing}
+                  showLiveFoul={isPlacing && (!!state.selectedCard || totalPending > 0)}
+                />
+              </div>
             </div>
-          )}
+          </div>
+
+          {/* Sticky bottom action area */}
+          <div className="flex-shrink-0 border-t border-gray-800/60 bg-gray-950 overflow-y-auto" style={{ maxHeight: '55vh' }}>
+            {isPlacing && (
+              <div className="flex flex-col items-center gap-3 px-4 pt-3 pb-4">
+                <p className="text-xs text-gray-500">
+                  {isStreet0
+                    ? 'Place all 5 cards'
+                    : state.humanHand.length === 1
+                      ? 'Last card auto-discarded — ready to lock'
+                      : 'Place 2 cards — the third will be discarded'}
+                </p>
+
+                <HandView
+                  cards={state.humanHand}
+                  selected={state.selectedCard}
+                  onSelect={card => dispatch({ type: 'SELECT_CARD', card })}
+                  discardIndex={autoDiscardIndex}
+                />
+
+                {state.selectedCard && (
+                  <p className="text-xs text-indigo-400">Click a highlighted row above to place</p>
+                )}
+                {!state.selectedCard && totalPending > 0 && (
+                  <p className="text-xs text-gray-600">Click a green card on your board to return it to hand</p>
+                )}
+
+                <div className="flex gap-2 items-center">
+                  <button
+                    onClick={lockInWithLog}
+                    disabled={!canLockIn}
+                    className={[
+                      'px-8 py-2.5 font-medium rounded-lg transition-colors text-sm',
+                      canLockIn
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
+                        : 'bg-gray-800 text-gray-600 cursor-not-allowed',
+                    ].join(' ')}
+                  >
+                    {canLockIn ? 'Lock in' : `Lock in (${totalPending} / ${requiredPending})`}
+                  </button>
+                  <button
+                    onClick={() => {
+                      // In side game, bonus-qualified bots play a separate game with
+                      // a fresh deck — exclude them from the opponent pool entirely.
+                      const sideOppBoards = isSide
+                        ? state.botBonusQualifiers
+                            .map((q, i) => q ? null : state.botSideBoards[i]!)
+                            .filter((b): b is PartialBoard => b !== null)
+                        : botDisplayBoards
+                      analyzerBridge.initialState = {
+                        board: humanBoard,
+                        hand: [...state.humanHand],
+                        street: currentStreet,
+                        revealedOpponentBoards: sideOppBoards.map(b => ({
+                          top: [...b.top],
+                          middle: [...b.middle],
+                          bottom: [...b.bottom],
+                        })),
+                      }
+                      analyzerBridge.pendingPlacement = null
+                      onNavigate('analyzer')
+                    }}
+                    className="px-4 py-2.5 text-xs font-medium rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 transition-colors"
+                  >
+                    Analyse
+                  </button>
+                </div>
+
+                {/* Coach panel — mobile only; desktop shows it in the right sidebar */}
+                <div className="w-full max-w-2xl md:hidden">
+                  <CoachPanel
+                    result={coach}
+                    enabled={state.appSettings.coachEnabled}
+                    onToggle={coachToggle}
+                    onSelectPlacement={coachSelect}
+                  />
+                </div>
+              </div>
+            )}
+
+            {isBotThinking && (
+              <div className="flex flex-col items-center gap-2 px-4 py-4">
+                <div className="flex items-center gap-2 text-gray-400 text-sm">
+                  <span className="inline-block w-4 h-4 border-2 border-gray-600 border-t-indigo-400 rounded-full animate-spin" />
+                  Bot thinking…
+                </div>
+              </div>
+            )}
+
+            {isRevealing && (
+              <div className="flex flex-col items-center gap-3 px-4 pt-3 pb-4">
+                <p className="text-xs text-gray-500">
+                  {isLastStreet ? 'All cards placed — scoring next' : 'All placed — boards revealed'}
+                </p>
+                <button
+                  onClick={() => dispatch({ type: 'ADVANCE' })}
+                  className="px-8 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition-colors text-sm"
+                >
+                  {advanceLabel}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Hand area (placing only) */}
-        {isPlacing && (
-          <div className="flex flex-col items-center gap-4">
-            <div className="border-t border-gray-800/60 w-full" />
-
-            <p className="text-xs text-gray-500">
-              {isStreet0
-                ? 'Place all 5 cards'
-                : state.humanHand.length === 1
-                  ? 'Last card auto-discarded — ready to lock'
-                  : 'Place 2 cards — the third will be discarded'}
-            </p>
-
-            <HandView
-              cards={state.humanHand}
-              selected={state.selectedCard}
-              onSelect={card => dispatch({ type: 'SELECT_CARD', card })}
-              discardIndex={autoDiscardIndex}
+        {/* Right sidebar: EV coach — desktop only */}
+        <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-gray-800/60 flex-shrink-0 overflow-y-auto bg-gray-950">
+          <div className="p-4">
+            <CoachPanel
+              result={coach}
+              enabled={state.appSettings.coachEnabled}
+              onToggle={coachToggle}
+              onSelectPlacement={isPlacing ? coachSelect : undefined}
             />
-
-            {state.selectedCard && (
-              <p className="text-xs text-indigo-400">Click a highlighted row above to place</p>
-            )}
-
-            {!state.selectedCard && totalPending > 0 && (
-              <p className="text-xs text-gray-600">Click a green card on your board to return it to hand</p>
-            )}
-
-            <button
-              onClick={lockInWithLog}
-              disabled={!canLockIn}
-              className={[
-                'px-8 py-2.5 font-medium rounded-lg transition-colors text-sm',
-                canLockIn
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
-                  : 'bg-gray-800 text-gray-600 cursor-not-allowed',
-              ].join(' ')}
-            >
-              {canLockIn ? 'Lock in' : `Lock in (${totalPending} / ${requiredPending})`}
-            </button>
           </div>
-        )}
+        </div>
 
-        {isRevealing && (
-          <div className="flex flex-col items-center gap-4">
-            <div className="border-t border-gray-800/60 w-full" />
-            <p className="text-xs text-gray-500">
-              {isLastStreet ? 'All cards placed — scoring next' : 'All placed — boards revealed'}
-            </p>
-            <button
-              onClick={() => dispatch({ type: 'ADVANCE' })}
-              className="px-8 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition-colors text-sm"
-            >
-              {advanceLabel}
-            </button>
-          </div>
-        )}
       </div>
     </div>
   )

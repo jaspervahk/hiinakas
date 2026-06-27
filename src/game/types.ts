@@ -3,6 +3,7 @@ import type { Card, PartialBoard, BonusQualifier, ScoredPlacement } from '../eng
 export type GamePhase =
   | 'setup'
   | 'placing'         // human placing (normal street OR side-game street)
+  | 'bot_thinking'    // human locked in; waiting for async MC bot moves
   | 'revealing'       // post-lock: all boards shown, awaiting advance
   | 'scoring'         // normal-round score display
   | 'bonus_oneshot'   // human qualifies: place all bonus cards at once

@@ -7,15 +7,20 @@ import type { WorkerRequest, WorkerResponse } from './types'
 const MODEL_URL = '/models/policy.bin'
 
 let nextId = 0
+// Cached copy of model weights so we can reload after worker restart.
+let cachedModelBuf: ArrayBuffer | null = null
 function makeId(): string {
   nextId = (nextId + 1) | 0
   return `req-${nextId}-${Date.now().toString(36)}`
 }
 
+type AnalysisResult = { id: string; candidates: ScoredPlacement[]; hasModel: boolean }
+
 type Handler =
   | { kind: 'mc'; onProgress: (r: ScoredPlacement[]) => void; onDone: (r: ScoredPlacement[]) => void; onError: (e: string) => void }
   | { kind: 'bot'; resolve: (p: Placement) => void; reject: (e: string) => void }
   | { kind: 'model'; resolve: (ok: boolean) => void }
+  | { kind: 'analysis'; resolve: (r: AnalysisResult[]) => void }
 
 export class WorkerClient {
   private worker: Worker | null = null
@@ -33,6 +38,7 @@ export class WorkerClient {
       for (const [, h] of this.handlers) {
         if (h.kind === 'bot') h.reject('Worker error')
         else if (h.kind === 'model') h.resolve(false)
+        else if (h.kind === 'analysis') h.resolve([])
         else h.onError('Worker error')
       }
       this.handlers.clear()
@@ -61,9 +67,14 @@ export class WorkerClient {
         if (handler.kind === 'model') handler.resolve(msg.payload.ok)
         this.handlers.delete(msg.id)
         return
+      case 'ANALYSIS_DONE':
+        if (handler.kind === 'analysis') handler.resolve(msg.payload)
+        this.handlers.delete(msg.id)
+        return
       case 'ERROR':
         if (handler.kind === 'bot') handler.reject(msg.payload)
         else if (handler.kind === 'model') handler.resolve(false)
+        else if (handler.kind === 'analysis') handler.resolve([])
         else handler.onError(msg.payload)
         this.handlers.delete(msg.id)
         return
@@ -129,13 +140,58 @@ export class WorkerClient {
     })
   }
 
-  // Fetch model from Firebase Storage and load it into the worker.
+  analyzePositions(positions: Array<{ id: string; state: InfoState }>): Promise<AnalysisResult[]> {
+    const id = makeId()
+    return new Promise((resolve) => {
+      this.handlers.set(id, { kind: 'analysis', resolve })
+      const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions } }
+      this.getWorker().postMessage(req)
+    })
+  }
+
+  // Load the model from the module-level cache into this worker's instance.
+  // Used to initialise botWorkerClient after workerClient.loadModel() has cached the buffer.
+  loadFromCache(): boolean {
+    if (!cachedModelBuf) return false
+    const copy = cachedModelBuf.slice(0)
+    const id = makeId()
+    this.handlers.set(id, { kind: 'model', resolve: () => {} })
+    const req: WorkerRequest = { id, type: 'LOAD_MODEL', payload: copy }
+    this.getWorker().postMessage(req, [copy])
+    return true
+  }
+
+  // Terminate the worker and start fresh. Model is reloaded from cache automatically.
+  restartWorker(): void {
+    if (this.worker) {
+      this.worker.terminate()
+      this.worker = null
+    }
+    for (const [, h] of this.handlers) {
+      if (h.kind === 'bot') h.reject('Worker restarted')
+    }
+    this.handlers.clear()
+    this.generations.clear()
+    this.latestGeneration = 0
+
+    if (cachedModelBuf) {
+      const copy = cachedModelBuf.slice(0)
+      const id = makeId()
+      this.handlers.set(id, { kind: 'model', resolve: () => {} })
+      const req: WorkerRequest = { id, type: 'LOAD_MODEL', payload: copy }
+      this.getWorker().postMessage(req, [copy])
+    }
+  }
+
+  // Fetch model from Firebase Hosting and load it into the worker.
   // Called once on app startup. Silently no-ops if the model file doesn't exist yet.
   async loadModel(): Promise<boolean> {
     try {
       const resp = await fetch(MODEL_URL)
       if (!resp.ok) return false
       const buf = await resp.arrayBuffer()
+      // Cache a copy before transferring ownership to the worker.
+      cachedModelBuf = buf.slice(0)
       const id = makeId()
       return new Promise<boolean>((resolve) => {
         this.handlers.set(id, { kind: 'model', resolve })
@@ -148,4 +204,5 @@ export class WorkerClient {
   }
 }
 
-export const workerClient = new WorkerClient()
+export const workerClient = new WorkerClient()     // EV coach only
+export const botWorkerClient = new WorkerClient()  // bot moves only — never shared with coach

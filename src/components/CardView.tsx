@@ -9,8 +9,18 @@ const SUIT_SYMBOLS: Record<string, string> = {
   s: '♠', c: '♣', h: '♥', d: '♦',
 }
 
-function isRed(suit: string): boolean {
-  return suit === 'h' || suit === 'd'
+const SUIT_COLORS: Record<string, string> = {
+  s: 'text-slate-300',
+  h: 'text-red-400',
+  d: 'text-orange-400',
+  c: 'text-emerald-400',
+}
+
+const SUIT_COLORS_DIM: Record<string, string> = {
+  s: 'text-slate-700',
+  h: 'text-red-900',
+  d: 'text-orange-900',
+  c: 'text-emerald-900',
 }
 
 interface CardViewProps {
@@ -39,23 +49,19 @@ export function CardView({ card, selected, pending, onClick, size = 'md', dim }:
 
   const rankLabel = RANK_LABELS[card.rank] ?? String(card.rank)
   const suitSymbol = SUIT_SYMBOLS[card.suit] ?? card.suit
-  const red = isRed(card.suit)
 
-  let textColor = red ? 'text-red-400' : 'text-slate-100'
-  let borderColor = 'border-gray-700'
+  let textColor = dim
+    ? (SUIT_COLORS_DIM[card.suit] ?? 'text-gray-700')
+    : (SUIT_COLORS[card.suit] ?? 'text-slate-300')
+  let borderColor = dim ? 'border-gray-800' : 'border-gray-700'
   let ring = ''
 
-  if (selected) {
+  if (!dim && selected) {
     ring = 'ring-2 ring-yellow-400'
     borderColor = 'border-yellow-500'
-  } else if (pending) {
+  } else if (!dim && pending) {
     ring = 'ring-1 ring-emerald-500'
     borderColor = 'border-emerald-600'
-  }
-
-  if (dim) {
-    textColor = red ? 'text-red-900' : 'text-gray-600'
-    borderColor = 'border-gray-800'
   }
 
   const cursor = onClick ? 'cursor-pointer hover:brightness-110 active:scale-95 transition-all' : 'cursor-default'

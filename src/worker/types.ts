@@ -1,4 +1,5 @@
 import type { InfoState, ScoredPlacement } from '../engine/mc'
+export type { ScoredPlacement }
 
 export interface WorkerRequestGetEV {
   id: string
@@ -28,7 +29,17 @@ export interface WorkerRequestLoadModel {
   payload: ArrayBuffer
 }
 
-export type WorkerRequest = WorkerRequestGetEV | WorkerRequestGetBotMove | WorkerRequestLoadModel
+export interface WorkerRequestAnalyzePositions {
+  id: string
+  type: 'ANALYZE_POSITIONS'
+  payload: { positions: Array<{ id: string; state: InfoState }> }
+}
+
+export type WorkerRequest =
+  | WorkerRequestGetEV
+  | WorkerRequestGetBotMove
+  | WorkerRequestLoadModel
+  | WorkerRequestAnalyzePositions
 
 export interface WorkerResponseProgress {
   id: string
@@ -60,9 +71,16 @@ export interface WorkerResponseModelLoaded {
   payload: { ok: true } | { ok: false; error: string }
 }
 
+export interface WorkerResponseAnalysisDone {
+  id: string
+  type: 'ANALYSIS_DONE'
+  payload: Array<{ id: string; candidates: ScoredPlacement[]; hasModel: boolean }>
+}
+
 export type WorkerResponse =
   | WorkerResponseProgress
   | WorkerResponseDone
   | WorkerResponseBotMove
   | WorkerResponseError
   | WorkerResponseModelLoaded
+  | WorkerResponseAnalysisDone

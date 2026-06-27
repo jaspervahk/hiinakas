@@ -50,11 +50,14 @@ export function runGame(
   const boards: PartialBoard[] = Array.from({ length: playerCount }, () =>
     ({ top: [], middle: [], bottom: [] })
   )
+  // Track each player's accumulated discards for InfoState hygiene and feature encoding.
+  const playerDiscards: Card[][] = Array.from({ length: playerCount }, () => [])
   const decisionLog: Array<{
     playerIdx: number
     street: number
     boardAfter: PartialBoard
     oppBoards: PartialBoard[]
+    discards: Card[]  // all discards including the one made on this street
   }> = []
 
   for (let s = 0; s <= 4; s++) {
@@ -72,27 +75,40 @@ export function runGame(
       const board = snapshots[p]!
       const revealedOppBoards = snapshots.filter((_, i) => i !== p)
 
-      const info: InfoState = { board, hand, street: s, revealedOpponentBoards: revealedOppBoards }
+      const info: InfoState = {
+        board,
+        hand,
+        street: s,
+        revealedOpponentBoards: revealedOppBoards,
+        discards: playerDiscards[p]!,
+      }
       placements[p] = policy(info)
     }
 
-    // Apply all placements and record decisions.
+    // Apply all placements, record decisions, update discard lists.
     for (let p = 0; p < playerCount; p++) {
-      const boardAfter = applyPlacement(snapshots[p]!, placements[p]!)
+      const pl = placements[p]!
+      const boardAfter = applyPlacement(snapshots[p]!, pl)
       boards[p] = boardAfter
+
+      // Feature encoding uses all discards including the one just made.
+      const allDiscards = pl.discard ? [...playerDiscards[p]!, pl.discard] : [...playerDiscards[p]!]
       decisionLog.push({
         playerIdx: p,
         street: s,
         boardAfter,
         oppBoards: snapshots.filter((_, i) => i !== p),
+        discards: allDiscards,
       })
+
+      if (pl.discard) playerDiscards[p]!.push(pl.discard)
     }
   }
 
   const outcomes = scoreTable(boards as Board[])
 
   const samples: TrainSample[] = decisionLog.map(d => ({
-    features: encodeBoardState(d.boardAfter, d.street, d.oppBoards),
+    features: encodeBoardState(d.boardAfter, d.street, d.oppBoards, d.discards),
     outcome: outcomes[d.playerIdx]!,
     playerIdx: d.playerIdx,
     street: d.street,

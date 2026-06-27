@@ -14,7 +14,12 @@ cd "$PROJECTDIR"
 GAMES="${GAMES:-5000}"
 EPOCHS="${EPOCHS:-20}"
 PLAYERS="${PLAYERS:-2}"
-ITER=0
+WINDOW="${WINDOW:-20}"   # train on the last N batches only — prevents mixing old/new policy data
+
+# Resume from the highest existing batch number so restarts never overwrite data.
+ITER=$(ls data/batch_*.bin 2>/dev/null | sed 's/.*batch_0*//' | sed 's/\.bin//' | sort -n | tail -1)
+ITER="${ITER:-0}"
+echo "Resuming from iteration $ITER ($(ls data/batch_*.bin 2>/dev/null | wc -l | tr -d ' ') existing batches)"
 
 echo "=== Hiinakas GTO Training ==="
 echo "Games/iter: $GAMES | Epochs: $EPOCHS | Players: $PLAYERS"
@@ -30,13 +35,15 @@ while true; do
   echo "[1/3] Self-play ($GAMES games, policy: $([ -f models/policy.bin ] && echo NN || echo heuristic))…"
   npx tsx scripts/selfplay.ts --games "$GAMES" --players "$PLAYERS" --out "$BATCH"
 
-  echo "[2/3] Training ($EPOCHS epochs, warm-start: $([ -f models/policy.bin ] && echo yes || echo no))…"
+  TOTAL_BATCHES=$(ls data/*.bin 2>/dev/null | wc -l | tr -d ' ')
+  echo "[2/3] Training ($EPOCHS epochs on last $WINDOW of $TOTAL_BATCHES batches, warm-start: $([ -f models/policy.bin ] && echo yes || echo no))…"
   python3 scripts/train.py \
-    --data "$BATCH" \
+    --data data/ \
     --out models/policy.bin \
     --resume models/policy.bin \
     --epochs "$EPOCHS" \
-    --batch 512
+    --batch 512 \
+    --window "$WINDOW"
 
   echo "[3/3] Deploying model via Hosting…"
   mkdir -p dist/models

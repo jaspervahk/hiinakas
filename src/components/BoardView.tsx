@@ -10,7 +10,8 @@ const HAND_NAMES: Record<number, string> = {
 }
 
 function handLabel(cards: readonly Card[], isTop: boolean): string {
-  if (cards.length === 0) return ''
+  const required = isTop ? 3 : 5
+  if (cards.length !== required) return ''
   try {
     const rank = isTop ? evaluate3(cards) : evaluate5(cards)
     return HAND_NAMES[rank.category] ?? ''
