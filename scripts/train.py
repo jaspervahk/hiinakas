@@ -128,9 +128,11 @@ def load_ofcw_weights(path: str, model: 'ValueNet') -> None:
     magic = data[:4]
     if magic != MAGIC_MODEL:
         raise ValueError(f'Bad magic: {magic}')
-    version, num_layers, _ = struct.unpack_from('<III', data, 4)
+    version, num_layers, file_input_dim = struct.unpack_from('<III', data, 4)
     if version not in (1, 2):
         raise ValueError(f'Unsupported version {version}')
+    if file_input_dim != ENCODE_DIM:
+        raise ValueError(f'Model input dim {file_input_dim} ≠ expected {ENCODE_DIM} — cannot warm-start, training from scratch')
     off = 16 + (4 if version >= 2 else 0)  # skip output_scale field in v2
     linear_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
     for lin in linear_layers:
