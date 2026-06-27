@@ -32,7 +32,8 @@ export interface WorkerRequestLoadModel {
 export interface WorkerRequestAnalyzePositions {
   id: string
   type: 'ANALYZE_POSITIONS'
-  payload: { positions: Array<{ id: string; state: InfoState }> }
+  // rollouts > 0 → NN + MC hybrid (same as live coach); 0 → NN-only (fast, legacy)
+  payload: { positions: Array<{ id: string; state: InfoState }>; rollouts?: number; seed?: number }
 }
 
 export type WorkerRequest =
@@ -77,6 +78,13 @@ export interface WorkerResponseAnalysisDone {
   payload: Array<{ id: string; candidates: ScoredPlacement[]; hasModel: boolean }>
 }
 
+// Streamed one-at-a-time during thorough (NN+MC) analysis.
+export interface WorkerResponseAnalysisProgress {
+  id: string
+  type: 'ANALYSIS_PROGRESS'
+  payload: { done: number; total: number; item: { id: string; candidates: ScoredPlacement[]; hasModel: boolean } }
+}
+
 export type WorkerResponse =
   | WorkerResponseProgress
   | WorkerResponseDone
@@ -84,3 +92,4 @@ export type WorkerResponse =
   | WorkerResponseError
   | WorkerResponseModelLoaded
   | WorkerResponseAnalysisDone
+  | WorkerResponseAnalysisProgress

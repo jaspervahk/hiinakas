@@ -17,13 +17,13 @@ function makeId(): string {
   return `req-${nextId}-${Date.now().toString(36)}`
 }
 
-type AnalysisResult = { id: string; candidates: ScoredPlacement[]; hasModel: boolean }
+export type AnalysisResult = { id: string; candidates: ScoredPlacement[]; hasModel: boolean }
 
 type Handler =
   | { kind: 'mc'; onProgress: (r: ScoredPlacement[]) => void; onDone: (r: ScoredPlacement[]) => void; onError: (e: string) => void }
   | { kind: 'bot'; resolve: (p: Placement) => void; reject: (e: string) => void }
   | { kind: 'model'; resolve: (ok: boolean) => void }
-  | { kind: 'analysis'; resolve: (r: AnalysisResult[]) => void }
+  | { kind: 'analysis'; resolve: (r: AnalysisResult[]) => void; onProgress?: (done: number, total: number, item: AnalysisResult) => void }
 
 export class WorkerClient {
   private worker: Worker | null = null
@@ -69,6 +69,9 @@ export class WorkerClient {
       case 'MODEL_LOADED':
         if (handler.kind === 'model') handler.resolve(msg.payload.ok)
         this.handlers.delete(msg.id)
+        return
+      case 'ANALYSIS_PROGRESS':
+        if (handler.kind === 'analysis') handler.onProgress?.(msg.payload.done, msg.payload.total, msg.payload.item)
         return
       case 'ANALYSIS_DONE':
         if (handler.kind === 'analysis') handler.resolve(msg.payload)
@@ -143,11 +146,16 @@ export class WorkerClient {
     })
   }
 
-  analyzePositions(positions: Array<{ id: string; state: InfoState }>): Promise<AnalysisResult[]> {
+  analyzePositions(
+    positions: Array<{ id: string; state: InfoState }>,
+    rollouts = 0,
+    onProgress?: (done: number, total: number, item: AnalysisResult) => void,
+  ): Promise<AnalysisResult[]> {
     const id = makeId()
+    const seed = (Date.now() * 1000003) >>> 0
     return new Promise((resolve) => {
-      this.handlers.set(id, { kind: 'analysis', resolve })
-      const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions } }
+      this.handlers.set(id, { kind: 'analysis', resolve, onProgress })
+      const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions, rollouts, seed } }
       this.getWorker().postMessage(req)
     })
   }

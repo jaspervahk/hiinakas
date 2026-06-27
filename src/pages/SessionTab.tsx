@@ -621,6 +621,7 @@ function SessionTabInner() {
   const [selectedGroup, setSelectedGroup] = useState<string[] | null>(null)
   const [error, setError] = useState('')
   const [analyzing, setAnalyzing] = useState(false)
+  const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
   const [analyzed, setAnalyzed] = useState<AnalyzedDecision[]>([])
   const [noModel, setNoModel] = useState(false)
   const [modelVariant, setModelVariant] = useState<ModelVariant>('v2')
@@ -716,14 +717,25 @@ function SessionTabInner() {
 
   const runAnalysis = useCallback(async () => {
     if (decisions.length === 0) return
-    setAnalyzing(true); setNoModel(false)
+    setAnalyzing(true); setNoModel(false); setAnalyzeProgress(null); setAnalyzed([])
     try {
       const url = MODEL_URLS[modelVariant]
-      // Always reload the model so switching variants takes effect.
       const loaded = await workerClient.loadModel(url)
       if (!loaded) { setNoModel(true); return }
+
       const positions = decisions.map(d => ({ id: d.id, state: d.infoState }))
-      const results = await workerClient.analyzePositions(positions)
+      const partialMap = new Map<string, import('../engine/mc').ScoredPlacement[]>()
+
+      const results = await workerClient.analyzePositions(
+        positions,
+        200,
+        (done, total, item) => {
+          partialMap.set(item.id, item.candidates)
+          setAnalyzeProgress({ done, total })
+          setAnalyzed(buildAnalyzed(decisions, partialMap))
+        },
+      )
+
       if (results.length > 0 && !results[0]!.hasModel) { setNoModel(true); return }
       const map = new Map(results.map(r => [r.id, r.candidates]))
       const built = buildAnalyzed(decisions, map)
@@ -731,7 +743,7 @@ function SessionTabInner() {
       const key = sessionCacheKey(decisions, modelVariant)
       if (key) saveToCache(key, built)
     } finally {
-      setAnalyzing(false)
+      setAnalyzing(false); setAnalyzeProgress(null)
     }
   }, [decisions, modelVariant])
 
@@ -910,17 +922,25 @@ function SessionTabInner() {
                 v1 (473)
               </button>
             </div>
-            {(analyzed.length === 0 && !noModel) && (
-              <button onClick={runAnalysis} disabled={analyzing || decisions.length === 0}
+            {analyzing && analyzeProgress && (
+              <span className="text-xs text-gray-400">
+                {analyzeProgress.done}/{analyzeProgress.total} positions…
+              </span>
+            )}
+            {(!analyzing && analyzed.length === 0 && !noModel) && (
+              <button onClick={runAnalysis} disabled={decisions.length === 0}
                 className="px-3 py-1 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white transition-colors">
-                {analyzing ? `Analysing ${decisions.length} positions…` : `Run Analysis (${decisions.length})`}
+                Run Analysis ({decisions.length})
               </button>
             )}
-            {analyzed.length > 0 && (
-              <button onClick={runAnalysis} disabled={analyzing}
-                className="px-3 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 transition-colors">
-                {analyzing ? 'Reanalysing…' : 'Rerun'}
+            {(!analyzing && analyzed.length > 0) && (
+              <button onClick={runAnalysis}
+                className="px-3 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+                Rerun
               </button>
+            )}
+            {analyzing && !analyzeProgress && (
+              <span className="text-xs text-gray-400">Loading model…</span>
             )}
           </div>
         </div>

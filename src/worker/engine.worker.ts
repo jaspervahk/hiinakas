@@ -98,14 +98,46 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       self.postMessage(resp)
 
     } else if (msg.type === 'ANALYZE_POSITIONS') {
-      // NN-only bulk evaluation — one evalCandidatesNN call per position, no MC.
-      // Fast enough for full-session analysis (<1 s for 300 positions with model loaded).
-      const results = msg.payload.positions.map(({ id, state }) => {
-        if (!loadedWeights) return { id, candidates: [], hasModel: false }
-        const sorted = evalCandidatesNN(loadedWeights, state, 0).sort((a, b) => b.ev - a.ev)
-        return { id, candidates: sorted, hasModel: true }
-      })
-      self.postMessage({ id: msg.id, type: 'ANALYSIS_DONE', payload: results } as WorkerResponse)
+      const { positions, rollouts = 0, seed = 0 } = msg.payload
+      const total = positions.length
+      const allResults: Array<{ id: string; candidates: ScoredPlacement[]; hasModel: boolean }> = []
+
+      for (let i = 0; i < total; i++) {
+        const { id, state } = positions[i]!
+        if (!loadedWeights) {
+          const item = { id, candidates: [], hasModel: false }
+          allResults.push(item)
+          if (rollouts > 0) {
+            self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
+          }
+          continue
+        }
+
+        let candidates: ScoredPlacement[]
+        if (rollouts > 0) {
+          // NN+MC hybrid: same pipeline as the live coach.
+          const nnResults = evalCandidatesNN(loadedWeights, state, 0)
+          const topK = Math.min(MC_REFINE_TOP_K, nnResults.length)
+          const topCandidates = [...nnResults].sort((a, b) => b.ev - a.ev).slice(0, topK).map(r => r.placement)
+          const rng = makeRNG((seed + i * 1000003) >>> 0)
+          let lastMC: ScoredPlacement[] = []
+          for (const mc of runMC(state, { totalRollouts: rollouts, batchSize: rollouts }, rng, topCandidates)) {
+            lastMC = mc
+          }
+          const refined = new Map(lastMC.map(r => [r.placement, r]))
+          candidates = nnResults.map(nr => refined.get(nr.placement) ?? nr).sort((a, b) => b.ev - a.ev)
+        } else {
+          candidates = evalCandidatesNN(loadedWeights, state, 0).sort((a, b) => b.ev - a.ev)
+        }
+
+        const item = { id, candidates, hasModel: true }
+        allResults.push(item)
+        if (rollouts > 0) {
+          self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
+        }
+      }
+
+      self.postMessage({ id: msg.id, type: 'ANALYSIS_DONE', payload: allResults } as WorkerResponse)
 
     } else if (msg.type === 'LOAD_MODEL') {
       try {
