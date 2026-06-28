@@ -1,6 +1,6 @@
 name: GTO Training
 
-# Runs every 30 minutes automatically, or manually from GitHub Actions tab.
+# Runs every 10 minutes automatically, or manually from GitHub Actions tab.
 on:
   schedule:
     - cron: '*/10 * * * *'
@@ -11,14 +11,19 @@ on:
         default: '5000'
       epochs:
         description: 'Training epochs'
-        default: '30'
+        default: '8'
 
 env:
   # MCTS depth-2 with 30 sims is ~5× slower per decision than depth-1 NN.
   # 1000 games × 10 decisions × 30 sims ≈ same wall-time as 5000 depth-1 games.
   GAMES: ${{ github.event.inputs.games || '2000' }}
-  EPOCHS: ${{ github.event.inputs.epochs || '30' }}
+  EPOCHS: ${{ github.event.inputs.epochs || '8' }}
   MCTS_SIMS: '30'
+  # Sliding window: train on the last N batches from the rolling data cache.
+  # 5 batches × ~20K samples = ~100K samples per training run, 5× more diverse
+  # than training on one batch. Epochs reduced proportionally so total gradient
+  # steps stay similar (5 × 39 batches × 8 epochs ≈ 1560 vs 39 × 30 = 1170 previously).
+  WINDOW: '5'
 
 jobs:
   train-and-deploy:
@@ -28,6 +33,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore training data cache
+        uses: actions/cache@v4
+        with:
+          path: data/
+          # Unique key per run so the updated data/ is always saved.
+          # restore-keys falls back to the most recent matching cache.
+          key: training-data-${{ github.run_number }}
+          restore-keys: |
+            training-data-
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -80,11 +95,15 @@ jobs:
             --players 2 \
             --mcts-sims "$MCTS_SIMS" \
             --out data/batch_${{ github.run_number }}.bin
+          # Keep only the most recent 10 batches so the cache stays bounded (~420 MB).
+          cd data && ls -t *.bin | tail -n +11 | xargs -r rm; cd ..
+          echo "Data cache: $(ls data/*.bin 2>/dev/null | wc -l) batches, $(du -sh data/ 2>/dev/null | cut -f1)"
 
       - name: Train value network
         run: |
           python scripts/train.py \
-            --data data/batch_${{ github.run_number }}.bin \
+            --data data/ \
+            --window "$WINDOW" \
             --out models/policy.bin \
             --resume models/policy.bin \
             --epochs "$EPOCHS" \
