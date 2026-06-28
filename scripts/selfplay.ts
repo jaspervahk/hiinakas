@@ -169,8 +169,10 @@ for (let g = 0; g < NUM_GAMES; g++) {
         const mctsRng = mulberry32((gameSeed ^ 0xA5A5A5A5) >>> 0)
         const m = loadedModel!
         return (info: Parameters<SimPolicy>[0]) =>
-          // nnOpponents: true — WASM makes opponent calls cheap enough to always enable.
-          mctsPickPlacement(info, m, { nSims: MCTS_SIMS, maxDepth: 2, nnOpponents: true }, mctsRng)
+          // nnOpponents: false in selfplay — heuristic opponents keep throughput high
+          // (nnOpponents adds ~6× overhead in Node.js, capping at 0.2 g/s vs ~3 g/s).
+          // The browser worker uses nnOpponents: true since WASM makes it fast there.
+          mctsPickPlacement(info, m, { nSims: MCTS_SIMS, maxDepth: 2, nnOpponents: false }, mctsRng)
       })()
     : basePolicy
 
