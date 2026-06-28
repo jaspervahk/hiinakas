@@ -120,7 +120,7 @@ if (fs.existsSync(MODEL_PATH)) {
   try {
     const buf = fs.readFileSync(MODEL_PATH)
     loadedWeights = parseMLPWeights(buf.buffer as ArrayBuffer)
-    basePolicy = (info) => nnPickPlacement(loadedWeights!, info.board, info.hand, info.street, info.revealedOpponentBoards)
+    basePolicy = (info) => nnPickPlacement(loadedWeights!, info.board, info.hand, info.street, info.revealedOpponentBoards, info.discards)
     const policyName = MCTS_SIMS > 0 ? `MCTS depth-2 (${MCTS_SIMS} sims)` : 'NN depth-1'
     console.log(`Policy: ${policyName}  (${MODEL_PATH})`)
   } catch (e) {
