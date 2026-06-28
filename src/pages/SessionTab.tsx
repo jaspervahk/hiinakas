@@ -582,7 +582,7 @@ function GameLogTable({ summaries, players, analyzed, decisions }: {
                     )
                   })}
                   <td className="py-1 px-2 text-center">
-                    {bustNames.length === 0 ? null : bustNames.length === players.length
+                    {bustNames.length === 0 ? null : bustNames.length === s.playerNames.length
                       ? <span className="text-purple-400">all</span>
                       : bustNames.map((n, bi) => (
                         <span key={n} className={`${pc(players.indexOf(n)).text} ${bi > 0 ? 'ml-1' : ''}`}>{n}</span>
@@ -618,7 +618,10 @@ function GameLogTable({ summaries, players, analyzed, decisions }: {
 
 function SessionTabInner() {
   const [rawData, setRawData] = useState<P6Export | null>(null)
-  const [selectedGroup, setSelectedGroup] = useState<string[] | null>(null)
+  // pickerKeys: group keys currently checked in the picker (not yet committed).
+  // activeGroups: the committed selection that drives parsing and analysis; null = show picker.
+  const [pickerKeys, setPickerKeys] = useState<Set<string>>(new Set())
+  const [activeGroups, setActiveGroups] = useState<string[][] | null>(null)
   const [error, setError] = useState('')
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
@@ -628,7 +631,8 @@ function SessionTabInner() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleFile = useCallback((file: File) => {
-    setError(''); setAnalyzed([]); setNoModel(false); setSelectedGroup(null); setModelVariant('v2')
+    setError(''); setAnalyzed([]); setNoModel(false)
+    setPickerKeys(new Set()); setActiveGroups(null); setModelVariant('v2')
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -636,7 +640,11 @@ function SessionTabInner() {
         if (!Array.isArray(parsed.games)) throw new Error('Not a valid pokker6 export')
         setRawData(parsed)
         const groups = detectPlayerGroups(parsed.games)
-        if (groups.length === 1) setSelectedGroup(groups[0]!.players)
+        if (groups.length === 1) {
+          const key = groups[0]!.players.slice().sort().join('|')
+          setPickerKeys(new Set([key]))
+          setActiveGroups([groups[0]!.players])
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to parse file')
       }
@@ -651,14 +659,16 @@ function SessionTabInner() {
   }, [handleFile])
 
   const parseResult = useMemo(() => {
-    if (!rawData || !selectedGroup) return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[], parseError: '' }
+    const empty = { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[], allPlayers: [] as string[], parseError: '' }
+    if (!rawData || !activeGroups || activeGroups.length === 0) return empty
     try {
-      return { ...parseSessionGames(rawData.games, selectedGroup), parseError: '' }
+      const result = parseSessionGames(rawData.games, activeGroups)
+      return { ...result, parseError: '' }
     } catch (e) {
-      return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[], parseError: e instanceof Error ? e.message : String(e) }
+      return { ...empty, parseError: e instanceof Error ? e.message : String(e) }
     }
-  }, [rawData, selectedGroup])
-  const { decisions, summaries, parseError } = parseResult
+  }, [rawData, activeGroups])
+  const { decisions, summaries, allPlayers, parseError } = parseResult
 
   const groups = useMemo(() => rawData ? detectPlayerGroups(rawData.games) : [], [rawData])
 
@@ -679,40 +689,44 @@ function SessionTabInner() {
     setAnalyzed(enriched)
   }, [decisions]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Per-player stats from summaries
+  // Per-player stats from summaries.
+  // Win/bust calculations use s.playerNames (the actual players in each game)
+  // so that multi-group selections (e.g. A vs B + A vs B vs C) work correctly.
   const stats = useMemo(() => {
-    if (!selectedGroup || summaries.length === 0) return null
-    const players = selectedGroup
+    if (!activeGroups || allPlayers.length === 0 || summaries.length === 0) return null
 
-    // wins = times this player scored the highest among the group
     const wins: Record<string, number> = {}
     const soloBusts: Record<string, number> = {}
     const bustCost: Record<string, number> = {}
     const allBustCount: Record<string, number> = {}
-    for (const n of players) { wins[n] = 0; soloBusts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0 }
+    for (const n of allPlayers) { wins[n] = 0; soloBusts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0 }
     let ties = 0; let allBustHands = 0
 
     for (const s of summaries) {
-      const scores = players.map(p => s.points[p] ?? 0)
+      const gamePlayers = s.playerNames.length > 0 ? s.playerNames : allPlayers
+      const scores = gamePlayers.map(p => s.points[p] ?? 0)
       const maxScore = Math.max(...scores)
-      const winners = players.filter(p => (s.points[p] ?? 0) === maxScore)
-      if (winners.length === 1) wins[winners[0]!]++
+      const winners = gamePlayers.filter(p => (s.points[p] ?? 0) === maxScore)
+      if (winners.length === 1) wins[winners[0]!] = (wins[winners[0]!] ?? 0) + 1
       else ties++
 
-      const bustCount = players.filter(p => s.busts[p]).length
-      if (bustCount === players.length) {
+      const bustCount = gamePlayers.filter(p => s.busts[p]).length
+      if (bustCount === gamePlayers.length) {
         allBustHands++
-        for (const p of players) allBustCount[p]++
+        for (const p of gamePlayers) allBustCount[p] = (allBustCount[p] ?? 0) + 1
       } else {
-        for (const p of players) {
-          if (s.busts[p]) { soloBusts[p]++; bustCost[p] += s.points[p] ?? 0 }
+        for (const p of gamePlayers) {
+          if (s.busts[p]) {
+            soloBusts[p] = (soloBusts[p] ?? 0) + 1
+            bustCost[p] = (bustCost[p] ?? 0) + (s.points[p] ?? 0)
+          }
         }
       }
     }
 
     const final = summaries.at(-1)!
-    return { players, wins, ties, soloBusts, bustCost, allBustHands, allBustCount, finalRuns: final.runs }
-  }, [selectedGroup, summaries])
+    return { wins, ties, soloBusts, bustCost, allBustHands, allBustCount, finalRuns: final.runs }
+  }, [activeGroups, allPlayers, summaries])
 
   const runAnalysis = useCallback(async () => {
     if (decisions.length === 0) return
@@ -747,22 +761,22 @@ function SessionTabInner() {
   }, [decisions, modelVariant])
 
   const blundersByPlayer = useMemo(() => {
-    if (!selectedGroup || analyzed.length === 0) return new Map<string, AnalyzedDecision[]>()
+    if (!activeGroups || allPlayers.length === 0 || analyzed.length === 0) return new Map<string, AnalyzedDecision[]>()
     const map = new Map<string, AnalyzedDecision[]>()
-    for (const p of selectedGroup) {
+    for (const p of allPlayers) {
       map.set(p, analyzed.filter(d => d.username === p).sort((a, b) => b.evLost - a.evLost))
     }
     return map
-  }, [analyzed, selectedGroup])
+  }, [analyzed, allPlayers, activeGroups])
 
   const evTotalsByPlayer = useMemo(() => {
-    if (!selectedGroup || analyzed.length === 0) return null
+    if (!activeGroups || allPlayers.length === 0 || analyzed.length === 0) return null
     const map: Record<string, number> = {}
     for (const d of analyzed) {
       map[d.username] = (map[d.username] ?? 0) + d.evLost
     }
     return map
-  }, [analyzed, selectedGroup])
+  }, [analyzed, activeGroups, allPlayers])
 
   // ── No file ───────────────────────────────────────────────────────────────
 
@@ -785,25 +799,72 @@ function SessionTabInner() {
 
   // ── Group selector ────────────────────────────────────────────────────────
 
-  if (!selectedGroup) {
+  if (!activeGroups) {
+    const allSelected = groups.length > 0 && groups.every(g => pickerKeys.has(g.players.slice().sort().join('|')))
+    const toggleGroup = (key: string) => {
+      setPickerKeys(prev => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return next
+      })
+    }
+    const toggleAll = () => {
+      if (allSelected) setPickerKeys(new Set())
+      else setPickerKeys(new Set(groups.map(g => g.players.slice().sort().join('|'))))
+    }
+    const confirmSelection = () => {
+      const selected = groups
+        .filter(g => pickerKeys.has(g.players.slice().sort().join('|')))
+        .map(g => g.players)
+      if (selected.length === 0) return
+      setActiveGroups(selected)
+      setAnalyzed([])
+    }
+    const totalGames = groups
+      .filter(g => pickerKeys.has(g.players.slice().sort().join('|')))
+      .reduce((sum, g) => sum + g.count, 0)
+
     return (
       <div className="space-y-4 py-8">
-        <p className="text-gray-400 text-sm text-center">Select a game group to analyse:</p>
+        <p className="text-gray-400 text-sm text-center">
+          Select game group{groups.length > 1 ? 's' : ''} to analyse:
+        </p>
         <div className="flex flex-col gap-2 max-w-sm mx-auto">
-          {groups.map(g => (
-            <button key={g.players.join('|')} onClick={() => setSelectedGroup(g.players)}
-              className="px-4 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 text-left transition-colors">
-              <span className="text-gray-200 font-medium">
-                {g.players.map((p, i) => (
-                  <span key={p} className={pc(i).text}>{i > 0 ? <span className="text-gray-500 mx-1">vs</span> : null}{p}</span>
-                ))}
-              </span>
-              <span className="ml-2 text-gray-500 text-sm">{g.count} game{g.count !== 1 ? 's' : ''}</span>
+          {groups.length > 1 && (
+            <button onClick={toggleAll}
+              className="px-3 py-1.5 rounded text-xs text-gray-400 hover:text-gray-200 border border-gray-700 hover:border-gray-500 transition-colors text-center">
+              {allSelected ? 'Deselect all' : 'Select all'}
             </button>
-          ))}
+          )}
+          {groups.map(g => {
+            const key = g.players.slice().sort().join('|')
+            const checked = pickerKeys.has(key)
+            return (
+              <label key={key}
+                className={`flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer transition-colors ${checked ? 'bg-indigo-900/30 border border-indigo-800/50' : 'bg-gray-800 hover:bg-gray-700 border border-transparent'}`}>
+                <input type="checkbox" checked={checked} onChange={() => toggleGroup(key)} className="accent-indigo-500" />
+                <span className="flex-1 text-gray-200 font-medium">
+                  {g.players.map((p, i) => (
+                    <span key={p}>
+                      {i > 0 && <span className="text-gray-500 mx-1">vs</span>}
+                      <span className={pc(i).text}>{p}</span>
+                    </span>
+                  ))}
+                </span>
+                <span className="text-gray-500 text-sm">{g.count} game{g.count !== 1 ? 's' : ''}</span>
+              </label>
+            )
+          })}
+          {pickerKeys.size > 0 && (
+            <button onClick={confirmSelection}
+              className="mt-1 px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+              Analyse {totalGames} game{totalGames !== 1 ? 's' : ''} →
+            </button>
+          )}
         </div>
         <div className="text-center">
-          <button onClick={() => { setRawData(null); setSelectedGroup(null) }} className="text-gray-600 hover:text-gray-400 text-xs">
+          <button onClick={() => { setRawData(null); setPickerKeys(new Set()); setActiveGroups(null) }} className="text-gray-600 hover:text-gray-400 text-xs">
             Load different file
           </button>
         </div>
@@ -813,7 +874,7 @@ function SessionTabInner() {
 
   // ── Full analysis ─────────────────────────────────────────────────────────
 
-  const players = selectedGroup
+  const players = allPlayers
 
   return (
     <div className="space-y-6">
@@ -837,7 +898,7 @@ function SessionTabInner() {
             </p>
           )}
         </div>
-        <button onClick={() => { setSelectedGroup(null); setAnalyzed([]) }} className="text-gray-600 hover:text-gray-400 text-xs">
+        <button onClick={() => setActiveGroups(null)} className="text-gray-600 hover:text-gray-400 text-xs">
           ← Change
         </button>
       </div>

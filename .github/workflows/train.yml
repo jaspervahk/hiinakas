@@ -7,51 +7,113 @@ on:
   workflow_dispatch:
     inputs:
       games:
-        description: 'Self-play games per iteration'
-        default: '5000'
+        description: 'Self-play games per shard (total = shards × games)'
+        default: '600'
       epochs:
         description: 'Training epochs'
         default: '8'
 
 env:
-  # MCTS depth-2 with 30 sims is ~5× slower per decision than depth-1 NN.
-  # 1000 games × 10 decisions × 30 sims ≈ same wall-time as 5000 depth-1 games.
+  # 3 parallel shards × GAMES games each = 1800 games per 10-min cycle by default.
+  # Shard seeds are spread across run_number so they don't produce duplicate data.
   GAMES: ${{ github.event.inputs.games || '600' }}
   EPOCHS: ${{ github.event.inputs.epochs || '8' }}
   MCTS_SIMS: '100'
-  # Sliding window: train on the last N batches from the rolling data cache.
-  # 8 batches × ~6K samples = ~48K training samples per run. Window is larger
-  # than the previous 5-batch setup to compensate for smaller per-batch counts
-  # from the higher sim count (100 sims vs 60 → 600 games vs 1000 per run).
+  # Train on the last 8 batches (≈ 2-3 runs × 3 shards). Prune keeps 15
+  # batches (~5 runs) so the window is always satisfiable.
   WINDOW: '8'
 
 jobs:
-  train-and-deploy:
+  # ── Self-play shards ──────────────────────────────────────────────────────────
+  # Three shards run in parallel. Each produces one .bin batch file and uploads
+  # it as an artifact. The training job downloads all three after they finish.
+  # The WASM inference binary is committed to git — no Rust build step needed.
+  selfplay:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false   # if one shard fails, keep training with the others
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Restore training data cache
-        uses: actions/cache@v4
-        with:
-          path: data/
-          # Unique key per run so the updated data/ is always saved.
-          # restore-keys falls back to the most recent matching cache.
-          key: training-data-${{ github.run_number }}
-          restore-keys: |
-            training-data-
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Download current deployed model (warm-start)
+        run: |
+          mkdir -p models
+          curl -sf https://hiinakas-355.web.app/models/policy.bin -o models/policy.bin || true
+          python3 - <<'EOF'
+          import os
+          path = 'models/policy.bin'
+          try:
+              with open(path, 'rb') as f:
+                  magic = f.read(4)
+              if magic == b'OFCW':
+                  size = os.path.getsize(path)
+                  print(f'Downloaded valid model ({size // 1024} KB) — warm-starting shard ${{ matrix.shard }}')
+              else:
+                  os.remove(path)
+                  print('Downloaded file is not a valid OFCW model — using heuristic')
+          except FileNotFoundError:
+              print('No model available — first run, using heuristic policy')
+          EOF
+
+      - name: Self-play shard ${{ matrix.shard }}
+        run: |
+          mkdir -p data
+          # Each shard gets a unique seed = run_number * 1000 + shard to avoid
+          # duplicate game sequences across shards or across runs.
+          npx tsx scripts/selfplay.ts \
+            --games "$GAMES" \
+            --players 2 \
+            --mcts-sims "$MCTS_SIMS" \
+            --seed $(( ${{ github.run_number }} * 1000 + ${{ matrix.shard }} )) \
+            --out data/batch_${{ github.run_number }}_${{ matrix.shard }}.bin
+
+      - name: Upload batch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-batch-${{ matrix.shard }}
+          path: data/batch_${{ github.run_number }}_${{ matrix.shard }}.bin
+          retention-days: 1
+
+  # ── Train + deploy ────────────────────────────────────────────────────────────
+  # Runs after all shards complete. Downloads the new batches, merges with the
+  # rolling replay-buffer cache, trains, builds the app, and deploys.
+  train-and-deploy:
+    needs: selfplay
+    if: always()   # run even if some shards failed, as long as at least one succeeded
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore training data cache (replay buffer)
+        uses: actions/cache@v4
+        with:
+          path: data/
+          # Unique key per run so the updated data/ is always saved.
+          # restore-keys falls back to the most recent saved cache.
+          key: training-data-${{ github.run_number }}
+          restore-keys: |
+            training-data-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -64,15 +126,11 @@ jobs:
         run: pip install -r scripts/requirements.txt
 
       - name: Download current deployed model (warm-start)
-        # Fetch the latest model from Firebase Hosting for iterative self-play.
-        # Firebase's SPA catch-all rewrite returns index.html (200) for missing
-        # paths, so we can't rely on the HTTP status code alone — we verify the
-        # OFCW magic bytes and discard the file if it's not a real model.
         run: |
           mkdir -p models
           curl -sf https://hiinakas-355.web.app/models/policy.bin -o models/policy.bin || true
           python3 - <<'EOF'
-          import os, sys
+          import os
           path = 'models/policy.bin'
           try:
               with open(path, 'rb') as f:
@@ -82,22 +140,25 @@ jobs:
                   print(f'Downloaded valid model ({size // 1024} KB) — warm-starting')
               else:
                   os.remove(path)
-                  print(f'Downloaded file is not a valid OFCW model (magic={magic!r}) — first run, using heuristic')
+                  print('Downloaded file is not a valid OFCW model — first run, using heuristic')
           except FileNotFoundError:
               print('No model file — first run, using heuristic policy')
           EOF
 
-      - name: Self-play (MCTS depth-2)
+      - name: Download self-play batches from all shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-batch-*
+          path: data/
+          merge-multiple: true
+
+      - name: Prune old batches and report data cache
         run: |
           mkdir -p data
-          npx tsx scripts/selfplay.ts \
-            --games "$GAMES" \
-            --players 2 \
-            --mcts-sims "$MCTS_SIMS" \
-            --out data/batch_${{ github.run_number }}.bin
-          # Keep only the most recent 10 batches so the cache stays bounded (~420 MB).
-          cd data && ls -t *.bin | tail -n +11 | xargs -r rm; cd ..
-          echo "Data cache: $(ls data/*.bin 2>/dev/null | wc -l) batches, $(du -sh data/ 2>/dev/null | cut -f1)"
+          # Keep last 15 batches (≈5 runs × 3 shards). Window=8 always has
+          # enough data; the extra buffer handles failed/missing shards.
+          cd data && ls -t *.bin 2>/dev/null | tail -n +16 | xargs -r rm; cd ..
+          echo "Data: $(ls data/*.bin 2>/dev/null | wc -l) batches, $(du -sh data/ 2>/dev/null | cut -f1)"
 
       - name: Train value network
         run: |
@@ -110,8 +171,6 @@ jobs:
             --batch 512
 
       - name: Build app
-        # Build the full SPA so dist/ contains the app + model together.
-        # Firebase client config is public by design (visible in any browser).
         env:
           VITE_FIREBASE_API_KEY: AIzaSyAZJ6kZHk--spDOJg3YqYzukftMXr0JYdA
           VITE_FIREBASE_AUTH_DOMAIN: hiinakas-355.firebaseapp.com
@@ -139,5 +198,7 @@ jobs:
       - name: Report
         run: |
           SIZE=$(wc -c < models/policy.bin)
-          echo "Model size: $(( SIZE / 1024 )) KB"
-          echo "Run ${{ github.run_number }} complete — model deployed to https://hiinakas-355.web.app/models/policy.bin"
+          SHARDS=$(ls data/batch_${{ github.run_number }}_*.bin 2>/dev/null | wc -l)
+          echo "Model: $(( SIZE / 1024 )) KB"
+          echo "Run ${{ github.run_number }}: $SHARDS shard(s) × $GAMES games = $(( SHARDS * $GAMES )) new training games"
+          echo "Deployed to https://hiinakas-355.web.app/models/policy.bin"

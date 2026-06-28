@@ -204,29 +204,48 @@ function parseMovesToDecisions(
 
 // ── Main entry point ─────────────────────────────────────────────────────────
 
+// Accepts one or more exact player groups. A game is included only if its
+// player set exactly matches one of the provided groups. Running totals are
+// tracked per player across the union of all groups; each game's summary
+// records `playerNames` as the actual players in that specific game so callers
+// can distinguish per-game participation from the combined player list.
 export function parseSessionGames(
   games: P6Game[],
-  playerNames: string[],
-): { decisions: DecisionPoint[]; summaries: GameSummary[] } {
-  if (playerNames.length < 2) return { decisions: [], summaries: [] }
+  playerGroups: string[][],
+): { decisions: DecisionPoint[]; summaries: GameSummary[]; allPlayers: string[] } {
+  if (playerGroups.length === 0 || playerGroups.every(g => g.length < 2)) {
+    return { decisions: [], summaries: [], allPlayers: [] }
+  }
+
+  // Build an exact-match key for each group.
+  const groupKeyMap = new Map<string, string[]>()
+  for (const group of playerGroups) {
+    const key = [...group].sort().join('|')
+    groupKeyMap.set(key, group)
+  }
+
+  const allPlayers = [...new Set(playerGroups.flat())].sort()
 
   const filtered = games
     .filter(g => {
-      const names = new Set(g.players.map(p => p.username))
-      return playerNames.every(n => names.has(n))
+      const gameKey = g.players.map(p => p.username).sort().join('|')
+      return groupKeyMap.has(gameKey)
     })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 
   const decisions: DecisionPoint[] = []
   const summaries: GameSummary[] = []
   const runs: Record<string, number> = {}
-  for (const n of playerNames) runs[n] = 0
+  for (const n of allPlayers) runs[n] = 0
 
   for (const game of filtered) {
-    // Gather uid + result for every player in the group
+    const gameKey = game.players.map(p => p.username).sort().join('|')
+    const activeGroup = groupKeyMap.get(gameKey)!
+
+    // Gather uid + result for every player in this game's exact group.
     const playerData = new Map<string, { uid: string; points: number; bust: boolean }>()
     let skip = false
-    for (const pname of playerNames) {
+    for (const pname of activeGroup) {
       const player = game.players.find(p => p.username === pname)
       const result = game.results.find(r => r.username === pname)
       if (!player || !result) { skip = true; break }
@@ -238,7 +257,7 @@ export function parseSessionGames(
     }
     if (skip) continue
 
-    // Update running totals
+    // Update running totals for players in this game only.
     const points: Record<string, number> = {}
     const busts: Record<string, boolean> = {}
     for (const [pname, data] of playerData) {
@@ -251,7 +270,7 @@ export function parseSessionGames(
     summaries.push({
       gameId: game.gameId,
       gameTime: game.createdAt,
-      playerNames: [...playerNames],
+      playerNames: activeGroup,   // actual players in THIS game (not the union)
       points,
       busts,
       runs: { ...runs },
@@ -274,7 +293,7 @@ export function parseSessionGames(
     // Parse normal game decisions — each player sees all opponents' revealed boards
     for (const [pname, data] of playerData) {
       const pMoves = normalMoves.get(pname) ?? []
-      const oppNames = playerNames.filter(n => n !== pname)
+      const oppNames = activeGroup.filter(n => n !== pname)
       decisions.push(
         ...parseMovesToDecisions(
           game.gameId, game.createdAt, pname, data.uid, 'normal_play',
@@ -317,7 +336,7 @@ export function parseSessionGames(
     }
   }
 
-  return { decisions, summaries }
+  return { decisions, summaries, allPlayers }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
