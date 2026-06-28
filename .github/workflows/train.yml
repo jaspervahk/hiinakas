@@ -1,27 +1,30 @@
 name: GTO Training
 
-# Runs every 10 minutes automatically, or manually from GitHub Actions tab.
+# Runs every hour automatically, or manually from GitHub Actions tab.
+# Hourly cron is far more reliable than */10 on GitHub's shared runners,
+# and 3000 games/shard × 3 shards = 9000 games/run gives a much better
+# compute-to-overhead ratio than the old 600-game runs.
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       games:
         description: 'Self-play games per shard (total = shards × games)'
-        default: '600'
+        default: '3000'
       epochs:
         description: 'Training epochs'
         default: '8'
 
 env:
-  # 3 parallel shards × GAMES games each = 1800 games per 10-min cycle by default.
+  # 3 parallel shards × GAMES games each = 9000 games per hourly cycle.
   # Shard seeds are spread across run_number so they don't produce duplicate data.
-  GAMES: ${{ github.event.inputs.games || '600' }}
+  GAMES: ${{ github.event.inputs.games || '3000' }}
   EPOCHS: ${{ github.event.inputs.epochs || '8' }}
   MCTS_SIMS: '100'
-  # Train on the last 8 batches (≈ 2-3 runs × 3 shards). Prune keeps 15
-  # batches (~5 runs) so the window is always satisfiable.
-  WINDOW: '8'
+  # Train on the last 12 batches (≈ 4 runs × 3 shards = ~4 hours of history).
+  # Prune keeps 18 batches (~6 runs) so the window is always satisfiable.
+  WINDOW: '12'
 
 jobs:
   # ── Self-play shards ──────────────────────────────────────────────────────────
@@ -155,9 +158,9 @@ jobs:
       - name: Prune old batches and report data cache
         run: |
           mkdir -p data
-          # Keep last 15 batches (≈5 runs × 3 shards). Window=8 always has
+          # Keep last 18 batches (≈6 runs × 3 shards). Window=12 always has
           # enough data; the extra buffer handles failed/missing shards.
-          cd data && ls -t *.bin 2>/dev/null | tail -n +16 | xargs -r rm; cd ..
+          cd data && ls -t *.bin 2>/dev/null | tail -n +19 | xargs -r rm; cd ..
           echo "Data: $(ls data/*.bin 2>/dev/null | wc -l) batches, $(du -sh data/ 2>/dev/null | cut -f1)"
 
       - name: Train value network
