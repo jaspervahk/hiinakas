@@ -146,7 +146,7 @@ if (fs.existsSync(MODEL_PATH)) {
     }
     const backend = wasmAvailable ? 'WASM+SIMD' : 'JS'
     basePolicy = (info) => nnPickPlacement(loadedModel!, info.board, info.hand, info.street, info.revealedOpponentBoards, info.discards)
-    const policyName = MCTS_SIMS > 0 ? `MCTS depth-2 (${MCTS_SIMS} sims, nnOpponents, ${backend})` : `NN depth-1 (${backend})`
+    const policyName = MCTS_SIMS > 0 ? `MCTS depth-2 (${MCTS_SIMS} sims, heuristic opponents, ${backend})` : `NN depth-1 (${backend})`
     console.log(`Policy: ${policyName}  (${MODEL_PATH})`)
   } catch (e) {
     console.log(`Warning: model at ${MODEL_PATH} is invalid (${e instanceof Error ? e.message : e}) — using heuristic`)

@@ -38,7 +38,7 @@ let loadedModel: NNModel | null = null
 // be net-faster than heuristic opponents even including the extra forward passes.
 const COACH_MCTS_OPTS: MCTSOptions    = { nSims: 500, maxDepth: 2, nnOpponents: true }
 const ANALYSIS_MCTS_OPTS: MCTSOptions = { nSims: 500, maxDepth: 2, nnOpponents: true }
-const BOT_MCTS_OPTS: MCTSOptions      = { nSims: 50,  maxDepth: 2, nnOpponents: true }
+const BOT_MCTS_OPTS: MCTSOptions      = { nSims: 500, maxDepth: 2, nnOpponents: true }
 
 // Instant depth-1 NN baseline using a single batched forward pass.
 // Shown to the user before MCTS results are ready.
@@ -83,7 +83,7 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
     } else if (msg.type === 'GET_BOT_MOVE') {
       const { state, rollouts, seed } = msg.payload
       const placement = loadedModel
-        ? mctsPickPlacement(state, loadedModel, BOT_MCTS_OPTS, makeRNG(seed))
+        ? mctsPickPlacement(state, loadedModel, { ...BOT_MCTS_OPTS, nSims: rollouts || BOT_MCTS_OPTS.nSims }, makeRNG(seed))
         : getBotMove(state, rollouts, makeRNG(seed))
       self.postMessage({ id: msg.id, type: 'BOT_MOVE', payload: placement } as WorkerResponse)
 
