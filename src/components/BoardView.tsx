@@ -1,4 +1,4 @@
-import type { Card, PartialBoard } from '../engine/index'
+import type { Board, Card, PartialBoard } from '../engine/index'
 import { evaluate3, evaluate5, compareHandRank, royalties, isFoul } from '../engine/index'
 import { CardView } from './CardView'
 import type { PendingRows } from '../game/types'
@@ -116,11 +116,11 @@ export function BoardView({
   let statusColor = 'text-gray-500'
 
   if (showStatus && isComplete) {
-    if (isFoul(board as any)) {
+    if (isFoul(board as Board)) {
       statusText = 'Foul'
       statusColor = 'text-red-400'
     } else {
-      const r = royalties(board as any)
+      const r = royalties(board as Board)
       statusText = r > 0 ? `+${r} royalties` : ''
       statusColor = 'text-amber-400'
     }

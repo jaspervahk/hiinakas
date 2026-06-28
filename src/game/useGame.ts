@@ -14,6 +14,7 @@ export function useGame(): [GameState, (action: Action) => void, UndoControls] {
 
   // Keep a ref so wrappedDispatch (stable callback) can read current state.
   const stateRef = useRef(state)
+  // eslint-disable-next-line react-hooks/refs
   stateRef.current = state
 
   const wrappedDispatch = useCallback((action: Action) => {
@@ -32,6 +33,7 @@ export function useGame(): [GameState, (action: Action) => void, UndoControls] {
   }, [])
 
   const snapshotRef = useRef(snapshot)
+  // eslint-disable-next-line react-hooks/refs
   snapshotRef.current = snapshot
 
   const undo = useCallback(() => {

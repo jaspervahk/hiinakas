@@ -11,10 +11,11 @@ set -euo pipefail
 PROJECTDIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECTDIR"
 
-GAMES="${GAMES:-5000}"
+GAMES="${GAMES:-2000}"
 EPOCHS="${EPOCHS:-20}"
 PLAYERS="${PLAYERS:-2}"
 WINDOW="${WINDOW:-20}"   # train on the last N batches only — prevents mixing old/new policy data
+MCTS_SIMS="${MCTS_SIMS:-30}"   # MCTS simulations per decision (0 = depth-1 NN)
 
 # Resume from the highest existing batch number so restarts never overwrite data.
 ITER=$(ls data/batch_*.bin 2>/dev/null | sed 's/.*batch_0*//' | sed 's/\.bin//' | sort -n | tail -1)
@@ -32,8 +33,8 @@ while true; do
   echo ""
   echo "────────── Iteration $ITER — $(date '+%H:%M:%S') ──────────"
 
-  echo "[1/3] Self-play ($GAMES games, policy: $([ -f models/policy.bin ] && echo NN || echo heuristic))…"
-  npx tsx scripts/selfplay.ts --games "$GAMES" --players "$PLAYERS" --out "$BATCH"
+  echo "[1/3] Self-play ($GAMES games, MCTS sims=$MCTS_SIMS, policy: $([ -f models/policy.bin ] && echo NN || echo heuristic))…"
+  npx tsx scripts/selfplay.ts --games "$GAMES" --players "$PLAYERS" --mcts-sims "$MCTS_SIMS" --out "$BATCH"
 
   TOTAL_BATCHES=$(ls data/*.bin 2>/dev/null | wc -l | tr -d ' ')
   echo "[2/3] Training ($EPOCHS epochs on last $WINDOW of $TOTAL_BATCHES batches, warm-start: $([ -f models/policy.bin ] && echo yes || echo no))…"

@@ -137,6 +137,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     if (!init) return
     analyzerBridge.initialState = null
     fromGameRef.current = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setYourBoard({
       top: [...init.board.top],
       middle: [...init.board.middle],
@@ -197,9 +198,15 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
 
   // Keep refs for snapshot capture
   const stateRefs = { yourBoard, yourHand, oppBoards }
-  const yourBoardRef = useRef(yourBoard); yourBoardRef.current = yourBoard
-  const yourHandRef = useRef(yourHand); yourHandRef.current = yourHand
-  const oppBoardsRef = useRef(oppBoards); oppBoardsRef.current = oppBoards
+  const yourBoardRef = useRef(yourBoard)
+  // eslint-disable-next-line react-hooks/refs
+  yourBoardRef.current = yourBoard
+  const yourHandRef = useRef(yourHand)
+  // eslint-disable-next-line react-hooks/refs
+  yourHandRef.current = yourHand
+  const oppBoardsRef = useRef(oppBoards)
+  // eslint-disable-next-line react-hooks/refs
+  oppBoardsRef.current = oppBoards
 
   function saveSnapshot() {
     historyRef.current = [
@@ -302,7 +309,8 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   function applyPlacement(pl: Placement) {
     // When launched from a game, send the placement back and return
     if (fromGameRef.current) {
-      analyzerBridge.pendingPlacement = pl
+      // eslint-disable-next-line react-hooks/immutability
+    analyzerBridge.pendingPlacement = pl
       onNavigate('game')
       return
     }
@@ -683,7 +691,9 @@ function BonusTab() {
   const [result, setResult] = useState<PartialBoard | null>(null)
   const [solving, setSolving] = useState(false)
   const historyRef = useRef<Card[][]>([])
+  const [historyLen, setHistoryLen] = useState(0)
   const cardsRef = useRef(cards)
+  // eslint-disable-next-line react-hooks/refs
   cardsRef.current = cards
 
   const numDiscard = cards.length === 13 ? 0 : cards.length === 14 ? 1 : cards.length === 15 ? 2 : -1
@@ -692,12 +702,14 @@ function BonusTab() {
     if (cards.some(c => sameCard(c, card))) return
     if (cards.length >= 15) return
     historyRef.current = [...historyRef.current.slice(-9), [...cardsRef.current]]
+    setHistoryLen(historyRef.current.length)
     setCards(arr => [...arr, card])
     setResult(null)
   }
 
   function remove(idx: number) {
     historyRef.current = [...historyRef.current.slice(-9), [...cardsRef.current]]
+    setHistoryLen(historyRef.current.length)
     setCards(arr => arr.filter((_, i) => i !== idx))
     setResult(null)
   }
@@ -705,6 +717,7 @@ function BonusTab() {
   const undo = useCallback(() => {
     const prev = historyRef.current.pop()
     if (!prev) return
+    setHistoryLen(historyRef.current.length)
     setCards(prev)
     setResult(null)
   }, [])
@@ -744,13 +757,13 @@ function BonusTab() {
         <div className="mt-2 flex gap-2">
           <button
             onClick={undo}
-            disabled={historyRef.current.length === 0}
+            disabled={historyLen === 0}
             className="text-xs px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:text-gray-600 disabled:cursor-not-allowed text-gray-300"
           >
             ↩ Undo
           </button>
           <button
-            onClick={() => { historyRef.current = []; setCards([]); setResult(null) }}
+            onClick={() => { historyRef.current = []; setHistoryLen(0); setCards([]); setResult(null) }}
             className="text-xs px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300"
           >
             Clear

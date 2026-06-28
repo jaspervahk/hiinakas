@@ -127,6 +127,7 @@ export function useCoach(state: GameState, _enabled: boolean, rollouts = 200): C
 
     if (!key || !info) {
       keyRef.current = null
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPlacements([])
       setIsComputing(false)
       setRolloutsDone(0)

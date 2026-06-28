@@ -650,17 +650,15 @@ function SessionTabInner() {
     if (file) handleFile(file)
   }, [handleFile])
 
-  const [parseError, setParseError] = useState('')
-  const { decisions, summaries } = useMemo(() => {
-    if (!rawData || !selectedGroup) return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[] }
+  const parseResult = useMemo(() => {
+    if (!rawData || !selectedGroup) return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[], parseError: '' }
     try {
-      setParseError('')
-      return parseSessionGames(rawData.games, selectedGroup)
+      return { ...parseSessionGames(rawData.games, selectedGroup), parseError: '' }
     } catch (e) {
-      setParseError(e instanceof Error ? e.message : String(e))
-      return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[] }
+      return { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[], parseError: e instanceof Error ? e.message : String(e) }
     }
   }, [rawData, selectedGroup])
+  const { decisions, summaries, parseError } = parseResult
 
   const groups = useMemo(() => rawData ? detectPlayerGroups(rawData.games) : [], [rawData])
 
@@ -677,6 +675,7 @@ function SessionTabInner() {
       if (!src) return a
       return { ...a, infoState: { ...a.infoState, board: src.infoState.board } }
     })
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAnalyzed(enriched)
   }, [decisions]) // eslint-disable-line react-hooks/exhaustive-deps
 

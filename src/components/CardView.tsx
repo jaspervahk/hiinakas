@@ -50,7 +50,7 @@ export function CardView({ card, selected, pending, onClick, size = 'md', dim }:
   const rankLabel = RANK_LABELS[card.rank] ?? String(card.rank)
   const suitSymbol = SUIT_SYMBOLS[card.suit] ?? card.suit
 
-  let textColor = dim
+  const textColor = dim
     ? (SUIT_COLORS_DIM[card.suit] ?? 'text-gray-700')
     : (SUIT_COLORS[card.suit] ?? 'text-slate-300')
   let borderColor = dim ? 'border-gray-800' : 'border-gray-700'
