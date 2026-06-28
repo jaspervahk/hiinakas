@@ -16,14 +16,14 @@ on:
 env:
   # MCTS depth-2 with 30 sims is ~5× slower per decision than depth-1 NN.
   # 1000 games × 10 decisions × 30 sims ≈ same wall-time as 5000 depth-1 games.
-  GAMES: ${{ github.event.inputs.games || '1000' }}
+  GAMES: ${{ github.event.inputs.games || '600' }}
   EPOCHS: ${{ github.event.inputs.epochs || '8' }}
-  MCTS_SIMS: '60'
+  MCTS_SIMS: '100'
   # Sliding window: train on the last N batches from the rolling data cache.
-  # 5 batches × ~20K samples = ~100K samples per training run, 5× more diverse
-  # than training on one batch. Epochs reduced proportionally so total gradient
-  # steps stay similar (5 × 39 batches × 8 epochs ≈ 1560 vs 39 × 30 = 1170 previously).
-  WINDOW: '5'
+  # 8 batches × ~6K samples = ~48K training samples per run. Window is larger
+  # than the previous 5-batch setup to compensate for smaller per-batch counts
+  # from the higher sim count (100 sims vs 60 → 600 games vs 1000 per run).
+  WINDOW: '8'
 
 jobs:
   train-and-deploy:
