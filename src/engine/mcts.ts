@@ -17,8 +17,8 @@ import { legalPlacements, applyPlacement } from './placement'
 import type { Placement } from './placement'
 import type { InfoState, RNG, ScoredPlacement } from './mc'
 import { buildLiveDeck, fisherYates } from './mc'
-import type { MLPWeights } from './mlpInference'
-import { nnValue, nnPickPlacement } from './nnPolicy'
+import type { NNModel } from './wasmModel'
+import { nnValue, nnPickPlacement, nnRankCandidates } from './nnPolicy'
 import { heuristicPlacement } from './heuristic'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ function doTransition(
   placement: Placement,
   world: Card[],
   di: { v: number },
-  weights: MLPWeights | null,   // null → use heuristic for opponents
+  model: NNModel | null,   // null → use heuristic for opponents
 ): MCTSNode | null {
   const newBoard = applyPlacement(node.board, placement)
   const newDiscards = placement.discard
@@ -128,8 +128,8 @@ function doTransition(
     di.v += cps
     if (oppHand.length < cps) return null
     const visibleToOpp: PartialBoard[] = [newBoard, ...oppBrds.filter((_, j) => j !== i)]
-    const pl = weights
-      ? nnPickPlacement(weights, oppBrds[i]!, oppHand, node.street, visibleToOpp)
+    const pl = model
+      ? nnPickPlacement(model, oppBrds[i]!, oppHand, node.street, visibleToOpp)
       : heuristicPlacement(oppBrds[i]!, oppHand, node.street)
     oppBrds[i] = applyPlacement(oppBrds[i]!, pl)
   }
@@ -158,7 +158,7 @@ function skipTransition(node: MCTSNode, di: { v: number }): void {
 export interface MCTSOptions {
   nSims: number       // total simulations to run
   maxDepth: number    // tree depth (2 = look one street ahead of current; recommended)
-  nnOpponents?: boolean  // use NN for opponent moves in transitions (slower but more accurate)
+  nnOpponents?: boolean  // use NN for opponent moves in transitions (more accurate; free with WASM)
 }
 
 // Max root candidates to explore via MCTS. Pre-ranked by NN so the tree focuses
@@ -171,26 +171,18 @@ const ROOT_TOP_K = 20
 function buildTree(
   root: MCTSNode,
   state: InfoState,
-  weights: MLPWeights,
+  model: NNModel,
   opts: MCTSOptions,
   rng: RNG,
 ): void {
   const { nSims, maxDepth, nnOpponents = false } = opts
-  const oppWeights = nnOpponents ? weights : null
+  const oppModel = nnOpponents ? model : null
 
-  // Pre-filter root to top-K by NN depth-1 so MCTS sims aren't wasted on weak moves.
-  // This mirrors the MC_REFINE_TOP_K approach from the old pipeline.
+  // Pre-filter root to top-K using a single batched NN evaluation.
   if (root.untriedPlacements.length > ROOT_TOP_K) {
-    const priorDiscards = state.discards ?? []
-    root.untriedPlacements = root.untriedPlacements
-      .map(p => {
-        const boardAfter = applyPlacement(root.board, p)
-        const discards = p.discard ? [...priorDiscards, p.discard] : priorDiscards
-        return { p, v: nnValue(weights, boardAfter, root.street, root.oppBoards, discards) }
-      })
-      .sort((a, b) => b.v - a.v)
-      .slice(0, ROOT_TOP_K)
-      .map(x => x.p)
+    root.untriedPlacements = nnRankCandidates(
+      model, root.untriedPlacements, root.board, root.street, root.oppBoards, state.discards ?? []
+    ).slice(0, ROOT_TOP_K).map(x => x.pl)
   }
 
   for (let sim = 0; sim < nSims; sim++) {
@@ -214,7 +206,7 @@ function buildTree(
       // Pick uniformly from untried placements (future: use policy prior here).
       const pIdx = Math.floor(rng() * node.untriedPlacements.length)
       const [placement] = node.untriedPlacements.splice(pIdx, 1) as [Placement]
-      const child = doTransition(node, placement, world, di, oppWeights)
+      const child = doTransition(node, placement, world, di, oppModel)
       if (child) {
         node.children.push(child)
         evalNode = child
@@ -228,7 +220,7 @@ function buildTree(
     // Use raw (normalized) output internally — UCB_C is tuned for [-1, 1] range.
     // evalStreet = the street at which evalNode.board was placed (matches training convention).
     const value = nnValue(
-      weights, evalNode.board, evalStreet, evalNode.oppBoards, evalNode.discards,
+      model, evalNode.board, evalStreet, evalNode.oppBoards, evalNode.discards,
     )
 
     // 4. Backpropagate.
@@ -241,40 +233,39 @@ function buildTree(
   }
 }
 
+// Placement key for set membership checks across the explored tree.
+function placementKey(p: Placement): string {
+  const cards = (cs: readonly Card[]) => cs.map(c => `${c.rank}${c.suit}`).sort().join(',')
+  return `T:${cards(p.topAdd)}|M:${cards(p.middleAdd)}|B:${cards(p.bottomAdd)}|D:${p.discard ? `${p.discard.rank}${p.discard.suit}` : '-'}`
+}
+
 // Return a single best-placement decision (used by the bot).
 export function mctsPickPlacement(
   state: InfoState,
-  weights: MLPWeights,
+  model: NNModel,
   opts: MCTSOptions,
   rng: RNG,
 ): Placement {
   const root = makeRoot(state)
-  buildTree(root, state, weights, opts, rng)
+  buildTree(root, state, model, opts, rng)
 
   if (root.children.length === 0) {
-    // No sims reached a child (degenerate state) — fall back to NN depth-1.
+    // No sims reached a child (degenerate state) — fall back to batched NN depth-1.
     const candidates = legalPlacements(state.board, state.hand, state.street)
-    const priorDiscards = state.discards ?? []
-    let best = candidates[0]!
-    let bestV = -Infinity
-    for (const p of candidates) {
-      const boardAfter = applyPlacement(state.board, p)
-      const discards = p.discard ? [...priorDiscards, p.discard] : priorDiscards
-      const v = nnValue(weights, boardAfter, state.street, state.revealedOpponentBoards, discards)
-      if (v > bestV) { bestV = v; best = p }
-    }
-    return best
+    return nnRankCandidates(
+      model, candidates, state.board, state.street, state.revealedOpponentBoards, state.discards ?? []
+    )[0]!.pl
   }
   // Most visits = robust best action (less sensitive to outlier high values).
   return root.children.reduce((a, b) => a.visits > b.visits ? a : b).placement!
 }
 
 // Return scored candidates for all legal placements (used by coach and analysis).
-// Placements that were never expanded in the tree get a depth-1 NN estimate so
-// the full ranked list is always complete.
+// Explored candidates use MCTS tree statistics; unexplored candidates use a single
+// batched NN depth-1 evaluation so the full ranked list is always complete.
 export function mctsScoredPlacements(
   state: InfoState,
-  weights: MLPWeights,
+  model: NNModel,
   opts: MCTSOptions,
   rng: RNG,
 ): ScoredPlacement[] {
@@ -283,28 +274,29 @@ export function mctsScoredPlacements(
   // Snapshot all legal placements before buildTree mutates untriedPlacements.
   const allPlacements = legalPlacements(state.board, state.hand, state.street)
 
-  buildTree(root, state, weights, opts, rng)
+  buildTree(root, state, model, opts, rng)
 
-  // Index explored children by a key derived from the placement.
-  function placementKey(p: Placement): string {
-    const cards = (cs: readonly Card[]) => cs.map(c => `${c.rank}${c.suit}`).sort().join(',')
-    return `T:${cards(p.topAdd)}|M:${cards(p.middleAdd)}|B:${cards(p.bottomAdd)}|D:${p.discard ? `${p.discard.rank}${p.discard.suit}` : '-'}`
-  }
   const explored = new Map(root.children.map(c => [placementKey(c.placement!), c]))
-  const scale = weights.outputScale   // convert raw NN output → game points
+  const scale = model.outputScale
   const priorDiscards = state.discards ?? []
 
-  return allPlacements.map(placement => {
-    const key = placementKey(placement)
-    const node = explored.get(key)
+  const exploredResults: ScoredPlacement[] = []
+  const unexploredPlacements: Placement[] = []
+
+  for (const placement of allPlacements) {
+    const node = explored.get(placementKey(placement))
     if (node && node.visits > 0) {
-      // Use total simulations as `n` so the coach/UI can show meaningful progress.
-      return { placement, ev: (node.totalValue / node.visits) * scale, variance: 0, n: opts.nSims }
+      exploredResults.push({ placement, ev: (node.totalValue / node.visits) * scale, variance: 0, n: opts.nSims })
+    } else {
+      unexploredPlacements.push(placement)
     }
-    // Unexplored by MCTS (pruned by top-K or not reached): depth-1 NN fallback.
-    const boardAfter = applyPlacement(state.board, placement)
-    const allDiscards = placement.discard ? [...priorDiscards, placement.discard] : priorDiscards
-    const ev = nnValue(weights, boardAfter, state.street, state.revealedOpponentBoards, allDiscards) * scale
-    return { placement, ev, variance: 0, n: 0 }
-  }).sort((a, b) => b.ev - a.ev)
+  }
+
+  // Batch all unexplored NN lookups in a single forwardBatch call.
+  const unexploredResults: ScoredPlacement[] = unexploredPlacements.length > 0
+    ? nnRankCandidates(model, unexploredPlacements, state.board, state.street, state.revealedOpponentBoards, priorDiscards)
+        .map(({ pl, val }) => ({ placement: pl, ev: val * scale, variance: 0, n: 0 }))
+    : []
+
+  return [...exploredResults, ...unexploredResults].sort((a, b) => b.ev - a.ev)
 }

@@ -18,6 +18,9 @@ models/
 __pycache__/
 *.pyc
 
+# Rust / wasm-pack build artifacts
+wasm/target/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

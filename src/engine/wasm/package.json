@@ -1,0 +1,15 @@
+{
+  "name": "ofc-nn",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "ofc_nn_bg.wasm",
+    "ofc_nn.js",
+    "ofc_nn.d.ts"
+  ],
+  "main": "ofc_nn.js",
+  "types": "ofc_nn.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

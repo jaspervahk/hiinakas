@@ -15,13 +15,32 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { fileURLToPath } from 'url'
 import { runGame, heuristicPolicy } from '../src/engine/simulate'
 import type { SimPolicy } from '../src/engine/simulate'
 import { ENCODE_DIM } from '../src/engine/encode'
-import { parseMLPWeights } from '../src/engine/mlpInference'
-import type { MLPWeights } from '../src/engine/mlpInference'
+import { createJSModel, createWasmModel } from '../src/engine/wasmModel'
+import type { NNModel } from '../src/engine/wasmModel'
 import { nnPickPlacement } from '../src/engine/nnPolicy'
 import { mctsPickPlacement } from '../src/engine/mcts'
+import { initSync, MlpModel } from '../src/engine/wasm/ofc_nn.js'
+
+// ── WASM init ─────────────────────────────────────────────────────────────────
+// Node.js doesn't support the fetch-based async init, so we read the .wasm
+// binary from disk and use initSync. WebAssembly.Module compilation is
+// synchronous for the 22 KB ofc-nn binary.
+
+const __selfplayDir = path.dirname(fileURLToPath(import.meta.url))
+const wasmBinPath = path.resolve(__selfplayDir, '../src/engine/wasm/ofc_nn_bg.wasm')
+
+let wasmAvailable = false
+try {
+  const wasmBytes = fs.readFileSync(wasmBinPath)
+  initSync({ module: wasmBytes })
+  wasmAvailable = true
+} catch (e) {
+  console.warn(`[selfplay] WASM init failed (${e instanceof Error ? e.message : e}) — using JS fallback`)
+}
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -114,14 +133,20 @@ console.log(`Self-play: ${NUM_GAMES} games × ${PLAYER_COUNT} players → ${OUT_
 console.log(`Feature dim: ${ENCODE_DIM}, seed: ${SEED}`)
 
 // Load NN policy if a trained model is available; otherwise fall back to heuristic.
-let loadedWeights: MLPWeights | null = null
+let loadedModel: NNModel | null = null
 let basePolicy: SimPolicy = heuristicPolicy
 if (fs.existsSync(MODEL_PATH)) {
   try {
     const buf = fs.readFileSync(MODEL_PATH)
-    loadedWeights = parseMLPWeights(buf.buffer as ArrayBuffer)
-    basePolicy = (info) => nnPickPlacement(loadedWeights!, info.board, info.hand, info.street, info.revealedOpponentBoards, info.discards)
-    const policyName = MCTS_SIMS > 0 ? `MCTS depth-2 (${MCTS_SIMS} sims)` : 'NN depth-1'
+    const modelBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
+    if (wasmAvailable) {
+      loadedModel = createWasmModel(new MlpModel(new Uint8Array(modelBuf)))
+    } else {
+      loadedModel = createJSModel(modelBuf)
+    }
+    const backend = wasmAvailable ? 'WASM+SIMD' : 'JS'
+    basePolicy = (info) => nnPickPlacement(loadedModel!, info.board, info.hand, info.street, info.revealedOpponentBoards, info.discards)
+    const policyName = MCTS_SIMS > 0 ? `MCTS depth-2 (${MCTS_SIMS} sims, nnOpponents, ${backend})` : `NN depth-1 (${backend})`
     console.log(`Policy: ${policyName}  (${MODEL_PATH})`)
   } catch (e) {
     console.log(`Warning: model at ${MODEL_PATH} is invalid (${e instanceof Error ? e.message : e}) — using heuristic`)
@@ -139,12 +164,13 @@ for (let g = 0; g < NUM_GAMES; g++) {
   // When MCTS is enabled, create a per-game policy closure capturing a fresh RNG.
   // The RNG is seeded independently from the deck so that MCTS search decisions
   // are reproducible given the same SEED argument but vary across games.
-  const policy: SimPolicy = (MCTS_SIMS > 0 && loadedWeights)
+  const policy: SimPolicy = (MCTS_SIMS > 0 && loadedModel)
     ? (() => {
         const mctsRng = mulberry32((gameSeed ^ 0xA5A5A5A5) >>> 0)
-        const w = loadedWeights!
+        const m = loadedModel!
         return (info: Parameters<SimPolicy>[0]) =>
-          mctsPickPlacement(info, w, { nSims: MCTS_SIMS, maxDepth: 2, nnOpponents: false }, mctsRng)
+          // nnOpponents: true — WASM makes opponent calls cheap enough to always enable.
+          mctsPickPlacement(info, m, { nSims: MCTS_SIMS, maxDepth: 2, nnOpponents: true }, mctsRng)
       })()
     : basePolicy
 

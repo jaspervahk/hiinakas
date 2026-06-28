@@ -11,7 +11,8 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "selfplay": "tsx scripts/selfplay.ts",
-    "training": "bash scripts/train-manager.sh"
+    "training": "bash scripts/train-manager.sh",
+    "build:wasm": "wasm-pack build --target web --out-dir ../src/engine/wasm wasm/"
   },
   "dependencies": {
     "firebase": "^12.14.0",
@@ -35,6 +36,7 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12",
+    "vite-plugin-wasm": "^3.6.0",
     "vitest": "^4.1.8"
   }
 }
