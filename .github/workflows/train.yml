@@ -16,7 +16,7 @@ on:
         default: '8'
 
 env:
-  # 3 parallel shards × GAMES games each = 9000 games per hourly cycle.
+  # 3 parallel shards × GAMES games each = 9000 games per 30-min cycle.
   # Shard seeds are spread across run_number so they don't produce duplicate data.
   GAMES: ${{ github.event.inputs.games || '3000' }}
   EPOCHS: ${{ github.event.inputs.epochs || '8' }}
