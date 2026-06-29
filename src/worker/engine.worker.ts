@@ -36,9 +36,9 @@ let loadedModel: NNModel | null = null
 
 // nnOpponents is enabled because WASM makes opponent NN calls cheap enough to
 // be net-faster than heuristic opponents even including the extra forward passes.
-const COACH_MCTS_OPTS: MCTSOptions    = { nSims: 500, maxDepth: 2, nnOpponents: true }
+const COACH_MCTS_OPTS: MCTSOptions    = { nSims: 100, maxDepth: 2, nnOpponents: true }
 const ANALYSIS_MCTS_OPTS: MCTSOptions = { nSims: 500, maxDepth: 2, nnOpponents: true }
-const BOT_MCTS_OPTS: MCTSOptions      = { nSims: 500, maxDepth: 2, nnOpponents: true }
+const BOT_MCTS_OPTS: MCTSOptions      = { nSims: 100, maxDepth: 2, nnOpponents: true }
 
 // Instant depth-1 NN baseline using a single batched forward pass.
 // Shown to the user before MCTS results are ready.
