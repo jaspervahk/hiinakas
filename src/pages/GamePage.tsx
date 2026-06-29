@@ -131,7 +131,7 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
         revealedOpponentBoards: [humanBoard, ...otherBotBoards],
       }
       const seed = ((state.seed ^ (street * 0x9e3779b9)) + i * 0x517cc1b7) | 0
-      promises.push(botWorkerClient.getBotMove(infoState, 100, seed))
+      promises.push(botWorkerClient.getBotMove(infoState, 500, seed))
     }
 
     const all = Promise.all(promises)

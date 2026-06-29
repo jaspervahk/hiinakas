@@ -146,12 +146,14 @@ export function useCoach(state: GameState, _enabled: boolean, rollouts = 200): C
     const onProgress = (results: ScoredPlacement[]) => {
       if (keyRef.current !== localKey) return
       setPlacements([...results].sort((a, b) => b.ev - a.ev))
-      setRolloutsDone(results[0]?.n ?? 0)
+      // Use max n across all results: top-ranked candidate may be an unexplored
+      // NN-fallback (n=0) even after MCTS ran, so results[0].n would be misleading.
+      setRolloutsDone(results.reduce((m, r) => Math.max(m, r.n), 0))
     }
     const onDone = (results: ScoredPlacement[]) => {
       if (keyRef.current !== localKey) return
       setPlacements([...results].sort((a, b) => b.ev - a.ev))
-      setRolloutsDone(results[0]?.n ?? rollouts)
+      setRolloutsDone(results.reduce((m, r) => Math.max(m, r.n), 0))
       setIsComputing(false)
     }
 
