@@ -1,12 +1,11 @@
 name: GTO Training
 
-# Runs every hour automatically, or manually from GitHub Actions tab.
-# Hourly cron is far more reliable than */10 on GitHub's shared runners,
-# and 3000 games/shard × 3 shards = 9000 games/run gives a much better
-# compute-to-overhead ratio than the old 600-game runs.
+# Runs every 30 minutes automatically, or manually from GitHub Actions tab.
+# Each run takes ~22 min; 30-min cadence gives an 8-min safety gap and
+# doubles throughput vs hourly. 3000 games/shard × 3 shards = 9000/run.
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       games:
@@ -33,7 +32,7 @@ jobs:
   # The WASM inference binary is committed to git — no Rust build step needed.
   selfplay:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false   # if one shard fails, keep training with the others
       matrix:
