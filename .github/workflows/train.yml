@@ -1,27 +1,27 @@
 name: GTO Training
 
-# Runs every 30 minutes automatically, or manually from GitHub Actions tab.
-# Each run takes ~22 min; 30-min cadence gives an 8-min safety gap and
-# doubles throughput vs hourly. 3000 games/shard × 3 shards = 9000/run.
+# Runs every 2 hours automatically, or manually from GitHub Actions tab.
+# Each run takes ~92 min (72 min selfplay + 20 min train); 2-hr cadence gives
+# a 28-min safety gap. 12000 games/shard × 3 shards = 36000/run = ~18000 g/hr.
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '0 */2 * * *'
   workflow_dispatch:
     inputs:
       games:
         description: 'Self-play games per shard (total = shards × games)'
-        default: '3000'
+        default: '12000'
       epochs:
         description: 'Training epochs'
         default: '8'
 
 env:
-  # 3 parallel shards × GAMES games each = 9000 games per 30-min cycle.
+  # 3 parallel shards × GAMES games each = 36000 games per 2-hr cycle.
   # Shard seeds are spread across run_number so they don't produce duplicate data.
-  GAMES: ${{ github.event.inputs.games || '3000' }}
+  GAMES: ${{ github.event.inputs.games || '12000' }}
   EPOCHS: ${{ github.event.inputs.epochs || '8' }}
   MCTS_SIMS: '100'
-  # Train on the last 12 batches (≈ 4 runs × 3 shards = ~4 hours of history).
+  # Train on the last 12 batches (≈ 4 runs × 3 shards = ~8 hours of history).
   # Prune keeps 18 batches (~6 runs) so the window is always satisfiable.
   WINDOW: '12'
 
@@ -32,7 +32,7 @@ jobs:
   # The WASM inference binary is committed to git — no Rust build step needed.
   selfplay:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 90
     strategy:
       fail-fast: false   # if one shard fails, keep training with the others
       matrix:
@@ -95,7 +95,7 @@ jobs:
     needs: selfplay
     if: always()   # run even if some shards failed, as long as at least one succeeded
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
