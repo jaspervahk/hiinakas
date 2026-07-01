@@ -1,11 +1,12 @@
 name: GTO Training
 
-# Runs every 2 hours automatically, or manually from GitHub Actions tab.
-# Each run takes ~92 min (72 min selfplay + 20 min train); 2-hr cadence gives
-# a 28-min safety gap. 12000 games/shard × 3 shards = 36000/run = ~18000 g/hr.
+# Runs every hour automatically, or manually from GitHub Actions tab.
+# Each run takes ~88 min (68 min selfplay + 20 min train) so runs overlap and
+# queue — 24 trigger events/day keeps gaps short even when GitHub drops some.
+# 12000 games/shard × 3 shards = 36000/run = ~16000 g/hr effective.
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       games:
