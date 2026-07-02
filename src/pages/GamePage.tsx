@@ -410,19 +410,13 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
               onClick={() => dispatch({ type: 'RESET' })}
               className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition-colors text-sm"
             >
-              New hand
+              Menu
             </button>
             <button
               onClick={() => onNavigate('stats')}
               className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium rounded-lg transition-colors text-sm"
             >
               Stats
-            </button>
-            <button
-              onClick={() => dispatch({ type: 'RESET' })}
-              className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium rounded-lg transition-colors text-sm"
-            >
-              Menu
             </button>
           </div>
         </div>
