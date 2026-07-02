@@ -12,7 +12,8 @@
     "test": "vitest run",
     "selfplay": "tsx scripts/selfplay.ts",
     "training": "bash scripts/train-manager.sh",
-    "build:wasm": "wasm-pack build --target web --out-dir ../src/engine/wasm wasm/"
+    "build:wasm": "wasm-pack build --target web --out-dir ../src/engine/wasm wasm/",
+    "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {
     "firebase": "^12.14.0",
