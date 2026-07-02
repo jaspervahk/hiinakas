@@ -37,7 +37,7 @@ export interface WorkerRequestAnalyzePositions {
   id: string
   type: 'ANALYZE_POSITIONS'
   // rollouts > 0 → NN + MC hybrid (same as live coach); 0 → NN-only (fast, legacy)
-  payload: { positions: Array<{ id: string; state: InfoState }>; rollouts?: number; seed?: number }
+  payload: { positions: Array<{ id: string; state: InfoState }>; rollouts?: number; seed?: number; policy?: BotPolicy }
 }
 
 export type WorkerRequest =

@@ -15,7 +15,8 @@ import {
   type DecisionPoint,
   type GameSummary,
 } from '../game/sessionParser'
-import { workerClient, MODEL_URLS, type ModelVariant } from '../worker/client'
+import { workerClient, MODEL_URLS } from '../worker/client'
+import type { BotPolicy } from '../worker/client'
 
 // ── Error boundary ────────────────────────────────────────────────────────────
 
@@ -268,9 +269,9 @@ interface CachedDecision {
   topCandidates: Array<{ placement: Placement; ev: number }>
 }
 
-function sessionCacheKey(decisions: DecisionPoint[], variant: ModelVariant): string {
+function sessionCacheKey(decisions: DecisionPoint[], mode: BotPolicy): string {
   if (decisions.length === 0) return ''
-  return `session_ev_${CACHE_VERSION}:${variant}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
+  return `session_ev_${CACHE_VERSION}:${mode}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
 }
 
 function saveToCache(key: string, analyzed: AnalyzedDecision[]): void {
@@ -627,12 +628,12 @@ function SessionTabInner() {
   const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
   const [analyzed, setAnalyzed] = useState<AnalyzedDecision[]>([])
   const [noModel, setNoModel] = useState(false)
-  const [modelVariant, setModelVariant] = useState<ModelVariant>('v2')
+  const [analysisMode, setAnalysisMode] = useState<BotPolicy>('nn')
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleFile = useCallback((file: File) => {
     setError(''); setAnalyzed([]); setNoModel(false)
-    setPickerKeys(new Set()); setActiveGroups(null); setModelVariant('v2')
+    setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn')
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -677,7 +678,7 @@ function SessionTabInner() {
   // Restore from cache, enriching boards from freshly-parsed decisions
   useEffect(() => {
     if (decisions.length === 0 || analyzed.length > 0) return
-    const key = sessionCacheKey(decisions, modelVariant)
+    const key = sessionCacheKey(decisions, analysisMode)
     const cached = key ? loadFromCache(key) : null
     if (!cached || cached.length === 0) return
     const enriched = cached.map(a => {
@@ -732,12 +733,13 @@ function SessionTabInner() {
     if (decisions.length === 0) return
     setAnalyzing(true); setNoModel(false); setAnalyzeProgress(null); setAnalyzed([])
     try {
-      const url = MODEL_URLS[modelVariant]
-      const loaded = await workerClient.loadModel(url)
-      if (!loaded) { setNoModel(true); return }
-
       const positions = decisions.map(d => ({ id: d.id, state: d.infoState }))
       const partialMap = new Map<string, import('../engine/mc').ScoredPlacement[]>()
+
+      if (analysisMode === 'nn') {
+        const loaded = await workerClient.loadModel(MODEL_URLS.v2)
+        if (!loaded) { setNoModel(true); return }
+      }
 
       const results = await workerClient.analyzePositions(
         positions,
@@ -747,18 +749,19 @@ function SessionTabInner() {
           setAnalyzeProgress({ done, total })
           setAnalyzed(buildAnalyzed(decisions, partialMap))
         },
+        analysisMode,
       )
 
       if (results.length > 0 && !results[0]!.hasModel) { setNoModel(true); return }
       const map = new Map(results.map(r => [r.id, r.candidates]))
       const built = buildAnalyzed(decisions, map)
       setAnalyzed(built)
-      const key = sessionCacheKey(decisions, modelVariant)
+      const key = sessionCacheKey(decisions, analysisMode)
       if (key) saveToCache(key, built)
     } finally {
       setAnalyzing(false); setAnalyzeProgress(null)
     }
-  }, [decisions, modelVariant])
+  }, [decisions, analysisMode])
 
   const blundersByPlayer = useMemo(() => {
     if (!activeGroups || allPlayers.length === 0 || analyzed.length === 0) return new Map<string, AnalyzedDecision[]>()
@@ -965,21 +968,19 @@ function SessionTabInner() {
         <div className="flex items-center justify-between">
           <h3 className="text-gray-300 text-sm font-medium">EV Analysis</h3>
           <div className="flex items-center gap-2">
-            {/* Model selector */}
+            {/* Analysis mode selector */}
             <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
               <button
-                onClick={() => { setModelVariant('v2'); setAnalyzed([]); setNoModel(false) }}
-                className={`px-2 py-1 transition-colors ${modelVariant === 'v2' ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-                title="525-dim · discard-aware · freshly started"
+                onClick={() => { setAnalysisMode('nn'); setAnalyzed([]); setNoModel(false) }}
+                className={`px-2 py-1 transition-colors ${analysisMode === 'nn' ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
               >
-                v2 (525)
+                NN + MCTS
               </button>
               <button
-                onClick={() => { setModelVariant('v1'); setAnalyzed([]); setNoModel(false) }}
-                className={`px-2 py-1 transition-colors ${modelVariant === 'v1' ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-                title="473-dim · no discard features · 41.8M games trained"
+                onClick={() => { setAnalysisMode('royalty'); setAnalyzed([]); setNoModel(false) }}
+                className={`px-2 py-1 transition-colors ${analysisMode === 'royalty' ? 'bg-amber-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
               >
-                v1 (473)
+                Royalty
               </button>
             </div>
             {analyzing && analyzeProgress && (

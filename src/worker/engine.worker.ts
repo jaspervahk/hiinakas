@@ -96,7 +96,7 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       self.postMessage({ id: msg.id, type: 'BOT_MOVE', payload: placement } as WorkerResponse)
 
     } else if (msg.type === 'ANALYZE_POSITIONS') {
-      const { positions, rollouts = 0, seed = 0 } = msg.payload
+      const { positions, rollouts = 0, seed = 0, policy } = msg.payload
       const total = positions.length
       const opts: MCTSOptions = rollouts > 0
         ? { ...ANALYSIS_MCTS_OPTS, nSims: Math.max(rollouts, ANALYSIS_MCTS_OPTS.nSims) }
@@ -105,6 +105,16 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
 
       for (let i = 0; i < total; i++) {
         const { id, state } = positions[i]!
+        const rng = makeRNG((seed + i * 1000003) >>> 0)
+
+        if (policy === 'royalty') {
+          const candidates = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
+          const item = { id, candidates, hasModel: true }
+          allResults.push(item)
+          self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
+          continue
+        }
+
         if (!loadedModel) {
           const item = { id, candidates: [], hasModel: false }
           allResults.push(item)
@@ -112,7 +122,6 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
           continue
         }
 
-        const rng = makeRNG((seed + i * 1000003) >>> 0)
         const candidates = mctsScoredPlacements(state, loadedModel, opts, rng)
         const item = { id, candidates, hasModel: true }
         allResults.push(item)

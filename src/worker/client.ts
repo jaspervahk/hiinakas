@@ -152,12 +152,13 @@ export class WorkerClient {
     positions: Array<{ id: string; state: InfoState }>,
     rollouts = 0,
     onProgress?: (done: number, total: number, item: AnalysisResult) => void,
+    policy?: BotPolicy,
   ): Promise<AnalysisResult[]> {
     const id = makeId()
     const seed = (Date.now() * 1000003) >>> 0
     return new Promise((resolve) => {
       this.handlers.set(id, { kind: 'analysis', resolve, onProgress })
-      const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions, rollouts, seed } }
+      const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions, rollouts, seed, policy } }
       this.getWorker().postMessage(req)
     })
   }
@@ -217,5 +218,6 @@ export class WorkerClient {
   }
 }
 
-export const workerClient = new WorkerClient()     // EV coach only
-export const botWorkerClient = new WorkerClient()  // bot moves only — never shared with coach
+export const workerClient = new WorkerClient()        // NN EV coach
+export const botWorkerClient = new WorkerClient()     // bot moves — never shared with coach
+export const royaltyWorkerClient = new WorkerClient() // royalty coach — separate worker, no model needed
