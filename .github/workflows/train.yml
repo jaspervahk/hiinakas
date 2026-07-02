@@ -1,12 +1,12 @@
 name: GTO Training
 
-# Runs every hour automatically, or manually from GitHub Actions tab.
-# Each run takes ~88 min (68 min selfplay + 20 min train) so runs overlap and
-# queue — 24 trigger events/day keeps gaps short even when GitHub drops some.
-# 12000 games/shard × 3 shards = 36000/run = ~16000 g/hr effective.
+# Runs every 30 min automatically, or manually from GitHub Actions tab.
+# Each run takes ~86 min (70 min selfplay + 16 min train); runs overlap and
+# queue — 48 trigger events/day keeps gaps short even when GitHub drops some.
+# 12000 games/shard × 4 shards = 48000/run = ~20000 g/hr effective.
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       games:
@@ -17,7 +17,7 @@ on:
         default: '8'
 
 env:
-  # 3 parallel shards × GAMES games each = 36000 games per 2-hr cycle.
+  # 4 parallel shards × GAMES games each = 48000 games per cycle.
   # Shard seeds are spread across run_number so they don't produce duplicate data.
   GAMES: ${{ github.event.inputs.games || '12000' }}
   EPOCHS: ${{ github.event.inputs.epochs || '8' }}
@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false   # if one shard fails, keep training with the others
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
 
     steps:
       - uses: actions/checkout@v4
