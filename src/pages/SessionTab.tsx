@@ -753,11 +753,16 @@ function SessionTabInner() {
       )
 
       if (results.length > 0 && !results[0]!.hasModel) { setNoModel(true); return }
-      const map = new Map(results.map(r => [r.id, r.candidates]))
-      const built = buildAnalyzed(decisions, map)
+
+      // If the worker crashed mid-run, results is []. Use partialMap so we don't
+      // wipe whatever was already computed and displayed.
+      const sourceMap = results.length > 0
+        ? new Map(results.map(r => [r.id, r.candidates]))
+        : partialMap
+      const built = buildAnalyzed(decisions, sourceMap)
       setAnalyzed(built)
       const key = sessionCacheKey(decisions, analysisMode)
-      if (key) saveToCache(key, built)
+      if (key && results.length > 0) saveToCache(key, built)
     } finally {
       setAnalyzing(false); setAnalyzeProgress(null)
     }

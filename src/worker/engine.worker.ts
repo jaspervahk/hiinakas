@@ -107,25 +107,30 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         const { id, state } = positions[i]!
         const rng = makeRNG((seed + i * 1000003) >>> 0)
 
-        if (policy === 'royalty') {
-          const candidates = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
-          const item = { id, candidates, hasModel: true }
+        try {
+          let candidates: ScoredPlacement[]
+
+          if (policy === 'royalty') {
+            candidates = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
+          } else if (!loadedModel) {
+            const item = { id, candidates: [], hasModel: false }
+            allResults.push(item)
+            self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
+            continue
+          } else {
+            candidates = mctsScoredPlacements(state, loadedModel, opts, rng)
+          }
+
+          const item = { id, candidates: candidates!, hasModel: true }
           allResults.push(item)
           self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
-          continue
-        }
-
-        if (!loadedModel) {
-          const item = { id, candidates: [], hasModel: false }
+        } catch (err) {
+          // Skip bad positions rather than crashing the entire analysis run.
+          console.error(`[worker] ANALYZE_POSITIONS: position ${id} failed`, err)
+          const item = { id, candidates: [], hasModel: true }
           allResults.push(item)
           self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
-          continue
         }
-
-        const candidates = mctsScoredPlacements(state, loadedModel, opts, rng)
-        const item = { id, candidates, hasModel: true }
-        allResults.push(item)
-        self.postMessage({ id: msg.id, type: 'ANALYSIS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
       }
 
       self.postMessage({ id: msg.id, type: 'ANALYSIS_DONE', payload: allResults } as WorkerResponse)
