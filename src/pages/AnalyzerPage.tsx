@@ -4,7 +4,8 @@ import type { Card, PartialBoard, ScoredPlacement, InfoState, Board, Placement }
 import { bestBonusBoard, royalties, isFoul } from '../engine/index'
 import { CardPicker } from '../components/CardPicker'
 import { BoardView } from '../components/BoardView'
-import { workerClient } from '../worker/client'
+import { workerClient, royaltyWorkerClient } from '../worker/client'
+import type { BotPolicy } from '../worker/client'
 import { analyzerBridge } from '../game/analyzerBridge'
 import { SessionTab } from './SessionTab'
 
@@ -301,6 +302,15 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     return errs
   }, [used, street, yourBoard, yourHand, oppBoards, oppIsBonus])
 
+  const [analyzerPolicy, setAnalyzerPolicy] = useState<BotPolicy>('nn')
+
+  function handlePolicyChange(p: BotPolicy) {
+    if (cancelRef.current) { cancelRef.current(); cancelRef.current = null }
+    setAnalyzerPolicy(p)
+    setResults([])
+    setDoneRollouts(0)
+    setComputing(false)
+  }
   const [results, setResults] = useState<ScoredPlacement[]>([])
   const [computing, setComputing] = useState(false)
   const [doneRollouts, setDoneRollouts] = useState(0)
@@ -349,20 +359,23 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setResults([])
     setComputing(true)
     setDoneRollouts(0)
-    cancelRef.current = workerClient.streamMC(
+    const client = analyzerPolicy === 'royalty' ? royaltyWorkerClient : workerClient
+    const totalRollouts = analyzerPolicy === 'royalty' ? 1000 : 2000
+    cancelRef.current = client.streamMC(
       state,
-      { totalRollouts: 2000, batchSize: 20 },
+      { totalRollouts, batchSize: 20 },
       seed,
       (r) => {
         setResults([...r].sort((a, b) => b.ev - a.ev))
-        setDoneRollouts(r[0]?.n ?? 0)
+        setDoneRollouts(r.reduce((m, x) => Math.max(m, x.n), 0))
       },
       (r) => {
         setResults([...r].sort((a, b) => b.ev - a.ev))
-        setDoneRollouts(r[0]?.n ?? 2000)
+        setDoneRollouts(r.reduce((m, x) => Math.max(m, x.n), 0))
         setComputing(false)
         cancelRef.current = null
       },
+      analyzerPolicy,
     )
   }
 
@@ -412,6 +425,25 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
               <button key={s} onClick={() => setStreet(s)}
                 className={`px-3 py-1 text-xs rounded ${street === s ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
                 {s + 1}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-widest text-gray-500">Mode</span>
+          <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
+            {([['nn', 'NN + MCTS'], ['royalty', 'Royalty']] as const).map(([p, lbl]) => (
+              <button
+                key={p}
+                onClick={() => handlePolicyChange(p)}
+                className={[
+                  'px-3 py-1 transition-colors',
+                  analyzerPolicy === p
+                    ? (p === 'royalty' ? 'bg-amber-700 text-white' : 'bg-indigo-700 text-white')
+                    : 'bg-gray-800 text-gray-400 hover:text-gray-200',
+                ].join(' ')}
+              >
+                {lbl}
               </button>
             ))}
           </div>
@@ -581,9 +613,11 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       {results.length > 0 && (
         <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs uppercase tracking-widest text-gray-300 font-semibold">Ranked EV</span>
+            <span className={`text-xs uppercase tracking-widest font-semibold ${analyzerPolicy === 'royalty' ? 'text-amber-400' : 'text-gray-300'}`}>
+              {analyzerPolicy === 'royalty' ? 'Royalty EV' : 'Ranked EV'}
+            </span>
             <span className="text-[10px] text-gray-500 tabular-nums">
-              {computing ? `${doneRollouts} rollouts…` : `${doneRollouts} rollouts`}
+              {computing ? `${doneRollouts} sims…` : `${doneRollouts} sims`}
               {yourHand.length > 0 && <span className="ml-2 text-gray-700">· click row to apply</span>}
             </span>
           </div>
@@ -596,33 +630,47 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
                   <th className="px-1.5 py-1 font-medium">Mid</th>
                   <th className="px-1.5 py-1 font-medium">Bot</th>
                   <th className="px-1.5 py-1 font-medium">Disc</th>
-                  <th className="px-1.5 py-1 font-medium text-right">EV</th>
-                  <th className="px-1.5 py-1 font-medium text-right">Gap</th>
+                  <th className="px-1.5 py-1 font-medium text-right">{analyzerPolicy === 'royalty' ? 'Gap' : 'EV'}</th>
+                  {analyzerPolicy !== 'royalty' && <th className="px-1.5 py-1 font-medium text-right">Gap</th>}
                 </tr>
               </thead>
               <tbody>
-                {results.slice(0, 20).map((sp, i) => (
-                  <tr
-                    key={i}
-                    onClick={() => yourHand.length > 0 && applyPlacement(sp.placement)}
-                    className={[
-                      'border-b border-gray-800/40 last:border-0 transition-colors',
-                      yourHand.length > 0 ? 'cursor-pointer hover:bg-gray-800/60 active:bg-gray-700/60' : '',
-                    ].join(' ')}
-                  >
-                    <td className="px-1.5 py-1 text-gray-500 tabular-nums">{i + 1}</td>
-                    <td className="px-1.5 py-1">{sp.placement.topAdd.map(cardLabel).join(' ') || '—'}</td>
-                    <td className="px-1.5 py-1">{sp.placement.middleAdd.map(cardLabel).join(' ') || '—'}</td>
-                    <td className="px-1.5 py-1">{sp.placement.bottomAdd.map(cardLabel).join(' ') || '—'}</td>
-                    <td className="px-1.5 py-1 text-gray-400">{sp.placement.discard ? cardLabel(sp.placement.discard) : '—'}</td>
-                    <td className={`px-1.5 py-1 text-right tabular-nums font-semibold ${sp.ev > 0 ? 'text-green-400' : sp.ev < 0 ? 'text-red-400' : 'text-gray-300'}`}>
-                      {sp.ev > 0 ? '+' : ''}{sp.ev.toFixed(2)}
-                    </td>
-                    <td className="px-1.5 py-1 text-right tabular-nums text-gray-500">
-                      {i === 0 ? '—' : (sp.ev - bestEV).toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
+                {results.slice(0, 20).map((sp, i) => {
+                  const gap = sp.ev - bestEV
+                  const isRoyalty = analyzerPolicy === 'royalty'
+                  const displayEV = isRoyalty ? gap : sp.ev
+                  return (
+                    <tr
+                      key={i}
+                      onClick={() => yourHand.length > 0 && applyPlacement(sp.placement)}
+                      className={[
+                        'border-b border-gray-800/40 last:border-0 transition-colors',
+                        yourHand.length > 0 ? 'cursor-pointer hover:bg-gray-800/60 active:bg-gray-700/60' : '',
+                      ].join(' ')}
+                    >
+                      <td className="px-1.5 py-1 text-gray-500 tabular-nums">{i + 1}</td>
+                      <td className="px-1.5 py-1">{sp.placement.topAdd.map(cardLabel).join(' ') || '—'}</td>
+                      <td className="px-1.5 py-1">{sp.placement.middleAdd.map(cardLabel).join(' ') || '—'}</td>
+                      <td className="px-1.5 py-1">{sp.placement.bottomAdd.map(cardLabel).join(' ') || '—'}</td>
+                      <td className="px-1.5 py-1 text-gray-400">{sp.placement.discard ? cardLabel(sp.placement.discard) : '—'}</td>
+                      <td className={`px-1.5 py-1 text-right tabular-nums font-semibold ${
+                        isRoyalty
+                          ? (i === 0 ? 'text-gray-300' : 'text-red-400')
+                          : (displayEV > 0 ? 'text-green-400' : displayEV < 0 ? 'text-red-400' : 'text-gray-300')
+                      }`}>
+                        {isRoyalty
+                          ? (i === 0 ? 'best' : displayEV.toFixed(1))
+                          : `${displayEV > 0 ? '+' : ''}${displayEV.toFixed(2)}`
+                        }
+                      </td>
+                      {!isRoyalty && (
+                        <td className="px-1.5 py-1 text-right tabular-nums text-gray-500">
+                          {i === 0 ? '—' : gap.toFixed(2)}
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

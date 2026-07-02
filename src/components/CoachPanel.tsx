@@ -48,10 +48,11 @@ interface PlacementTableProps {
   matchIndex: number | null
   label: string
   accentColor: string   // tailwind text colour for the label chip
+  relativeEV?: boolean  // show ev relative to best (royalty mode)
   onSelectPlacement?: (placement: Placement) => void
 }
 
-function PlacementTable({ result, matchIndex, label, accentColor, onSelectPlacement }: PlacementTableProps) {
+function PlacementTable({ result, matchIndex, label, accentColor, relativeEV = false, onSelectPlacement }: PlacementTableProps) {
   const { placements, isComputing, rolloutsDone } = result
   const top = placements.slice(0, 10)
   const bestEV = top[0]?.ev ?? 0
@@ -83,14 +84,15 @@ function PlacementTable({ result, matchIndex, label, accentColor, onSelectPlacem
               <th className="px-1 py-1 font-medium">Mid</th>
               <th className="px-1 py-1 font-medium">Bot</th>
               <th className="px-1 py-1 font-medium">Disc</th>
-              <th className="px-1 py-1 font-medium text-right">EV</th>
-              <th className="px-1 py-1 font-medium text-right">Gap</th>
+              <th className="px-1 py-1 font-medium text-right">{relativeEV ? 'Gap' : 'EV'}</th>
+              {!relativeEV && <th className="px-1 py-1 font-medium text-right">Gap</th>}
             </tr>
           </thead>
           <tbody>
             {top.map((sp, i) => {
               const gap = sp.ev - bestEV
               const isMatch = matchIndex === i
+              const displayEV = relativeEV ? gap : sp.ev
               return (
                 <tr
                   key={i}
@@ -112,12 +114,21 @@ function PlacementTable({ result, matchIndex, label, accentColor, onSelectPlacem
                       </span>
                     ) : <span className="text-gray-700">—</span>}
                   </td>
-                  <td className={`px-1 py-1 text-right tabular-nums font-semibold ${sp.ev > 0 ? 'text-green-400' : sp.ev < 0 ? 'text-red-400' : 'text-gray-300'}`}>
-                    {sp.ev > 0 ? '+' : ''}{sp.ev.toFixed(1)}
+                  <td className={`px-1 py-1 text-right tabular-nums font-semibold ${
+                    relativeEV
+                      ? (i === 0 ? 'text-gray-300' : 'text-red-400')
+                      : (displayEV > 0 ? 'text-green-400' : displayEV < 0 ? 'text-red-400' : 'text-gray-300')
+                  }`}>
+                    {relativeEV
+                      ? (i === 0 ? 'best' : displayEV.toFixed(1))
+                      : `${displayEV > 0 ? '+' : ''}${displayEV.toFixed(1)}`
+                    }
                   </td>
-                  <td className="px-1 py-1 text-right tabular-nums text-gray-500">
-                    {i === 0 ? '—' : gap.toFixed(1)}
-                  </td>
+                  {!relativeEV && (
+                    <td className="px-1 py-1 text-right tabular-nums text-gray-500">
+                      {i === 0 ? '—' : gap.toFixed(1)}
+                    </td>
+                  )}
                 </tr>
               )
             })}
@@ -210,6 +221,7 @@ export function CoachPanel({ nnResult, royaltyResult, mode, onModeChange, enable
             matchIndex={royaltyResult.matchIndex}
             label="Royalty"
             accentColor="text-amber-400"
+            relativeEV
             onSelectPlacement={onSelectPlacement}
           />
         </div>
@@ -219,6 +231,7 @@ export function CoachPanel({ nnResult, royaltyResult, mode, onModeChange, enable
           matchIndex={activeResult.matchIndex}
           label={mode === 'royalty' ? 'Royalty' : 'NN'}
           accentColor={mode === 'royalty' ? 'text-amber-400' : 'text-indigo-400'}
+          relativeEV={mode === 'royalty'}
           onSelectPlacement={onSelectPlacement}
         />
       )}
