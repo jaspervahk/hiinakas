@@ -60,7 +60,7 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
 
   const { coachMode, botPolicy } = state.appSettings
   const coach = useCoach(state, state.appSettings.coachEnabled, COACH_ROLLOUTS, 'nn')
-  const royaltyCoach = useCoach(state, state.appSettings.coachEnabled && coachMode !== 'nn', ROYALTY_COACH_SIMS, 'royalty')
+  const royaltyCoach = useCoach(state, state.appSettings.coachEnabled, ROYALTY_COACH_SIMS, 'royalty', coachMode === 'nn')
 
   // Best bonus board (for bonus_oneshot coaching)
   const bonusOptimal = useMemo<PartialBoard | null>(() => {
@@ -417,6 +417,12 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
               className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium rounded-lg transition-colors text-sm"
             >
               Stats
+            </button>
+            <button
+              onClick={() => dispatch({ type: 'RESET' })}
+              className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium rounded-lg transition-colors text-sm"
+            >
+              Menu
             </button>
           </div>
         </div>
