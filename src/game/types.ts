@@ -102,7 +102,11 @@ export interface HandLog {
   cumEvLoss: number
 }
 
+export type CoachMode = 'nn' | 'royalty' | 'both'
+
 export interface AppSettings {
   coachEnabled: boolean
   playerCount: 2 | 3
+  botPolicy: 'nn' | 'royalty'
+  coachMode: CoachMode
 }

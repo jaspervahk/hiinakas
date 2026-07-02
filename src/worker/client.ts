@@ -1,6 +1,7 @@
 import type { InfoState, MCOptions, ScoredPlacement } from '../engine/mc'
 import type { Placement } from '../engine/placement'
-import type { WorkerRequest, WorkerResponse } from './types'
+import type { WorkerRequest, WorkerResponse, BotPolicy } from './types'
+export type { BotPolicy }
 
 // Available model variants served via Firebase Hosting.
 export const MODEL_URLS = {
@@ -93,6 +94,7 @@ export class WorkerClient {
     seed: number,
     onProgress: (r: ScoredPlacement[]) => void,
     onDone: (r: ScoredPlacement[]) => void,
+    policy?: BotPolicy,
   ): () => void {
     const id = makeId()
     this.latestGeneration += 1
@@ -117,7 +119,7 @@ export class WorkerClient {
     const req: WorkerRequest = {
       id,
       type: 'GET_EV',
-      payload: { state, totalRollouts: opts.totalRollouts, batchSize: opts.batchSize, seed },
+      payload: { state, totalRollouts: opts.totalRollouts, batchSize: opts.batchSize, seed, policy },
     }
     this.getWorker().postMessage(req)
 
@@ -129,7 +131,7 @@ export class WorkerClient {
     }
   }
 
-  getBotMove(state: InfoState, rollouts: number, seed: number): Promise<Placement> {
+  getBotMove(state: InfoState, rollouts: number, seed: number, policy?: BotPolicy): Promise<Placement> {
     const id = makeId()
     return new Promise<Placement>((resolve, reject) => {
       this.handlers.set(id, {
@@ -140,7 +142,7 @@ export class WorkerClient {
       const req: WorkerRequest = {
         id,
         type: 'GET_BOT_MOVE',
-        payload: { state, rollouts, seed },
+        payload: { state, rollouts, seed, policy },
       }
       this.getWorker().postMessage(req)
     })

@@ -118,6 +118,8 @@ export async function loadSettings(): Promise<AppSettings | null> {
       return {
         coachEnabled: data.coachEnabled,
         playerCount: data.playerCount,
+        botPolicy: data.botPolicy ?? 'nn',
+        coachMode: data.coachMode ?? 'nn',
       }
     }
     return null

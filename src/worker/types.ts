@@ -1,6 +1,8 @@
 import type { InfoState, ScoredPlacement } from '../engine/mc'
 export type { ScoredPlacement }
 
+export type BotPolicy = 'nn' | 'royalty'
+
 export interface WorkerRequestGetEV {
   id: string
   type: 'GET_EV'
@@ -9,6 +11,7 @@ export interface WorkerRequestGetEV {
     totalRollouts: number
     batchSize?: number
     seed: number
+    policy?: BotPolicy
   }
 }
 
@@ -19,6 +22,7 @@ export interface WorkerRequestGetBotMove {
     state: InfoState
     rollouts: number
     seed: number
+    policy?: BotPolicy
   }
 }
 

@@ -23,7 +23,8 @@ function bonusQualifierLabel(q: string): string {
   return 'Aces / Trips — 15 cards, 2 discards'
 }
 
-const COACH_ROLLOUTS = 2000
+const COACH_ROLLOUTS = 500
+const ROYALTY_COACH_SIMS = 1000
 
 interface GamePageProps {
   onNavigate: (p: AppPage) => void
@@ -57,7 +58,9 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
   const botCount = state.playerCount - 1
   const botLabels = labels.slice(1)
 
-  const coach = useCoach(state, state.appSettings.coachEnabled, COACH_ROLLOUTS)
+  const { coachMode, botPolicy } = state.appSettings
+  const coach = useCoach(state, state.appSettings.coachEnabled, COACH_ROLLOUTS, 'nn')
+  const royaltyCoach = useCoach(state, state.appSettings.coachEnabled && coachMode !== 'nn', ROYALTY_COACH_SIMS, 'royalty')
 
   // Best bonus board (for bonus_oneshot coaching)
   const bonusOptimal = useMemo<PartialBoard | null>(() => {
@@ -131,7 +134,7 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
         revealedOpponentBoards: [humanBoard, ...otherBotBoards],
       }
       const seed = ((state.seed ^ (street * 0x9e3779b9)) + i * 0x517cc1b7) | 0
-      promises.push(botWorkerClient.getBotMove(infoState, 500, seed))
+      promises.push(botWorkerClient.getBotMove(infoState, 500, seed, botPolicy))
     }
 
     const all = Promise.all(promises)
@@ -250,8 +253,8 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
   if (state.phase === 'setup') {
     return <SetupScreen
       onStart={(playerCount) => dispatch({ type: 'START_GAME', playerCount })}
-      coachEnabled={state.appSettings.coachEnabled}
-      onToggleCoach={() => dispatch({ type: 'UPDATE_SETTINGS', settings: { coachEnabled: !state.appSettings.coachEnabled } })}
+      settings={state.appSettings}
+      onUpdateSettings={(s) => dispatch({ type: 'UPDATE_SETTINGS', settings: s })}
       onNavigate={onNavigate}
     />
   }
@@ -456,6 +459,7 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
   const streetLabel = `Street ${currentStreet + 1} / 5`
 
   const coachToggle = () => dispatch({ type: 'UPDATE_SETTINGS', settings: { coachEnabled: !state.appSettings.coachEnabled } })
+  const coachModeChange = (m: typeof coachMode) => dispatch({ type: 'UPDATE_SETTINGS', settings: { coachMode: m } })
   const coachSelect = (p: Placement) => dispatch({ type: 'APPLY_COACH_PLACEMENT', placement: p })
 
   return (
@@ -599,7 +603,10 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
                 {/* Coach panel — mobile only; desktop shows it in the right sidebar */}
                 <div className="w-full max-w-2xl md:hidden">
                   <CoachPanel
-                    result={coach}
+                    nnResult={coach}
+                    royaltyResult={royaltyCoach}
+                    mode={coachMode}
+                    onModeChange={coachModeChange}
                     enabled={state.appSettings.coachEnabled}
                     onToggle={coachToggle}
                     onSelectPlacement={coachSelect}
@@ -637,7 +644,10 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
         <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-gray-800/60 flex-shrink-0 overflow-y-auto bg-gray-950">
           <div className="p-4">
             <CoachPanel
-              result={coach}
+              nnResult={coach}
+              royaltyResult={royaltyCoach}
+              mode={coachMode}
+              onModeChange={coachModeChange}
               enabled={state.appSettings.coachEnabled}
               onToggle={coachToggle}
               onSelectPlacement={isPlacing ? coachSelect : undefined}
@@ -653,28 +663,80 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
 // ── Setup screen ────────────────────────────────────────────────────────────
 interface SetupScreenProps {
   onStart: (playerCount: 2 | 3) => void
-  coachEnabled: boolean
-  onToggleCoach: () => void
+  settings: import('../game/types').AppSettings
+  onUpdateSettings: (s: Partial<import('../game/types').AppSettings>) => void
   onNavigate: (p: AppPage) => void
 }
 
-function SetupScreen({ onStart, coachEnabled, onToggleCoach, onNavigate }: SetupScreenProps) {
+function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupScreenProps) {
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center gap-10 p-6">
+    <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center gap-8 p-6">
       <div className="flex flex-col items-center gap-2">
         <h1 className="text-4xl font-bold tracking-tight text-gray-100">Hiinakas</h1>
         <p className="text-gray-500 text-sm tracking-wide">Open-Face Chinese Poker</p>
       </div>
 
-      <div className="flex items-center gap-2 text-xs">
-        <input
-          id="coach-toggle"
-          type="checkbox"
-          checked={coachEnabled}
-          onChange={onToggleCoach}
-          className="accent-indigo-500"
-        />
-        <label htmlFor="coach-toggle" className="text-gray-400 cursor-pointer select-none">EV Coach</label>
+      {/* Settings */}
+      <div className="flex flex-col gap-3 w-full max-w-xs">
+        {/* Bot policy */}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-400">Opponent bot</span>
+          <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
+            {(['nn', 'royalty'] as const).map(p => (
+              <button
+                key={p}
+                onClick={() => onUpdateSettings({ botPolicy: p })}
+                className={[
+                  'px-3 py-1 transition-colors',
+                  settings.botPolicy === p
+                    ? 'bg-indigo-700 text-white'
+                    : 'bg-gray-800 text-gray-500 hover:text-gray-300',
+                ].join(' ')}
+              >
+                {p === 'nn' ? 'NN + MCTS' : 'Royalty'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* EV coach toggle */}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-400">EV Coach</span>
+          <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
+            <button
+              onClick={() => onUpdateSettings({ coachEnabled: !settings.coachEnabled })}
+              className={[
+                'px-3 py-1 transition-colors',
+                settings.coachEnabled ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-500 hover:text-gray-300',
+              ].join(' ')}
+            >
+              {settings.coachEnabled ? 'On' : 'Off'}
+            </button>
+          </div>
+        </div>
+
+        {/* Coach mode — only relevant when coach is on */}
+        {settings.coachEnabled && (
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-400">Coach mode</span>
+            <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
+              {(['nn', 'royalty', 'both'] as const).map(m => (
+                <button
+                  key={m}
+                  onClick={() => onUpdateSettings({ coachMode: m })}
+                  className={[
+                    'px-3 py-1 transition-colors',
+                    settings.coachMode === m
+                      ? 'bg-indigo-700 text-white'
+                      : 'bg-gray-800 text-gray-500 hover:text-gray-300',
+                  ].join(' ')}
+                >
+                  {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : 'Both'}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-4">
@@ -689,7 +751,7 @@ function SetupScreen({ onStart, coachEnabled, onToggleCoach, onNavigate }: Setup
         ))}
       </div>
 
-      <div className="flex gap-4 text-xs mt-4">
+      <div className="flex gap-4 text-xs">
         <button onClick={() => onNavigate('stats')} className="text-gray-500 hover:text-gray-300 transition-colors">Stats</button>
         <span className="text-gray-700">·</span>
         <button onClick={() => onNavigate('analyzer')} className="text-gray-500 hover:text-gray-300 transition-colors">Analyzer</button>

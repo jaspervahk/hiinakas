@@ -10,6 +10,7 @@ import { nnRankCandidates } from '../engine/nnPolicy'
 import { ENCODE_DIM } from '../engine/encode'
 import { mctsPickPlacement, mctsScoredPlacements } from '../engine/mcts'
 import type { MCTSOptions } from '../engine/mcts'
+import { royaltyMctsScoredPlacements, royaltyMctsPickPlacement, ROYALTY_MCTS_SIMS } from '../engine/royaltyMcts'
 import initWasm, { MlpModel } from '../engine/wasm/ofc_nn.js'
 
 // Seeded RNG (mulberry32) — reproduced here to avoid circular import.
@@ -57,10 +58,15 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
   const msg = event.data
   try {
     if (msg.type === 'GET_EV') {
-      const { state, totalRollouts, batchSize, seed } = msg.payload
+      const { state, totalRollouts, batchSize, seed, policy } = msg.payload
       const rng = makeRNG(seed)
 
-      if (loadedModel) {
+      if (policy === 'royalty') {
+        // Royalty MCTS — no NN, solitaire-style, returns immediately.
+        const results = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
+        self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
+        self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: results } as WorkerResponse)
+      } else if (loadedModel) {
         // Step 1: instant depth-1 NN pass so the UI has something to show immediately.
         const nnResults = evalCandidatesNN(loadedModel, state)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: nnResults } as WorkerResponse)
@@ -81,10 +87,12 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       }
 
     } else if (msg.type === 'GET_BOT_MOVE') {
-      const { state, rollouts, seed } = msg.payload
-      const placement = loadedModel
-        ? mctsPickPlacement(state, loadedModel, { ...BOT_MCTS_OPTS, nSims: rollouts || BOT_MCTS_OPTS.nSims }, makeRNG(seed))
-        : getBotMove(state, rollouts, makeRNG(seed))
+      const { state, rollouts, seed, policy } = msg.payload
+      const placement = policy === 'royalty'
+        ? royaltyMctsPickPlacement(state, rollouts || ROYALTY_MCTS_SIMS, makeRNG(seed))
+        : loadedModel
+          ? mctsPickPlacement(state, loadedModel, { ...BOT_MCTS_OPTS, nSims: rollouts || BOT_MCTS_OPTS.nSims }, makeRNG(seed))
+          : getBotMove(state, rollouts, makeRNG(seed))
       self.postMessage({ id: msg.id, type: 'BOT_MOVE', payload: placement } as WorkerResponse)
 
     } else if (msg.type === 'ANALYZE_POSITIONS') {
