@@ -11,8 +11,8 @@
 //      Solved optimally with bestBonusBoard. Training sample: final board at
 //      street=4, revealedOppBoards=[], discards=[] (built simultaneously).
 //   3. Side game (streets 0-4): a non-qualifying player plays a standard 5-street
-//      game during the bonus round, without seeing opponents' bonus boards.
-//      Training samples: same encoding as normal game but revealedOppBoards=[].
+//      game during the bonus round. Side players see each other's partial boards
+//      per turn (like the normal game) but never see bonus players' boards.
 //
 // No bonus-within-bonus recursion: per spec, allowBonusRecursion=false.
 // The bonus round scores boards with scoreTable only; it never re-triggers.
