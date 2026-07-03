@@ -112,14 +112,6 @@ function toCard(p6: P6Card): Card {
   return { rank, suit }
 }
 
-function toPartialBoard(raw: { top: P6Card[]; middle: P6Card[]; bottom: P6Card[] }): PartialBoard {
-  return {
-    top: raw.top.map(toCard),
-    middle: raw.middle.map(toCard),
-    bottom: raw.bottom.map(toCard),
-  }
-}
-
 // Build actor's PartialBoard by applying all their moves before `upToTurn`.
 function boardBeforeTurn(moves: P6Move[], upToTurn: number): PartialBoard {
   const top: Card[] = []
@@ -305,49 +297,44 @@ export function parseSessionGames(
 
     // Bonus / side-game — analyse bonus_play decisions for any player.
     //
-    // All bonus-round participants (qualifying and non-qualifying) share ONE fresh
-    // deck, so every player's placed cards must be visible to every other player
-    // for accurate card removal. Opponents are:
-    //   - bonus_play players: reveal their partial board per turn via boardBeforeTurn.
-    //   - bonus_submit players: submitted all at once, so their full board is visible
-    //     from the start of the bonus round.
-    // A solo bonus-round player (no opponents) is analysed without opponent boards.
+    // Information sets (both groups share one fresh deck, but visibility differs):
+    //   - Bonus players (uid in bonusEligibleUids): play in complete isolation —
+    //     revealedOpponentBoards = [] throughout. They see nobody.
+    //   - Side-game players (uid not in bonusEligibleUids): see each other's
+    //     partial boards per turn, exactly as in the normal game. They never see
+    //     bonus players' boards.
+    const bonusEligibleUids = new Set(cp.bonusEligibleUids ?? [])
+
     for (const [pname, data] of playerData) {
       const bonusPlay = moves.filter(
         m => m.uid === data.uid && m.segment === 'bonus_play' && m.placements,
       )
       if (bonusPlay.length === 0) continue
 
-      const oppIncrementalMoves: P6Move[][] = []
-      const oppSubmitBoards: PartialBoard[] = []
+      const isBonus = bonusEligibleUids.has(data.uid)
+      let getOppBoards: (t: number) => PartialBoard[]
 
-      for (const [oppName, oppData] of playerData) {
-        if (oppName === pname) continue
-        const oppBonus = moves.filter(
-          m => m.uid === oppData.uid && m.segment === 'bonus_play' && m.placements,
-        )
-        if (oppBonus.length > 0) {
-          oppIncrementalMoves.push(oppBonus)
-        } else {
-          const sub = moves.find(m => m.uid === oppData.uid && m.segment === 'bonus_submit')
-          if (sub) {
-            oppSubmitBoards.push(toPartialBoard({
-              top: sub.top ?? [],
-              middle: sub.middle ?? [],
-              bottom: sub.bottom ?? [],
-            }))
-          }
+      if (isBonus) {
+        getOppBoards = () => []
+      } else {
+        // Collect other side-game players' moves (exclude bonus players).
+        const oppSideMoves: P6Move[][] = []
+        for (const [oppName, oppData] of playerData) {
+          if (oppName === pname) continue
+          if (bonusEligibleUids.has(oppData.uid)) continue
+          const oppSide = moves.filter(
+            m => m.uid === oppData.uid && m.segment === 'bonus_play' && m.placements,
+          )
+          if (oppSide.length > 0) oppSideMoves.push(oppSide)
         }
+        getOppBoards = (t) => oppSideMoves.map(oMoves => boardBeforeTurn(oMoves, t))
       }
 
       decisions.push(
         ...parseMovesToDecisions(
           game.gameId, game.createdAt, pname, data.uid, 'bonus_play',
           bonusPlay,
-          (t) => [
-            ...oppIncrementalMoves.map(oMoves => boardBeforeTurn(oMoves, t)),
-            ...oppSubmitBoards,
-          ],
+          getOppBoards,
         )
       )
     }

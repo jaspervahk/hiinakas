@@ -86,33 +86,46 @@ function runBonusRound(
   }
 
   // ── Side game (non-qualifying players) ────────────────────────────────────
-  // Each non-qualifier plays a standard heuristic 5-street game. The bonus
-  // boards are built simultaneously so revealedOppBoards=[] throughout.
-  // We record decisions so the NN trains on the "empty opponent board" scenario.
+  // Side players see each other's partial boards per turn (exactly like the normal
+  // game) but never see bonus players' boards. Simulate all side players together,
+  // street by street, so each decision encodes the correct revealedOppBoards.
   const sideSizes = [5, 3, 3, 3, 3] as const
-  type SideDecision = { boardAfter: PartialBoard, street: number, discards: Card[] }
+  type SideDecision = { boardAfter: PartialBoard; street: number; discards: Card[]; oppBoards: PartialBoard[] }
   const sideDecisionsByPlayer: Map<number, SideDecision[]> = new Map()
 
+  const sideIndices: number[] = []
   for (let p = 0; p < normalBoards.length; p++) {
-    if (bonusBoards[p] !== null) continue
-    let sideBoard: PartialBoard = { top: [], middle: [], bottom: [] }
-    const sideDiscards: Card[] = []
-    const decisions: SideDecision[] = []
+    if (bonusBoards[p] === null) sideIndices.push(p)
+  }
 
-    for (let s = 0; s < sideSizes.length; s++) {
+  const sideBoards: PartialBoard[] = sideIndices.map(() => ({ top: [], middle: [], bottom: [] }))
+  const sideDiscardLists: Card[][] = sideIndices.map(() => [])
+  for (const p of sideIndices) sideDecisionsByPlayer.set(p, [])
+
+  for (let s = 0; s < sideSizes.length; s++) {
+    // Snapshot every side player's board BEFORE this street's decisions.
+    const snapshots: PartialBoard[] = sideBoards.map(b =>
+      ({ top: [...b.top], middle: [...b.middle], bottom: [...b.bottom] })
+    )
+    // Deal hands and decide simultaneously, using the pre-street snapshots.
+    for (let i = 0; i < sideIndices.length; i++) {
+      const p = sideIndices[i]!
       const hand = bonusDeck.deal(sideSizes[s]!)
-      const pl = heuristicPlacement(sideBoard, hand, s)
-      const boardAfter = applyPlacement(sideBoard, pl)
-      const allDiscards = pl.discard ? [...sideDiscards, pl.discard] : [...sideDiscards]
+      const oppBoards = snapshots.filter((_, j) => j !== i)
+      const pl = heuristicPlacement(snapshots[i]!, hand, s)
+      const boardAfter = applyPlacement(snapshots[i]!, pl)
+      const disc = sideDiscardLists[i]!
+      const allDiscards = pl.discard ? [...disc, pl.discard] : [...disc]
 
-      decisions.push({ boardAfter, street: s, discards: allDiscards })
+      sideDecisionsByPlayer.get(p)!.push({ boardAfter, street: s, discards: allDiscards, oppBoards })
 
-      if (pl.discard) sideDiscards.push(pl.discard)
-      sideBoard = boardAfter
+      if (pl.discard) disc.push(pl.discard)
+      sideBoards[i] = boardAfter
     }
+  }
 
-    bonusBoards[p] = sideBoard as Board
-    sideDecisionsByPlayer.set(p, decisions)
+  for (let i = 0; i < sideIndices.length; i++) {
+    bonusBoards[sideIndices[i]!] = sideBoards[i] as Board
   }
 
   // Score the bonus round (no re-triggering: just scoreTable, no bonusTrigger check).
@@ -132,12 +145,12 @@ function runBonusRound(
     })
   }
 
-  // Side game samples: each street decision, no revealed opp boards.
+  // Side game samples: each street decision with correct per-turn opponent boards.
   // Label = bonus round outcome for this player (normal round already finished).
   for (const [p, decisions] of sideDecisionsByPlayer) {
     for (const d of decisions) {
       bonusSamples.push({
-        features: encodeBoardState(d.boardAfter, d.street, [], d.discards),
+        features: encodeBoardState(d.boardAfter, d.street, d.oppBoards, d.discards),
         outcome: bonusOutcomes[p]!,
         playerIdx: p,
         street: d.street,

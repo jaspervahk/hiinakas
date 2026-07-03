@@ -66,10 +66,9 @@ function buildInfoState(state: GameState): InfoState | null {
   if (state.humanBonusQualifier !== null) return null
   const sideHand = state.sidePreDealt[0]?.[state.sideStreet]
   if (!sideHand || sideHand.length === 0) return null
-  // All bonus-round players share one fresh deck. Ideally we would include
-  // bonus-qualified bots' partial boards here for card removal, but the game
-  // state does not expose them to the side-game coach yet — so only include
-  // non-qualifying bots whose boards are tracked in botSideBoards.
+  // Bonus players play in complete isolation (they see no opponent boards).
+  // Side-game players see each other but never see bonus players' boards.
+  // Exclude bonus-qualified bots; include only non-qualifying bots via botSideBoards.
   const oppBoards: PartialBoard[] = state.botBonusQualifiers
     .map((q, i) => q ? null : state.botSideBoards[i]!)
     .filter((b): b is PartialBoard => b !== null)
