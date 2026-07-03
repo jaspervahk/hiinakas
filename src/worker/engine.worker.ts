@@ -60,6 +60,7 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
     if (msg.type === 'GET_EV') {
       const { state, totalRollouts, batchSize, seed, policy } = msg.payload
       const rng = makeRNG(seed)
+      console.log(`[worker] GET_EV street=${state.street} policy=${policy} hasModel=${!!loadedModel}`)
 
       if (policy === 'royalty') {
         // Royalty MCTS — no NN, solitaire-style, returns immediately.
@@ -69,10 +70,12 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       } else if (loadedModel) {
         // Step 1: instant depth-1 NN pass so the UI has something to show immediately.
         const nnResults = evalCandidatesNN(loadedModel, state)
+        console.log(`[worker] depth-1 NN done: ${nnResults.length} candidates`)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: nnResults } as WorkerResponse)
 
         // Step 2: MCTS refinement — depth-2 search averaged over sampled worlds.
         const mctsResults = mctsScoredPlacements(state, loadedModel, COACH_MCTS_OPTS, rng)
+        console.log(`[worker] MCTS done: ${mctsResults.length} candidates`)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: mctsResults } as WorkerResponse)
         self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: mctsResults } as WorkerResponse)
       } else {
@@ -159,6 +162,7 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       }
     }
   } catch (err) {
+    console.error('[worker] unhandled error in message handler:', err)
     self.postMessage({
       id: msg.id,
       type: 'ERROR',

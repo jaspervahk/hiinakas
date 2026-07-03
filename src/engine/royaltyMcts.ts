@@ -12,6 +12,7 @@ import type { InfoState, RNG, ScoredPlacement } from './mc'
 import { buildLiveDeck, fisherYates } from './mc'
 import { legalPlacements, applyPlacement } from './placement'
 import type { Placement } from './placement'
+import { foulSafePlacements } from './foulPruner'
 
 // Easy to bump without touching call sites.
 export const ROYALTY_MCTS_SIMS = 1000
@@ -88,7 +89,7 @@ function royaltyRollout(
     const hand = shuffledDeck.slice(di, di + 3)
     di += 3
     if (hand.length < 3) break
-    const candidates = legalPlacements(b, hand, s)
+    const candidates = foulSafePlacements(b, legalPlacements(b, hand, s), s)
     if (candidates.length === 0) break
     // Greedy: pick placement(s) with highest partial royalty score; break ties randomly.
     let bestScore = -Infinity
@@ -112,7 +113,11 @@ export function royaltyMctsScoredPlacements(
   nSims: number,
   rng: RNG,
 ): ScoredPlacement[] {
-  const candidates = legalPlacements(state.board, state.hand, state.street)
+  const candidates = foulSafePlacements(
+    state.board,
+    legalPlacements(state.board, state.hand, state.street),
+    state.street,
+  )
   if (candidates.length === 0) return []
 
   const liveDeck = buildLiveDeck(state)

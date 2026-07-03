@@ -20,6 +20,7 @@ import { buildLiveDeck, fisherYates } from './mc'
 import type { NNModel } from './wasmModel'
 import { nnValue, nnPickPlacement, nnRankCandidates } from './nnPolicy'
 import { heuristicPlacement } from './heuristic'
+import { foulSafePlacements } from './foulPruner'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -55,7 +56,11 @@ function makeRoot(state: InfoState): MCTSNode {
     })),
     placement: null, parent: null,
     children: [],
-    untriedPlacements: legalPlacements(state.board, state.hand, state.street),
+    untriedPlacements: foulSafePlacements(
+      state.board,
+      legalPlacements(state.board, state.hand, state.street),
+      state.street,
+    ),
     visits: 0, totalValue: 0,
   }
 }
@@ -73,7 +78,11 @@ function makeChild(
     board, hand, street, discards, oppBoards,
     placement, parent,
     children: [],
-    untriedPlacements: legalPlacements(board, hand, street),
+    untriedPlacements: foulSafePlacements(
+      board,
+      legalPlacements(board, hand, street),
+      street,
+    ),
     visits: 0, totalValue: 0,
   }
 }
@@ -271,10 +280,29 @@ export function mctsScoredPlacements(
 ): ScoredPlacement[] {
   const root = makeRoot(state)
 
-  // Snapshot all legal placements before buildTree mutates untriedPlacements.
-  const allPlacements = legalPlacements(state.board, state.hand, state.street)
+  // Snapshot foul-safe placements before buildTree mutates untriedPlacements.
+  // Guaranteed-foul options are excluded from both MCTS exploration and the
+  // coach display; isFoul is definitive on street 4, conservative on earlier.
+  const allPlacements = foulSafePlacements(
+    state.board,
+    legalPlacements(state.board, state.hand, state.street),
+    state.street,
+  )
 
-  buildTree(root, state, model, opts, rng)
+  try {
+    buildTree(root, state, model, opts, rng)
+  } catch (e) {
+    // If MCTS fails for any reason (e.g. NN error mid-sim), fall back to
+    // a single batched NN depth-1 pass over all foul-safe placements so the
+    // coach always shows something rather than propagating an exception.
+    console.error('[mcts] buildTree failed, falling back to depth-1 NN:', e)
+    const scale = model.outputScale
+    return nnRankCandidates(
+      model, allPlacements, state.board, state.street,
+      state.revealedOpponentBoards, state.discards ?? [],
+    ).map(({ pl, val }) => ({ placement: pl, ev: val * scale, variance: 0, n: 0 }))
+     .sort((a, b) => b.ev - a.ev)
+  }
 
   const explored = new Map(root.children.map(c => [placementKey(c.placement!), c]))
   const scale = model.outputScale

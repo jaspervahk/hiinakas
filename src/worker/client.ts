@@ -95,6 +95,7 @@ export class WorkerClient {
     onProgress: (r: ScoredPlacement[]) => void,
     onDone: (r: ScoredPlacement[]) => void,
     policy?: BotPolicy,
+    onError?: () => void,
   ): () => void {
     const id = makeId()
     this.latestGeneration += 1
@@ -113,7 +114,10 @@ export class WorkerClient {
         if (this.generations.get(id) === gen && gen === this.latestGeneration) onDone(r)
         this.generations.delete(id)
       },
-      onError: () => { this.generations.delete(id) },
+      onError: () => {
+        if (this.generations.get(id) === gen && gen === this.latestGeneration) onError?.()
+        this.generations.delete(id)
+      },
     })
 
     const req: WorkerRequest = {

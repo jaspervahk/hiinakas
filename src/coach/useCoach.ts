@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Card, InfoState, ScoredPlacement, PartialBoard } from '../engine/index'
 import type { GameState, PendingRows } from '../game/types'
-import { workerClient } from '../worker/client'
+import { workerClient, royaltyWorkerClient } from '../worker/client'
 import type { BotPolicy } from '../worker/client'
 
 export interface CoachResult {
@@ -108,7 +108,7 @@ function infoStateKey(s: InfoState): string {
 
 // `enabled` only controls the panel's visibility — computation always runs so that
 // results are ready instantly when the panel is shown, and are preserved while hidden.
-export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, policy: BotPolicy = 'nn'): CoachResult {
+export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, policy: BotPolicy = 'nn', disabled = false): CoachResult {
   const [placements, setPlacements] = useState<ScoredPlacement[]>([])
   const [isComputing, setIsComputing] = useState(false)
   const [rolloutsDone, setRolloutsDone] = useState(0)
@@ -118,7 +118,7 @@ export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, po
 
   // Always build info regardless of enabled state so computation runs in the background.
   const info = buildInfoState(state)
-  const key = info ? infoStateKey(info) + `|r${rollouts}|p${policy}` : null
+  const key = (info && !disabled) ? infoStateKey(info) + `|r${rollouts}|p${policy}` : null
 
   useEffect(() => {
     if (cancelRef.current) {
@@ -160,13 +160,16 @@ export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, po
 
     // Small initial batch so first results appear almost immediately,
     // then larger batches for efficiency.
-    const cancel = workerClient.streamMC(
+    const onError = () => { setIsComputing(false) }
+    const client = policy === 'royalty' ? royaltyWorkerClient : workerClient
+    const cancel = client.streamMC(
       info,
       { totalRollouts: rollouts, batchSize: 10 },
       seed,
       onProgress,
       onDone,
       policy,
+      onError,
     )
     cancelRef.current = cancel
 
