@@ -305,39 +305,30 @@ export function parseSessionGames(
 
     // Bonus / side-game — analyse bonus_play decisions for any player.
     //
-    // Information hygiene: bonus game and side game run on SEPARATE fresh decks.
-    // `bonusEligibleUids` partitions players into two groups:
-    //   - Bonus group (uid in bonusEligibleUids): share the bonus deck.
-    //     Their opponents are other bonus_play players + bonus_submit players
-    //     from the SAME group only.
-    //   - Side group (uid not in bonusEligibleUids): share the side-game deck.
-    //     Their opponents are only other side_game bonus_play players.
-    // Players from different groups are NEVER mixed as opponents.
-    const bonusEligibleUids = new Set(cp.bonusEligibleUids ?? [])
-
+    // All bonus-round participants (qualifying and non-qualifying) share ONE fresh
+    // deck, so every player's placed cards must be visible to every other player
+    // for accurate card removal. Opponents are:
+    //   - bonus_play players: reveal their partial board per turn via boardBeforeTurn.
+    //   - bonus_submit players: submitted all at once, so their full board is visible
+    //     from the start of the bonus round.
+    // A solo bonus-round player (no opponents) is analysed without opponent boards.
     for (const [pname, data] of playerData) {
       const bonusPlay = moves.filter(
         m => m.uid === data.uid && m.segment === 'bonus_play' && m.placements,
       )
       if (bonusPlay.length === 0) continue
 
-      const isBonus = bonusEligibleUids.has(data.uid)
       const oppIncrementalMoves: P6Move[][] = []
       const oppSubmitBoards: PartialBoard[] = []
 
       for (const [oppName, oppData] of playerData) {
         if (oppName === pname) continue
-        // Strict deck separation: skip any opponent not on the same deck.
-        if (bonusEligibleUids.has(oppData.uid) !== isBonus) continue
-
         const oppBonus = moves.filter(
           m => m.uid === oppData.uid && m.segment === 'bonus_play' && m.placements,
         )
         if (oppBonus.length > 0) {
           oppIncrementalMoves.push(oppBonus)
-        } else if (isBonus) {
-          // bonus_submit is only valid as an opponent board within the bonus group
-          // (it is the bonus player's one-shot final board, on the same bonus deck).
+        } else {
           const sub = moves.find(m => m.uid === oppData.uid && m.segment === 'bonus_submit')
           if (sub) {
             oppSubmitBoards.push(toPartialBoard({
