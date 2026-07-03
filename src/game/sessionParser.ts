@@ -303,34 +303,46 @@ export function parseSessionGames(
       )
     }
 
-    // Bonus / side-game — analyse bonus_play decisions for any player
-    // Each bonus_play player faces each opponent's bonus_submit board.
+    // Bonus / side-game — analyse bonus_play decisions for any player.
+    // Opponents sharing the bonus deck are other bonus_play players (incremental)
+    // or bonus_submit players (one-shot). Side-game players are on a different
+    // deck and are excluded. A solo bonus player is analysed solitaire-style.
     for (const [pname, data] of playerData) {
       const bonusPlay = moves.filter(
         m => m.uid === data.uid && m.segment === 'bonus_play' && m.placements,
       )
       if (bonusPlay.length === 0) continue
 
-      // Collect all opponent submitted boards
-      const oppBoards: PartialBoard[] = []
+      const oppIncrementalMoves: P6Move[][] = []
+      const oppSubmitBoards: PartialBoard[] = []
+
       for (const [oppName, oppData] of playerData) {
         if (oppName === pname) continue
-        const sub = moves.find(m => m.uid === oppData.uid && m.segment === 'bonus_submit')
-        if (sub) {
-          oppBoards.push(toPartialBoard({
-            top: sub.top ?? [],
-            middle: sub.middle ?? [],
-            bottom: sub.bottom ?? [],
-          }))
+        const oppBonus = moves.filter(
+          m => m.uid === oppData.uid && m.segment === 'bonus_play' && m.placements,
+        )
+        if (oppBonus.length > 0) {
+          oppIncrementalMoves.push(oppBonus)
+        } else {
+          const sub = moves.find(m => m.uid === oppData.uid && m.segment === 'bonus_submit')
+          if (sub) {
+            oppSubmitBoards.push(toPartialBoard({
+              top: sub.top ?? [],
+              middle: sub.middle ?? [],
+              bottom: sub.bottom ?? [],
+            }))
+          }
         }
       }
-      if (oppBoards.length === 0) continue
 
       decisions.push(
         ...parseMovesToDecisions(
           game.gameId, game.createdAt, pname, data.uid, 'bonus_play',
           bonusPlay,
-          () => oppBoards,
+          (t) => [
+            ...oppIncrementalMoves.map(oMoves => boardBeforeTurn(oMoves, t)),
+            ...oppSubmitBoards,
+          ],
         )
       )
     }
