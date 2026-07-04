@@ -1,9 +1,10 @@
 name: GTO Training
 
 # Runs every 30 min automatically, or manually from GitHub Actions tab.
-# Each run takes ~86 min (70 min selfplay + 16 min train); runs overlap and
+# Each run takes ~90 min (75 min selfplay + 15 min train); runs overlap and
 # queue — 48 trigger events/day keeps gaps short even when GitHub drops some.
-# 12000 games/shard × 4 shards = 48000/run = ~20000 g/hr effective.
+# 8000 games/shard × 4 shards = 32000/run. 150 MCTS sims ≈ 1.6 g/s → ~83 min/shard.
+# Reduced from 12000→8000 games so 150-sim shards fit in the 90-min timeout.
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -11,19 +12,21 @@ on:
     inputs:
       games:
         description: 'Self-play games per shard (total = shards × games)'
-        default: '12000'
+        default: '8000'
       epochs:
         description: 'Training epochs'
-        default: '8'
+        default: '20'
 
 env:
-  # 4 parallel shards × GAMES games each = 48000 games per cycle.
+  # 4 parallel shards × GAMES games each = 32000 games per cycle.
   # Shard seeds are spread across run_number so they don't produce duplicate data.
-  GAMES: ${{ github.event.inputs.games || '12000' }}
-  EPOCHS: ${{ github.event.inputs.epochs || '8' }}
-  MCTS_SIMS: '100'
-  # Train on the last 12 batches (≈ 4 runs × 3 shards = ~8 hours of history).
-  # Prune keeps 18 batches (~6 runs) so the window is always satisfiable.
+  GAMES: ${{ github.event.inputs.games || '8000' }}
+  EPOCHS: ${{ github.event.inputs.epochs || '20' }}
+  # 150 sims: K=35 candidates get ~4-5 avg visits → MCTS actually explores flush
+  # draws and scoring top pairs in training, not just the NN's depth-1 top pick.
+  MCTS_SIMS: '150'
+  # Train on the last 12 batches (= 3 runs × 4 shards; ~3 hours of recent data).
+  # Prune keeps 18 batches (4.5 runs) so the window is always satisfiable.
   WINDOW: '12'
 
 jobs:
@@ -158,7 +161,7 @@ jobs:
       - name: Prune old batches and report data cache
         run: |
           mkdir -p data
-          # Keep last 18 batches (≈6 runs × 3 shards). Window=12 always has
+          # Keep last 18 batches (≈4.5 runs × 4 shards). Window=12 always has
           # enough data; the extra buffer handles failed/missing shards.
           cd data && ls -t *.bin 2>/dev/null | tail -n +19 | xargs -r rm; cd ..
           echo "Data: $(ls data/*.bin 2>/dev/null | wc -l) batches, $(du -sh data/ 2>/dev/null | cut -f1)"

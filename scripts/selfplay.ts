@@ -56,7 +56,9 @@ const SEED         = parseInt(getArg('seed', String(Date.now() & 0x7fffffff)), 1
 const PLAYER_COUNT = parseInt(getArg('players', '2'), 10) as 2 | 3
 const MODEL_PATH   = getArg('model', 'models/policy.bin')
 // MCTS simulations per decision (0 = disabled, use depth-1 NN).
-// 30-50 gives meaningful improvement over depth-1 with ~5× self-play cost.
+// CI uses 150: with ROOT_TOP_K=35 this gives ~4-5 avg visits/candidate so
+// MCTS actually explores flush draws and scoring top pairs, not just the NN's
+// depth-1 ranking. Lower values (≤100) effectively collapse to NN depth-1 at K=35.
 const MCTS_SIMS    = parseInt(getArg('mcts-sims', '0'), 10)
 
 // ── Seeded RNG ────────────────────────────────────────────────────────────────
