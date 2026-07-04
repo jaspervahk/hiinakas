@@ -1,7 +1,7 @@
 import type { InfoState, MCOptions, ScoredPlacement } from '../engine/mc'
 import type { Placement } from '../engine/placement'
-import type { WorkerRequest, WorkerResponse, BotPolicy } from './types'
-export type { BotPolicy }
+import type { WorkerRequest, WorkerResponse, BotPolicy, MatchHandRecord } from './types'
+export type { BotPolicy, MatchHandRecord }
 
 // Available model variants served via Firebase Hosting.
 export const MODEL_URLS = {
@@ -10,9 +10,13 @@ export const MODEL_URLS = {
 } as const
 export type ModelVariant = keyof typeof MODEL_URLS
 
+export const ROYALTY_MODEL_URL = '/models/royalty_nn.bin'
+
 let nextId = 0
 // Cached copy of model weights so we can reload after worker restart.
 let cachedModelBuf: ArrayBuffer | null = null
+// Cached royalty NN weights.
+let cachedRoyaltyModelBuf: ArrayBuffer | null = null
 function makeId(): string {
   nextId = (nextId + 1) | 0
   return `req-${nextId}-${Date.now().toString(36)}`
@@ -25,6 +29,7 @@ type Handler =
   | { kind: 'bot'; resolve: (p: Placement) => void; reject: (e: string) => void }
   | { kind: 'model'; resolve: (ok: boolean) => void }
   | { kind: 'analysis'; resolve: (r: AnalysisResult[]) => void; onProgress?: (done: number, total: number, item: AnalysisResult) => void }
+  | { kind: 'match'; resolve: (r: MatchHandRecord[]) => void; onProgress?: (done: number, total: number, batch: MatchHandRecord[]) => void; onError: () => void }
 
 export class WorkerClient {
   private worker: Worker | null = null
@@ -78,10 +83,18 @@ export class WorkerClient {
         if (handler.kind === 'analysis') handler.resolve(msg.payload)
         this.handlers.delete(msg.id)
         return
+      case 'MATCH_PROGRESS':
+        if (handler.kind === 'match') handler.onProgress?.(msg.payload.done, msg.payload.total, msg.payload.hands)
+        return
+      case 'MATCH_DONE':
+        if (handler.kind === 'match') handler.resolve(msg.payload.hands)
+        this.handlers.delete(msg.id)
+        return
       case 'ERROR':
         if (handler.kind === 'bot') handler.reject(msg.payload)
         else if (handler.kind === 'model') handler.resolve(false)
         else if (handler.kind === 'analysis') handler.resolve([])
+        else if (handler.kind === 'match') { handler.onError(); handler.resolve([]) }
         else handler.onError(msg.payload)
         this.handlers.delete(msg.id)
         return
@@ -201,6 +214,41 @@ export class WorkerClient {
     }
   }
 
+  runMatch(
+    totalHands: number,
+    nnSims: number,
+    royaltySims: number,
+    seed: number,
+    onProgress?: (done: number, total: number, batch: MatchHandRecord[]) => void,
+    rootTopK?: number,
+    royaltyPolicy?: 'mcts' | 'nn',
+  ): { promise: Promise<MatchHandRecord[]>; cancel: () => void } {
+    const id = makeId()
+    let cancelled = false
+    const promise = new Promise<MatchHandRecord[]>((resolve) => {
+      this.handlers.set(id, {
+        kind: 'match',
+        resolve: (r) => { if (!cancelled) { resolve(r) } else { resolve([]) } },
+        onProgress: onProgress ? (done, total, batch) => { if (!cancelled) { onProgress(done, total, batch) } } : undefined,
+        onError: () => { cancelled = true; resolve([]) },
+      })
+      const req: WorkerRequest = {
+        id,
+        type: 'RUN_MATCH',
+        payload: { totalHands, baseSeed: seed, nnSims, royaltySims, rootTopK, royaltyPolicy },
+      }
+      this.getWorker().postMessage(req)
+    })
+    return {
+      promise,
+      cancel: () => {
+        cancelled = true
+        // Terminate and restart so the long-running loop stops.
+        this.restartWorker()
+      },
+    }
+  }
+
   // Fetch a model from Firebase Hosting and load it into the worker.
   // url defaults to the current v2 model. Returns false if the file is missing
   // or the worker rejects the weights (dim mismatch with unsupported architecture).
@@ -220,8 +268,38 @@ export class WorkerClient {
       return false
     }
   }
+
+  // Fetch the royalty NN model and load it into this worker.
+  async loadRoyaltyModel(url: string = ROYALTY_MODEL_URL): Promise<boolean> {
+    try {
+      const resp = await fetch(url)
+      if (!resp.ok) return false
+      const buf = await resp.arrayBuffer()
+      cachedRoyaltyModelBuf = buf.slice(0)
+      const id = makeId()
+      return new Promise<boolean>((resolve) => {
+        this.handlers.set(id, { kind: 'model', resolve })
+        const req: WorkerRequest = { id, type: 'LOAD_ROYALTY_MODEL', payload: buf }
+        this.getWorker().postMessage(req, [buf])
+      })
+    } catch {
+      return false
+    }
+  }
+
+  // Load royalty model from the module-level cache (after another worker fetched it).
+  loadRoyaltyFromCache(): boolean {
+    if (!cachedRoyaltyModelBuf) return false
+    const copy = cachedRoyaltyModelBuf.slice(0)
+    const id = makeId()
+    this.handlers.set(id, { kind: 'model', resolve: () => {} })
+    const req: WorkerRequest = { id, type: 'LOAD_ROYALTY_MODEL', payload: copy }
+    this.getWorker().postMessage(req, [copy])
+    return true
+  }
 }
 
 export const workerClient = new WorkerClient()        // NN EV coach
 export const botWorkerClient = new WorkerClient()     // bot moves — never shared with coach
 export const royaltyWorkerClient = new WorkerClient() // royalty coach — separate worker, no model needed
+export const arenaWorkerClient = new WorkerClient()   // arena match runner — dedicated worker

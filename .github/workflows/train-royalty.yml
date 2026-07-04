@@ -1,0 +1,200 @@
+name: Royalty NN Training
+
+# Separate from GTO Training to avoid interference with NN+MCTS training.
+# Runs at :15 past each hour (GTO runs at :00 and :30), avoiding overlap.
+# Each run: ~8000 games × 4 shards with heuristic royalty MCTS (~fast).
+# Once royalty_nn.bin exists, MCTS_SIMS sims are used for self-play.
+on:
+  schedule:
+    - cron: '15 */2 * * *'   # every 2 hours at :15 — lighter load than GTO
+  workflow_dispatch:
+    inputs:
+      games:
+        description: 'Self-play games per shard'
+        default: '8000'
+      epochs:
+        description: 'Training epochs'
+        default: '20'
+
+env:
+  GAMES:     ${{ github.event.inputs.games  || '8000' }}
+  EPOCHS:    ${{ github.event.inputs.epochs || '20' }}
+  # 0 = heuristic royalty MCTS (fast, ~10 g/s). Raise once royalty_nn.bin is stable.
+  MCTS_SIMS: '0'
+  WINDOW:    '12'
+
+jobs:
+  # ── Self-play shards ──────────────────────────────────────────────────────────
+  selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Download current royalty model (warm-start)
+        run: |
+          mkdir -p models
+          curl -sf https://hiinakas-355.web.app/models/royalty_nn.bin -o models/royalty_nn.bin || true
+          python3 - <<'EOF'
+          import os
+          path = 'models/royalty_nn.bin'
+          try:
+              with open(path, 'rb') as f:
+                  magic = f.read(4)
+              if magic == b'OFCW':
+                  size = os.path.getsize(path)
+                  print(f'Downloaded valid royalty model ({size // 1024} KB) — warm-starting shard ${{ matrix.shard }}')
+              else:
+                  os.remove(path)
+                  print('Downloaded file is not a valid OFCW model — using heuristic')
+          except FileNotFoundError:
+              print('No royalty model yet — first run, using heuristic royalty MCTS')
+          EOF
+
+      - name: Self-play shard ${{ matrix.shard }}
+        run: |
+          mkdir -p data-royalty
+          npx tsx scripts/selfplay-royalty.ts \
+            --games "$GAMES" \
+            --mcts-sims "$MCTS_SIMS" \
+            --seed $(( ${{ github.run_number }} * 1000 + ${{ matrix.shard }} )) \
+            --model models/royalty_nn.bin \
+            --out data-royalty/batch_${{ github.run_number }}_${{ matrix.shard }}.bin
+
+      - name: Upload batch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: royalty-batch-${{ matrix.shard }}
+          path: data-royalty/batch_${{ github.run_number }}_${{ matrix.shard }}.bin
+          retention-days: 1
+
+  # ── Train + deploy ────────────────────────────────────────────────────────────
+  train-and-deploy:
+    needs: selfplay
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore royalty training data cache
+        uses: actions/cache@v4
+        with:
+          path: data-royalty/
+          key: royalty-data-${{ github.run_number }}
+          restore-keys: |
+            royalty-data-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install Node dependencies
+        run: npm install
+
+      - name: Install Python dependencies
+        run: pip install -r scripts/requirements.txt
+
+      - name: Download current royalty model (warm-start)
+        run: |
+          mkdir -p models
+          curl -sf https://hiinakas-355.web.app/models/royalty_nn.bin -o models/royalty_nn.bin || true
+          python3 - <<'EOF'
+          import os
+          path = 'models/royalty_nn.bin'
+          try:
+              with open(path, 'rb') as f:
+                  magic = f.read(4)
+              if magic == b'OFCW':
+                  size = os.path.getsize(path)
+                  print(f'Downloaded valid royalty model ({size // 1024} KB) — warm-starting')
+              else:
+                  os.remove(path)
+                  print('Downloaded file is not valid OFCW — first run')
+          except FileNotFoundError:
+              print('No royalty model yet — first run')
+          EOF
+
+      - name: Download royalty self-play batches
+        uses: actions/download-artifact@v4
+        with:
+          pattern: royalty-batch-*
+          path: data-royalty/
+          merge-multiple: true
+
+      - name: Prune old royalty batches
+        run: |
+          mkdir -p data-royalty
+          cd data-royalty && ls -t *.bin 2>/dev/null | tail -n +19 | xargs -r rm; cd ..
+          echo "Royalty data: $(ls data-royalty/*.bin 2>/dev/null | wc -l) batches, $(du -sh data-royalty/ 2>/dev/null | cut -f1)"
+
+      - name: Train royalty value network
+        run: |
+          python scripts/train.py \
+            --data data-royalty/ \
+            --window "$WINDOW" \
+            --out models/royalty_nn.bin \
+            --resume models/royalty_nn.bin \
+            --epochs "$EPOCHS" \
+            --batch 512
+
+      - name: Download current GTO model (include in deploy)
+        run: |
+          curl -sf https://hiinakas-355.web.app/models/policy.bin -o models/policy.bin || true
+          if [ ! -f models/policy.bin ]; then echo 'No GTO model yet (normal for first-ever run)'; fi
+
+      - name: Build app
+        env:
+          VITE_FIREBASE_API_KEY: AIzaSyAZJ6kZHk--spDOJg3YqYzukftMXr0JYdA
+          VITE_FIREBASE_AUTH_DOMAIN: hiinakas-355.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: hiinakas-355
+          VITE_FIREBASE_STORAGE_BUCKET: hiinakas-355.firebasestorage.app
+          VITE_FIREBASE_MESSAGING_SENDER_ID: "17827635816"
+          VITE_FIREBASE_APP_ID: 1:17827635816:web:fdfd222e409323ac6cd1dd
+          VITE_ALLOWED_UID: 7d3zgIRy43OClSXUDhnsLmhDNwg2
+        run: npm run build
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools --ignore-scripts
+
+      - name: Deploy royalty model + GTO model + app
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          mkdir -p dist/models
+          cp models/royalty_nn.bin dist/models/royalty_nn.bin
+          # Include GTO model so this deploy doesn't wipe it.
+          [ -f models/policy.bin ] && cp models/policy.bin dist/models/policy.bin || true
+          firebase deploy --only hosting \
+            --token "$FIREBASE_TOKEN" \
+            --non-interactive \
+            --project hiinakas-355
+
+      - name: Report
+        run: |
+          SIZE=$(wc -c < models/royalty_nn.bin)
+          SHARDS=$(ls data-royalty/batch_${{ github.run_number }}_*.bin 2>/dev/null | wc -l)
+          echo "Royalty model: $(( SIZE / 1024 )) KB"
+          echo "Run ${{ github.run_number }}: $SHARDS shard(s) × $GAMES games = $(( SHARDS * $GAMES )) new training games"
+          echo "Deployed to https://hiinakas-355.web.app/models/royalty_nn.bin"

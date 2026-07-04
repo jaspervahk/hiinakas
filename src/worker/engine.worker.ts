@@ -1,6 +1,8 @@
 // Web Worker entry point — all engine compute runs here, never on the UI thread.
 // The worker only imports from the engine boundary (src/engine/).
 
+import { runMatchHand } from '../engine/matchSimulator'
+import type { MatchHandRecord } from '../engine/matchTypes'
 import { runMC, getBotMove, legalPlacements } from '../engine/mc'
 import type { InfoState, ScoredPlacement } from '../engine/mc'
 import type { WorkerRequest, WorkerResponse } from './types'
@@ -10,7 +12,10 @@ import { nnRankCandidates } from '../engine/nnPolicy'
 import { ENCODE_DIM } from '../engine/encode'
 import { mctsPickPlacement, mctsScoredPlacements } from '../engine/mcts'
 import type { MCTSOptions } from '../engine/mcts'
-import { royaltyMctsScoredPlacements, royaltyMctsPickPlacement, ROYALTY_MCTS_SIMS } from '../engine/royaltyMcts'
+import {
+  royaltyMctsScoredPlacements, royaltyMctsPickPlacement, ROYALTY_MCTS_SIMS,
+  royaltyNnMctsScoredPlacements, royaltyNnMctsPickPlacement,
+} from '../engine/royaltyMcts'
 import initWasm, { MlpModel } from '../engine/wasm/ofc_nn.js'
 
 // Seeded RNG (mulberry32) — reproduced here to avoid circular import.
@@ -34,6 +39,8 @@ const wasmReady: Promise<void> = initWasm().then(() => undefined).catch((err: un
 
 // Active model — null until LOAD_MODEL completes.
 let loadedModel: NNModel | null = null
+// Royalty NN model — null until LOAD_ROYALTY_MODEL completes.
+let royaltyNnModel: NNModel | null = null
 
 // nnOpponents is enabled because WASM makes opponent NN calls cheap enough to
 // be net-faster than heuristic opponents even including the extra forward passes.
@@ -62,8 +69,13 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       const rng = makeRNG(seed)
       console.log(`[worker] GET_EV street=${state.street} policy=${policy} hasModel=${!!loadedModel}`)
 
-      if (policy === 'royalty') {
-        // Royalty MCTS — no NN, solitaire-style, returns immediately.
+      if (policy === 'royalty-nn' && royaltyNnModel) {
+        // Royalty NN MCTS — uses learned royalty value function + domination filter.
+        const results = royaltyNnMctsScoredPlacements(state, royaltyNnModel, ROYALTY_MCTS_SIMS, rng)
+        self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
+        self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: results } as WorkerResponse)
+      } else if (policy === 'royalty' || policy === 'royalty-nn') {
+        // Heuristic royalty MCTS (no NN loaded yet).
         const results = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
         self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: results } as WorkerResponse)
@@ -91,7 +103,9 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
 
     } else if (msg.type === 'GET_BOT_MOVE') {
       const { state, rollouts, seed, policy } = msg.payload
-      const placement = policy === 'royalty'
+      const placement = (policy === 'royalty-nn' && royaltyNnModel)
+        ? royaltyNnMctsPickPlacement(state, royaltyNnModel, rollouts || ROYALTY_MCTS_SIMS, makeRNG(seed))
+        : (policy === 'royalty' || policy === 'royalty-nn')
         ? royaltyMctsPickPlacement(state, rollouts || ROYALTY_MCTS_SIMS, makeRNG(seed))
         : loadedModel
           ? mctsPickPlacement(state, loadedModel, { ...BOT_MCTS_OPTS, nSims: rollouts || BOT_MCTS_OPTS.nSims }, makeRNG(seed))
@@ -113,7 +127,9 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         try {
           let candidates: ScoredPlacement[]
 
-          if (policy === 'royalty') {
+          if (policy === 'royalty-nn' && royaltyNnModel) {
+            candidates = royaltyNnMctsScoredPlacements(state, royaltyNnModel, ROYALTY_MCTS_SIMS, rng)
+          } else if (policy === 'royalty' || policy === 'royalty-nn') {
             candidates = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
           } else if (!loadedModel) {
             const item = { id, candidates: [], hasModel: false }
@@ -138,20 +154,62 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
 
       self.postMessage({ id: msg.id, type: 'ANALYSIS_DONE', payload: allResults } as WorkerResponse)
 
+    } else if (msg.type === 'RUN_MATCH') {
+      const { totalHands, baseSeed, nnSims, royaltySims, rootTopK, royaltyPolicy } = msg.payload
+      if (!loadedModel) {
+        self.postMessage({ id: msg.id, type: 'ERROR', payload: 'No model loaded' } as WorkerResponse)
+        return
+      }
+      const model = loadedModel
+      const nnOpts: MCTSOptions = { ...BOT_MCTS_OPTS, nSims: nnSims, ...(rootTopK !== undefined ? { rootTopK } : {}) }
+      const royNnModel = (royaltyPolicy === 'nn' && royaltyNnModel) ? royaltyNnModel : undefined
+      const allHands: MatchHandRecord[] = []
+      for (let i = 0; i < totalHands; i++) {
+        const seed = ((baseSeed + i * 1_664_525 + 1_013_904_223) >>> 0)
+        const hand = runMatchHand(i, seed, model, nnOpts, royaltySims, royNnModel)
+        allHands.push(hand)
+        // Send every hand so the UI counter increments smoothly.
+        self.postMessage({
+          id: msg.id,
+          type: 'MATCH_PROGRESS',
+          payload: { done: i + 1, total: totalHands, hands: [hand] },
+        } as WorkerResponse)
+      }
+      self.postMessage({ id: msg.id, type: 'MATCH_DONE', payload: { hands: allHands } } as WorkerResponse)
+
     } else if (msg.type === 'LOAD_MODEL') {
       try {
         let model: NNModel
         try {
-          // Try WASM backend first (SIMD-accelerated, 5-15× faster than JS).
           model = createWasmModel(new MlpModel(new Uint8Array(msg.payload)))
         } catch {
-          // WASM construction failed — use pure-JS fallback.
           model = createJSModel(msg.payload)
         }
         if (model.inputDim !== ENCODE_DIM && model.inputDim !== 473) {
           throw new Error(`Unsupported model dim ${model.inputDim} (expected ${ENCODE_DIM} or 473)`)
         }
         loadedModel = model
+        self.postMessage({ id: msg.id, type: 'MODEL_LOADED', payload: { ok: true, inputDim: model.inputDim } } as WorkerResponse)
+      } catch (e) {
+        self.postMessage({
+          id: msg.id,
+          type: 'MODEL_LOADED',
+          payload: { ok: false, error: e instanceof Error ? e.message : String(e) },
+        } as WorkerResponse)
+      }
+
+    } else if (msg.type === 'LOAD_ROYALTY_MODEL') {
+      try {
+        let model: NNModel
+        try {
+          model = createWasmModel(new MlpModel(new Uint8Array(msg.payload)))
+        } catch {
+          model = createJSModel(msg.payload)
+        }
+        if (model.inputDim !== ENCODE_DIM) {
+          throw new Error(`Royalty model dim ${model.inputDim} (expected ${ENCODE_DIM})`)
+        }
+        royaltyNnModel = model
         self.postMessage({ id: msg.id, type: 'MODEL_LOADED', payload: { ok: true, inputDim: model.inputDim } } as WorkerResponse)
       } catch (e) {
         self.postMessage({

@@ -45,7 +45,7 @@ interface MCTSNode {
   totalValue: number              // sum of V(leaf) over all simulations
 }
 
-function makeRoot(state: InfoState): MCTSNode {
+function makeRoot(state: InfoState, candidateOverride?: Placement[]): MCTSNode {
   return {
     board: state.board,
     hand: [...state.hand],
@@ -56,7 +56,7 @@ function makeRoot(state: InfoState): MCTSNode {
     })),
     placement: null, parent: null,
     children: [],
-    untriedPlacements: foulSafePlacements(
+    untriedPlacements: candidateOverride ?? foulSafePlacements(
       state.board,
       legalPlacements(state.board, state.hand, state.street),
       state.street,
@@ -168,12 +168,16 @@ export interface MCTSOptions {
   nSims: number       // total simulations to run
   maxDepth: number    // tree depth (2 = look one street ahead of current; recommended)
   nnOpponents?: boolean  // use NN for opponent moves in transitions (more accurate; free with WASM)
+  rootTopK?: number   // override root candidate cap (default: ROOT_TOP_K constant)
+  candidateOverride?: Placement[]  // pre-filtered candidate list; skips auto-generation and ROOT_TOP_K
 }
 
 // Max root candidates to explore via MCTS. Pre-ranked by NN so the tree focuses
 // on the top-K rather than wasting sims on obviously weak placements.
 // Street 0 can have 100+ legal placements; without pruning, most are never visited.
-const ROOT_TOP_K = 20
+// Raised from 20→35: human data shows NN almost never builds flushes or scoring
+// top pairs, which are ranked outside the top-20 by immediate EV but win long-term.
+const ROOT_TOP_K = 35
 
 // ── Main search ───────────────────────────────────────────────────────────────
 
@@ -184,14 +188,15 @@ function buildTree(
   opts: MCTSOptions,
   rng: RNG,
 ): void {
-  const { nSims, maxDepth, nnOpponents = false } = opts
+  const { nSims, maxDepth, nnOpponents = false, rootTopK = ROOT_TOP_K, candidateOverride } = opts
   const oppModel = nnOpponents ? model : null
 
   // Pre-filter root to top-K using a single batched NN evaluation.
-  if (root.untriedPlacements.length > ROOT_TOP_K) {
+  // Skip when candidateOverride was provided — caller already filtered.
+  if (!candidateOverride && root.untriedPlacements.length > rootTopK) {
     root.untriedPlacements = nnRankCandidates(
       model, root.untriedPlacements, root.board, root.street, root.oppBoards, state.discards ?? []
-    ).slice(0, ROOT_TOP_K).map(x => x.pl)
+    ).slice(0, rootTopK).map(x => x.pl)
   }
 
   for (let sim = 0; sim < nSims; sim++) {
@@ -255,7 +260,7 @@ export function mctsPickPlacement(
   opts: MCTSOptions,
   rng: RNG,
 ): Placement {
-  const root = makeRoot(state)
+  const root = makeRoot(state, opts.candidateOverride)
   buildTree(root, state, model, opts, rng)
 
   if (root.children.length === 0) {
@@ -278,12 +283,11 @@ export function mctsScoredPlacements(
   opts: MCTSOptions,
   rng: RNG,
 ): ScoredPlacement[] {
-  const root = makeRoot(state)
+  const root = makeRoot(state, opts.candidateOverride)
 
   // Snapshot foul-safe placements before buildTree mutates untriedPlacements.
-  // Guaranteed-foul options are excluded from both MCTS exploration and the
-  // coach display; isFoul is definitive on street 4, conservative on earlier.
-  const allPlacements = foulSafePlacements(
+  // When candidateOverride is provided, only those candidates are considered.
+  const allPlacements = opts.candidateOverride ?? foulSafePlacements(
     state.board,
     legalPlacements(state.board, state.hand, state.street),
     state.street,

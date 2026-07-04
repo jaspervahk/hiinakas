@@ -3,26 +3,45 @@
 // Objective: topRoyalty + middleRoyalty + bottomRoyalty, or -6 if bust.
 // Opponents are used only for card removal (dead-card elimination), never
 // for strategy modelling. All future card draws are sampled from the live deck.
+//
+// Two variants:
+//   royaltyMcts*     — heuristic rollouts, no NN required
+//   royaltyNnMcts*   — NN value function, domination-filtered candidates, no ROOT_TOP_K cap
 
 import type { Card, PartialBoard } from './types'
 import type { Board } from './types'
-import { isFoul, royalties, bonusTrigger } from './rules'
-import { evaluate3, evaluate5, HandCategory } from './index'
+import { isFoul, royalties, bonusTrigger, evaluate3, evaluate5 } from './index'
+import { HandCategory } from './types'
 import type { InfoState, RNG, ScoredPlacement } from './mc'
 import { buildLiveDeck, fisherYates } from './mc'
 import { legalPlacements, applyPlacement } from './placement'
 import type { Placement } from './placement'
 import { foulSafePlacements } from './foulPruner'
+import { mctsPickPlacement, mctsScoredPlacements } from './mcts'
+import type { NNModel } from './wasmModel'
 
 // Easy to bump without touching call sites.
 export const ROYALTY_MCTS_SIMS = 1000
 
-// Bonus game value added on top of standard royalties.
-// KK triggers a 14-card bonus game (+7); AA or trips triggers 15-card bonus (+15).
+// ── Bonus EV constants ────────────────────────────────────────────────────────
+//
+// Expected royalties from optimal bonus board play, averaged over 5000 random
+// deals. Subtract 2 for the side-game opponent's expected score to get the net
+// additional reward for qualifying at the top row.
+//
+// QQ  (13 cards, 0 discards): avg_royalties=9.0 → net=7.0
+// KK  (14 cards, 1 discard):  avg_royalties=12.7 → net=10.7
+// AA+ (15 cards, 2 discards): avg_royalties=19.2 → net=17.2
+const BONUS_EV_QQ        = 7.0
+const BONUS_EV_KK        = 10.7
+const BONUS_EV_AA_TRIPS  = 17.2
+
+// Net bonus EV for a completed board's top-row qualifier.
 function bonusGameValue(board: Board): number {
   const q = bonusTrigger(board)
-  if (q === 'KK') return 7
-  if (q === 'AA_OR_TRIPS') return 15
+  if (q === 'QQ')         return BONUS_EV_QQ
+  if (q === 'KK')         return BONUS_EV_KK
+  if (q === 'AA_OR_TRIPS') return BONUS_EV_AA_TRIPS
   return 0
 }
 
@@ -39,13 +58,14 @@ function partialRoyaltyHint(board: PartialBoard): number {
   if (board.top.length === 3) {
     const rank = evaluate3(board.top)
     if (rank.category === HandCategory.Trips) {
-      score += 10 + (rank.tiebreakers[0]! - 2)  // +10..+22
-      score += 15  // bonus game
+      score += 10 + (rank.tiebreakers[0]! - 2)
+      score += BONUS_EV_AA_TRIPS
     } else if (rank.category === HandCategory.OnePair) {
       const pr = rank.tiebreakers[0]!
-      if (pr >= 6) score += pr - 5  // standard royalty
-      if (pr === 14) score += 15    // AA bonus game
-      else if (pr === 13) score += 7  // KK bonus game
+      if (pr >= 6) score += pr - 5
+      if (pr === 14) score += BONUS_EV_AA_TRIPS
+      else if (pr === 13) score += BONUS_EV_KK
+      else if (pr === 12) score += BONUS_EV_QQ
     }
   }
   if (board.middle.length === 5) {
@@ -91,7 +111,6 @@ function royaltyRollout(
     if (hand.length < 3) break
     const candidates = foulSafePlacements(b, legalPlacements(b, hand, s), s)
     if (candidates.length === 0) break
-    // Greedy: pick placement(s) with highest partial royalty score; break ties randomly.
     let bestScore = -Infinity
     let bestCandidates: typeof candidates = []
     for (const p of candidates) {
@@ -124,8 +143,6 @@ export function royaltyMctsScoredPlacements(
   const boardsAfter = candidates.map(p => applyPlacement(state.board, p))
   const k = candidates.length
 
-  // On the last street (4), terminal evaluation is immediate and deterministic —
-  // skip UCB overhead and just score each placement directly.
   if (state.street === 4) {
     return candidates.map((placement, i) => ({
       placement,
@@ -140,7 +157,6 @@ export function royaltyMctsScoredPlacements(
   const C = Math.SQRT2
 
   for (let sim = 0; sim < nSims; sim++) {
-    // UCB1 arm selection — unvisited arms always go first (Infinity score).
     let arm = -1
     let bestUCB = -Infinity
     const logTotal = Math.log(sim + 1)
@@ -176,6 +192,102 @@ export function royaltyMctsPickPlacement(
   if (scored.length === 0) {
     return legalPlacements(state.board, state.hand, state.street)[0]!
   }
-  // Best by EV (already sorted).
   return scored[0]!.placement
+}
+
+// ── Domination filter ─────────────────────────────────────────────────────────
+//
+// P1 dominates P2 if the resulting board is ≥ P2's in all rows (by sorted card
+// rank, descending) and strictly > in at least one. Eliminates placements that
+// are strictly worse in every comparable dimension — e.g. jack-high top when
+// another placement gets ace-high top with the same middle and bottom.
+// This is conservative (only rank-based) and safe: it never removes a placement
+// that could uniquely yield a better hand.
+
+function compareRowByRank(a: readonly Card[], b: readonly Card[]): number {
+  const ra = a.map(c => c.rank).sort((x, y) => y - x)
+  const rb = b.map(c => c.rank).sort((x, y) => y - x)
+  const n = Math.max(ra.length, rb.length)
+  for (let i = 0; i < n; i++) {
+    const va = ra[i] ?? -1
+    const vb = rb[i] ?? -1
+    if (va !== vb) return va > vb ? 1 : -1
+  }
+  return 0
+}
+
+export function dominationFilter(board: PartialBoard, placements: Placement[]): Placement[] {
+  if (placements.length <= 1) return placements
+  const boards = placements.map(p => applyPlacement(board, p))
+  const dominated = new Uint8Array(placements.length)
+  for (let i = 0; i < placements.length; i++) {
+    if (dominated[i]) continue
+    for (let j = 0; j < placements.length; j++) {
+      if (i === j || dominated[j]) continue
+      const tc = compareRowByRank(boards[i]!.top, boards[j]!.top)
+      const mc = compareRowByRank(boards[i]!.middle, boards[j]!.middle)
+      const bc = compareRowByRank(boards[i]!.bottom, boards[j]!.bottom)
+      if (tc >= 0 && mc >= 0 && bc >= 0 && (tc > 0 || mc > 0 || bc > 0)) {
+        dominated[j] = 1
+      }
+    }
+  }
+  return placements.filter((_, i) => !dominated[i])
+}
+
+// ── Royalty NN MCTS ───────────────────────────────────────────────────────────
+//
+// Uses the learned royalty NN value function instead of heuristic rollouts.
+// Applies the domination filter to the candidate list (no ROOT_TOP_K cap).
+// Uses heuristic opponents (nnOpponents: false) since opponent moves only
+// determine which cards are consumed — their strategy doesn't affect our royalties.
+
+const ROYALTY_NN_MCTS_OPTS = {
+  maxDepth: 2 as const,
+  nnOpponents: false as const,
+  rootTopK: 9999,  // effectively unlimited; domination filter handles pruning
+}
+
+export function royaltyNnMctsScoredPlacements(
+  state: InfoState,
+  model: NNModel,
+  nSims: number,
+  rng: RNG,
+): ScoredPlacement[] {
+  const allCandidates = foulSafePlacements(
+    state.board,
+    legalPlacements(state.board, state.hand, state.street),
+    state.street,
+  )
+  const filtered = dominationFilter(state.board, allCandidates)
+  if (filtered.length === 0) return []
+
+  return mctsScoredPlacements(state, model, {
+    ...ROYALTY_NN_MCTS_OPTS,
+    nSims,
+    candidateOverride: filtered,
+  }, rng)
+}
+
+export function royaltyNnMctsPickPlacement(
+  state: InfoState,
+  model: NNModel,
+  nSims: number,
+  rng: RNG,
+): Placement {
+  const allCandidates = foulSafePlacements(
+    state.board,
+    legalPlacements(state.board, state.hand, state.street),
+    state.street,
+  )
+  const filtered = dominationFilter(state.board, allCandidates)
+  if (filtered.length === 0) {
+    return legalPlacements(state.board, state.hand, state.street)[0]!
+  }
+
+  return mctsPickPlacement(state, model, {
+    ...ROYALTY_NN_MCTS_OPTS,
+    nSims,
+    candidateOverride: filtered,
+  }, rng)
 }

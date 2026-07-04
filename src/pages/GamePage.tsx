@@ -418,6 +418,12 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
             >
               Stats
             </button>
+            <button
+              onClick={() => onNavigate('arena')}
+              className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium rounded-lg transition-colors text-sm"
+            >
+              Arena
+            </button>
           </div>
         </div>
 
@@ -682,7 +688,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
         <div className="flex items-center justify-between">
           <span className="text-xs text-gray-400">Opponent bot</span>
           <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-            {(['nn', 'royalty'] as const).map(p => (
+            {(['nn', 'royalty', 'royalty-nn'] as const).map(p => (
               <button
                 key={p}
                 onClick={() => onUpdateSettings({ botPolicy: p })}
@@ -693,7 +699,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                     : 'bg-gray-800 text-gray-500 hover:text-gray-300',
                 ].join(' ')}
               >
-                {p === 'nn' ? 'NN + MCTS' : 'Royalty'}
+                {p === 'nn' ? 'NN + MCTS' : p === 'royalty' ? 'Royalty' : 'Royalty NN'}
               </button>
             ))}
           </div>
@@ -755,6 +761,8 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
         <button onClick={() => onNavigate('stats')} className="text-gray-500 hover:text-gray-300 transition-colors">Stats</button>
         <span className="text-gray-700">·</span>
         <button onClick={() => onNavigate('analyzer')} className="text-gray-500 hover:text-gray-300 transition-colors">Analyzer</button>
+        <span className="text-gray-700">·</span>
+        <button onClick={() => onNavigate('arena')} className="text-gray-500 hover:text-gray-300 transition-colors">Arena</button>
       </div>
     </div>
   )

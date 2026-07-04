@@ -14,7 +14,7 @@ export function isFoul(board: Board): boolean {
 
 // ── Royalties ──────────────────────────────────────────────────────────────
 
-function topRoyalty(cards: readonly Card[]): number {
+export function topRoyalty(cards: readonly Card[]): number {
   const rank = evaluate3(cards)
   if (rank.category === HandCategory.Trips) {
     // Trips 2→10, J→A map to +10..+22
@@ -29,7 +29,7 @@ function topRoyalty(cards: readonly Card[]): number {
   return 0
 }
 
-function middleRoyalty(cards: readonly Card[]): number {
+export function middleRoyalty(cards: readonly Card[]): number {
   const rank = evaluate5(cards)
   switch (rank.category) {
     case HandCategory.Trips:         return 2
@@ -43,7 +43,7 @@ function middleRoyalty(cards: readonly Card[]): number {
   }
 }
 
-function bottomRoyalty(cards: readonly Card[]): number {
+export function bottomRoyalty(cards: readonly Card[]): number {
   const rank = evaluate5(cards)
   switch (rank.category) {
     case HandCategory.Straight:      return 2

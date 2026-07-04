@@ -1,7 +1,8 @@
 import type { InfoState, ScoredPlacement } from '../engine/mc'
-export type { ScoredPlacement }
+import type { MatchHandRecord } from '../engine/matchTypes'
+export type { ScoredPlacement, MatchHandRecord }
 
-export type BotPolicy = 'nn' | 'royalty'
+export type BotPolicy = 'nn' | 'royalty' | 'royalty-nn'
 
 export interface WorkerRequestGetEV {
   id: string
@@ -33,6 +34,13 @@ export interface WorkerRequestLoadModel {
   payload: ArrayBuffer
 }
 
+// Load royalty NN weights (separate model trained on royalty labels).
+export interface WorkerRequestLoadRoyaltyModel {
+  id: string
+  type: 'LOAD_ROYALTY_MODEL'
+  payload: ArrayBuffer
+}
+
 export interface WorkerRequestAnalyzePositions {
   id: string
   type: 'ANALYZE_POSITIONS'
@@ -40,11 +48,26 @@ export interface WorkerRequestAnalyzePositions {
   payload: { positions: Array<{ id: string; state: InfoState }>; rollouts?: number; seed?: number; policy?: BotPolicy }
 }
 
+export interface WorkerRequestRunMatch {
+  id: string
+  type: 'RUN_MATCH'
+  payload: {
+    totalHands: number
+    baseSeed: number
+    nnSims: number
+    royaltySims: number
+    rootTopK?: number
+    royaltyPolicy?: 'mcts' | 'nn'  // 'nn' uses royalty NN model if loaded, else falls back to MCTS
+  }
+}
+
 export type WorkerRequest =
   | WorkerRequestGetEV
   | WorkerRequestGetBotMove
   | WorkerRequestLoadModel
+  | WorkerRequestLoadRoyaltyModel
   | WorkerRequestAnalyzePositions
+  | WorkerRequestRunMatch
 
 export interface WorkerResponseProgress {
   id: string
@@ -89,6 +112,18 @@ export interface WorkerResponseAnalysisProgress {
   payload: { done: number; total: number; item: { id: string; candidates: ScoredPlacement[]; hasModel: boolean } }
 }
 
+export interface WorkerResponseMatchProgress {
+  id: string
+  type: 'MATCH_PROGRESS'
+  payload: { done: number; total: number; hands: MatchHandRecord[] }
+}
+
+export interface WorkerResponseMatchDone {
+  id: string
+  type: 'MATCH_DONE'
+  payload: { hands: MatchHandRecord[] }
+}
+
 export type WorkerResponse =
   | WorkerResponseProgress
   | WorkerResponseDone
@@ -97,3 +132,5 @@ export type WorkerResponse =
   | WorkerResponseModelLoaded
   | WorkerResponseAnalysisDone
   | WorkerResponseAnalysisProgress
+  | WorkerResponseMatchProgress
+  | WorkerResponseMatchDone

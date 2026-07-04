@@ -107,6 +107,6 @@ export type CoachMode = 'nn' | 'royalty' | 'both'
 export interface AppSettings {
   coachEnabled: boolean
   playerCount: 2 | 3
-  botPolicy: 'nn' | 'royalty'
+  botPolicy: 'nn' | 'royalty' | 'royalty-nn'
   coachMode: CoachMode
 }

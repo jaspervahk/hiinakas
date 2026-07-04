@@ -190,12 +190,17 @@ jobs:
       - name: Install Firebase CLI
         run: npm install -g firebase-tools --ignore-scripts
 
+      - name: Download royalty model (include in deploy so it isn't wiped)
+        run: |
+          curl -sf https://hiinakas-355.web.app/models/royalty_nn.bin -o models/royalty_nn.bin || true
+
       - name: Deploy model + app via Firebase Hosting
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
           mkdir -p dist/models
           cp models/policy.bin dist/models/policy.bin
+          [ -f models/royalty_nn.bin ] && cp models/royalty_nn.bin dist/models/royalty_nn.bin || true
           firebase deploy --only hosting \
             --token "$FIREBASE_TOKEN" \
             --non-interactive \
