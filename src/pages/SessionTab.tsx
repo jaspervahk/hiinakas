@@ -743,7 +743,9 @@ function SessionTabInner() {
 
       const results = await workerClient.analyzePositions(
         positions,
-        200,
+        // Heuristic MC brute-forces a full rollout per candidate with no NN/tree-search
+        // guidance, so it needs a far smaller budget to stay usable over a whole session.
+        analysisMode === 'heuristic' ? 20 : 200,
         (done, total, item) => {
           partialMap.set(item.id, item.candidates)
           setAnalyzeProgress({ done, total })
@@ -986,6 +988,12 @@ function SessionTabInner() {
                 className={`px-2 py-1 transition-colors ${analysisMode === 'royalty' ? 'bg-amber-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
               >
                 Royalty
+              </button>
+              <button
+                onClick={() => { setAnalysisMode('heuristic'); setAnalyzed([]); setNoModel(false) }}
+                className={`px-2 py-1 transition-colors ${analysisMode === 'heuristic' ? 'bg-teal-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+              >
+                Heuristic
               </button>
             </div>
             {analyzing && analyzeProgress && (

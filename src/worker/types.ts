@@ -2,7 +2,7 @@ import type { InfoState, ScoredPlacement } from '../engine/mc'
 import type { MatchHandRecord, BotSpec } from '../engine/matchTypes'
 export type { ScoredPlacement, MatchHandRecord, BotSpec }
 
-export type BotPolicy = 'nn' | 'royalty' | 'royalty-nn'
+export type BotPolicy = 'nn' | 'royalty' | 'royalty-nn' | 'heuristic'
 
 export interface WorkerRequestGetEV {
   id: string

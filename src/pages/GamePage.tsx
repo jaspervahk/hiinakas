@@ -25,6 +25,10 @@ function bonusQualifierLabel(q: string): string {
 
 const COACH_ROLLOUTS = 500
 const ROYALTY_COACH_SIMS = 1000
+// Heuristic MC brute-forces a full rollout per candidate with no NN/tree-search
+// guidance, so it needs a far smaller budget to stay usable live (see the
+// same tradeoff in Arena's Heuristic MC default).
+const HEURISTIC_COACH_ROLLOUTS = 20
 
 interface GamePageProps {
   onNavigate: (p: AppPage) => void
@@ -59,7 +63,9 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
   const botLabels = labels.slice(1)
 
   const { coachMode, botPolicy } = state.appSettings
-  const coachRollouts = coachMode === 'nn' ? COACH_ROLLOUTS : ROYALTY_COACH_SIMS
+  const coachRollouts = coachMode === 'nn' ? COACH_ROLLOUTS
+    : coachMode === 'heuristic' ? HEURISTIC_COACH_ROLLOUTS
+    : ROYALTY_COACH_SIMS
   const coach = useCoach(state, state.appSettings.coachEnabled, coachRollouts, coachMode)
 
   // Best bonus board (for bonus_oneshot coaching)
@@ -724,7 +730,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
           <div className="flex items-center justify-between">
             <span className="text-xs text-gray-400">Coach mode</span>
             <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-              {(['nn', 'royalty', 'royalty-nn'] as const).map(m => (
+              {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(m => (
                 <button
                   key={m}
                   onClick={() => onUpdateSettings({ coachMode: m })}
@@ -735,7 +741,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                       : 'bg-gray-800 text-gray-500 hover:text-gray-300',
                   ].join(' ')}
                 >
-                  {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : 'Royalty NN'}
+                  {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : m === 'royalty-nn' ? 'Royalty NN' : 'Heuristic'}
                 </button>
               ))}
             </div>

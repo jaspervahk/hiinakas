@@ -142,6 +142,7 @@ const MODE_META: Record<CoachMode, { label: string; shortLabel: string; accent: 
   nn:          { label: 'NN',        shortLabel: 'NN',     accent: 'text-indigo-400', relativeEV: false },
   royalty:     { label: 'Royalty',   shortLabel: 'Roy',    accent: 'text-amber-400',  relativeEV: true  },
   'royalty-nn':{ label: 'Royalty NN',shortLabel: 'Roy NN', accent: 'text-purple-400', relativeEV: true  },
+  heuristic:   { label: 'Heuristic', shortLabel: 'Heur',   accent: 'text-teal-400',   relativeEV: false },
 }
 
 export function CoachPanel({ result, mode, onModeChange, enabled, onToggle, onSelectPlacement }: CoachPanelProps) {
@@ -184,7 +185,7 @@ export function CoachPanel({ result, mode, onModeChange, enabled, onToggle, onSe
           )}
           {/* Mode toggle */}
           <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
-            {(['nn', 'royalty', 'royalty-nn'] as const).map(m => (
+            {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(m => (
               <button
                 key={m}
                 onClick={() => onModeChange(m)}

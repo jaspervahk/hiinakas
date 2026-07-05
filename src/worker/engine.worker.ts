@@ -79,6 +79,14 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         const results = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
         self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: results } as WorkerResponse)
+      } else if (policy === 'heuristic') {
+        // Brute-force heuristic MC rollouts, chosen explicitly regardless of any loaded NN model.
+        let lastResults: ScoredPlacement[] = []
+        for (const results of runMC(state, { totalRollouts, batchSize }, rng)) {
+          lastResults = results
+          self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
+        }
+        self.postMessage({ id: msg.id, type: 'EV_DONE', payload: lastResults } as WorkerResponse)
       } else if (loadedModel) {
         // Step 1: instant depth-1 NN pass so the UI has something to show immediately.
         const nnResults = evalCandidatesNN(loadedModel, state)
@@ -107,6 +115,8 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         ? royaltyNnMctsPickPlacement(state, royaltyNnModel, rollouts || ROYALTY_MCTS_SIMS, makeRNG(seed))
         : (policy === 'royalty' || policy === 'royalty-nn')
         ? royaltyMctsPickPlacement(state, rollouts || ROYALTY_MCTS_SIMS, makeRNG(seed))
+        : policy === 'heuristic'
+        ? getBotMove(state, rollouts, makeRNG(seed))
         : loadedModel
           ? mctsPickPlacement(state, loadedModel, { ...BOT_MCTS_OPTS, nSims: rollouts || BOT_MCTS_OPTS.nSims }, makeRNG(seed))
           : getBotMove(state, rollouts, makeRNG(seed))
@@ -131,6 +141,12 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
             candidates = royaltyNnMctsScoredPlacements(state, royaltyNnModel, ROYALTY_MCTS_SIMS, rng)
           } else if (policy === 'royalty' || policy === 'royalty-nn') {
             candidates = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
+          } else if (policy === 'heuristic') {
+            let lastResults: ScoredPlacement[] = []
+            for (const results of runMC(state, { totalRollouts: rollouts > 0 ? rollouts : 200, batchSize: 10 }, rng)) {
+              lastResults = results
+            }
+            candidates = [...lastResults].sort((a, b) => b.ev - a.ev)
           } else if (!loadedModel) {
             const item = { id, candidates: [], hasModel: false }
             allResults.push(item)
