@@ -491,7 +491,9 @@ function HandList({ hands, labelA, labelB, onSelect }: {
               onClick={() => onSelect(h)}
             >
               <td className="py-0.5 px-2 text-right text-gray-400">{h.idx + 1}</td>
-              <td className="py-0.5 px-2 text-gray-400">{h.bonusTriggered ? `P${h.bonusTriggerPlayer === 2 ? '0+1' : h.bonusTriggerPlayer}` : ''}</td>
+              <td className="py-0.5 px-2 text-gray-400">
+                {h.bonusTriggerPlayer === 2 ? `${labelA}+${labelB}` : h.bonusTriggerPlayer === 0 ? labelA : h.bonusTriggerPlayer === 1 ? labelB : ''}
+              </td>
               <td className="py-0.5 px-2 text-gray-400">
                 {[h.players[0].foul && labelA, h.players[1].foul && labelB].filter(Boolean).join(' ')}
               </td>
