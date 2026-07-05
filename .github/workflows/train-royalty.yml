@@ -1,11 +1,11 @@
 name: Royalty NN Training
 
-# Separate from GTO Training to avoid interference with NN+MCTS training.
-# Runs at :15 and :45 (GTO triggers at :00 and :30), so deploys interleave
-# rather than race. Each royalty run takes ~15 min total (selfplay is ~77s at
-# 645 g/s heuristic vs 83 min for GTO at 150 MCTS sims), so 30-min cadence
-# keeps the model refreshing continuously with negligible CI cost.
-# 4 shards × 50000 games = 200000 games/run, ~96 runs/day.
+# Mirrors GTO Training cadence: triggers every 30 min at :15/:45 (GTO fires
+# at :00/:30) so deploys interleave rather than race. Royalty NN MCTS has no
+# NN opponent inference in rollouts (heuristic opponents, depth 2), estimated
+# 8–15 g/s at 150 sims vs GTO's 1.6 g/s. 30000 games targets ~33–63 min/shard
+# so runs queue 1–2 deep like GTO's 83-min shards. Tune GAMES up once actual
+# throughput is measured from the first MCTS run.
 on:
   schedule:
     - cron: '15,45 * * * *'  # every 30 min at :15 and :45
@@ -13,18 +13,18 @@ on:
     inputs:
       games:
         description: 'Self-play games per shard'
-        default: '50000'
+        default: '30000'
       epochs:
         description: 'Training epochs'
         default: '20'
 
 env:
-  GAMES:     ${{ github.event.inputs.games  || '50000' }}
+  GAMES:     ${{ github.event.inputs.games  || '30000' }}
   EPOCHS:    ${{ github.event.inputs.epochs || '20' }}
-  # 0 = heuristic royalty MCTS (~645 g/s). Raise once royalty_nn.bin is stable.
-  MCTS_SIMS: '0'
-  # 24 batches = 6 runs = ~3 hours of replay buffer. Prune keeps 30 (6 buffer).
-  WINDOW:    '24'
+  # 150 sims — matches GTO quality; royalty_nn.bin now exists from first heuristic run.
+  MCTS_SIMS: '150'
+  # 12 batches = 3 runs, matching GTO's replay-buffer window. Prune keeps 18.
+  WINDOW:    '12'
 
 jobs:
   # ── Self-play shards ──────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ jobs:
       - name: Prune old royalty batches
         run: |
           mkdir -p data-royalty
-          cd data-royalty && ls -t *.bin 2>/dev/null | tail -n +31 | xargs -r rm; cd ..
+          cd data-royalty && ls -t *.bin 2>/dev/null | tail -n +19 | xargs -r rm; cd ..
           echo "Royalty data: $(ls data-royalty/*.bin 2>/dev/null | wc -l) batches, $(du -sh data-royalty/ 2>/dev/null | cut -f1)"
 
       - name: Train royalty value network
