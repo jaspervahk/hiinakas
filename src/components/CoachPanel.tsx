@@ -4,8 +4,7 @@ import type { CoachResult } from '../coach/useCoach'
 import type { CoachMode } from '../game/types'
 
 interface CoachPanelProps {
-  nnResult: CoachResult
-  royaltyResult: CoachResult
+  result: CoachResult
   mode: CoachMode
   onModeChange: (mode: CoachMode) => void
   enabled: boolean
@@ -139,23 +138,26 @@ function PlacementTable({ result, matchIndex, label, accentColor, relativeEV = f
   )
 }
 
-export function CoachPanel({ nnResult, royaltyResult, mode, onModeChange, enabled, onToggle, onSelectPlacement }: CoachPanelProps) {
-  const activeResult = mode === 'royalty' ? royaltyResult : nnResult
-  const isComputing = mode === 'both'
-    ? (nnResult.isComputing || royaltyResult.isComputing)
-    : activeResult.isComputing
+const MODE_META: Record<CoachMode, { label: string; shortLabel: string; accent: string; relativeEV: boolean }> = {
+  nn:          { label: 'NN',        shortLabel: 'NN',     accent: 'text-indigo-400', relativeEV: false },
+  royalty:     { label: 'Royalty',   shortLabel: 'Roy',    accent: 'text-amber-400',  relativeEV: true  },
+  'royalty-nn':{ label: 'Royalty NN',shortLabel: 'Roy NN', accent: 'text-purple-400', relativeEV: true  },
+}
+
+export function CoachPanel({ result, mode, onModeChange, enabled, onToggle, onSelectPlacement }: CoachPanelProps) {
+  const meta = MODE_META[mode]
 
   // Collapsed view
   if (!enabled) {
-    const bestLine = activeResult.placements[0]
+    const bestLine = result.placements[0]
     return (
       <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xs text-gray-500 uppercase tracking-widest shrink-0">EV Coach</span>
-          {isComputing && (
+          {result.isComputing && (
             <span className="inline-block w-3 h-3 border border-gray-600 border-t-indigo-400 rounded-full animate-spin shrink-0" />
           )}
-          {bestLine && !isComputing && (
+          {bestLine && !result.isComputing && (
             <span className={`text-xs font-semibold tabular-nums ${bestLine.ev > 0 ? 'text-green-400' : bestLine.ev < 0 ? 'text-red-400' : 'text-gray-400'}`}>
               Best EV {bestLine.ev > 0 ? '+' : ''}{bestLine.ev.toFixed(2)}
             </span>
@@ -177,12 +179,12 @@ export function CoachPanel({ nnResult, royaltyResult, mode, onModeChange, enable
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-300 uppercase tracking-widest font-semibold">EV Coach</span>
-          {isComputing && (
+          {result.isComputing && (
             <span className="inline-block w-3 h-3 border border-gray-600 border-t-indigo-400 rounded-full animate-spin" />
           )}
           {/* Mode toggle */}
           <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
-            {(['nn', 'royalty', 'both'] as const).map(m => (
+            {(['nn', 'royalty', 'royalty-nn'] as const).map(m => (
               <button
                 key={m}
                 onClick={() => onModeChange(m)}
@@ -193,7 +195,7 @@ export function CoachPanel({ nnResult, royaltyResult, mode, onModeChange, enable
                     : 'bg-gray-800 text-gray-500 hover:text-gray-300',
                 ].join(' ')}
               >
-                {m === 'nn' ? 'NN' : m === 'royalty' ? 'Roy' : 'Both'}
+                {MODE_META[m].shortLabel}
               </button>
             ))}
           </div>
@@ -206,35 +208,14 @@ export function CoachPanel({ nnResult, royaltyResult, mode, onModeChange, enable
         </button>
       </div>
 
-      {mode === 'both' ? (
-        <div className="flex gap-3 overflow-x-auto">
-          <PlacementTable
-            result={nnResult}
-            matchIndex={nnResult.matchIndex}
-            label="NN"
-            accentColor="text-indigo-400"
-            onSelectPlacement={onSelectPlacement}
-          />
-          <div className="w-px bg-gray-800 shrink-0" />
-          <PlacementTable
-            result={royaltyResult}
-            matchIndex={royaltyResult.matchIndex}
-            label="Royalty"
-            accentColor="text-amber-400"
-            relativeEV
-            onSelectPlacement={onSelectPlacement}
-          />
-        </div>
-      ) : (
-        <PlacementTable
-          result={activeResult}
-          matchIndex={activeResult.matchIndex}
-          label={mode === 'royalty' ? 'Royalty' : 'NN'}
-          accentColor={mode === 'royalty' ? 'text-amber-400' : 'text-indigo-400'}
-          relativeEV={mode === 'royalty'}
-          onSelectPlacement={onSelectPlacement}
-        />
-      )}
+      <PlacementTable
+        result={result}
+        matchIndex={result.matchIndex}
+        label={meta.label}
+        accentColor={meta.accent}
+        relativeEV={meta.relativeEV}
+        onSelectPlacement={onSelectPlacement}
+      />
     </div>
   )
 }

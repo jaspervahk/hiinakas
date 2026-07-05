@@ -102,7 +102,7 @@ export interface HandLog {
   cumEvLoss: number
 }
 
-export type CoachMode = 'nn' | 'royalty' | 'both'
+export type CoachMode = 'nn' | 'royalty' | 'royalty-nn'
 
 export interface AppSettings {
   coachEnabled: boolean

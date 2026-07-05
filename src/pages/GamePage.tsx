@@ -59,8 +59,8 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
   const botLabels = labels.slice(1)
 
   const { coachMode, botPolicy } = state.appSettings
-  const coach = useCoach(state, state.appSettings.coachEnabled, COACH_ROLLOUTS, 'nn')
-  const royaltyCoach = useCoach(state, state.appSettings.coachEnabled, ROYALTY_COACH_SIMS, 'royalty', coachMode === 'nn')
+  const coachRollouts = coachMode === 'nn' ? COACH_ROLLOUTS : ROYALTY_COACH_SIMS
+  const coach = useCoach(state, state.appSettings.coachEnabled, coachRollouts, coachMode)
 
   // Best bonus board (for bonus_oneshot coaching)
   const bonusOptimal = useMemo<PartialBoard | null>(() => {
@@ -609,8 +609,7 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
                 {/* Coach panel — mobile only; desktop shows it in the right sidebar */}
                 <div className="w-full max-w-2xl md:hidden">
                   <CoachPanel
-                    nnResult={coach}
-                    royaltyResult={royaltyCoach}
+                    result={coach}
                     mode={coachMode}
                     onModeChange={coachModeChange}
                     enabled={state.appSettings.coachEnabled}
@@ -650,8 +649,7 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
         <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-gray-800/60 flex-shrink-0 overflow-y-auto bg-gray-950">
           <div className="p-4">
             <CoachPanel
-              nnResult={coach}
-              royaltyResult={royaltyCoach}
+              result={coach}
               mode={coachMode}
               onModeChange={coachModeChange}
               enabled={state.appSettings.coachEnabled}
@@ -726,7 +724,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
           <div className="flex items-center justify-between">
             <span className="text-xs text-gray-400">Coach mode</span>
             <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-              {(['nn', 'royalty', 'both'] as const).map(m => (
+              {(['nn', 'royalty', 'royalty-nn'] as const).map(m => (
                 <button
                   key={m}
                   onClick={() => onUpdateSettings({ coachMode: m })}
@@ -737,7 +735,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                       : 'bg-gray-800 text-gray-500 hover:text-gray-300',
                   ].join(' ')}
                 >
-                  {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : 'Both'}
+                  {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : 'Royalty NN'}
                 </button>
               ))}
             </div>
