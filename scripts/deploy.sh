@@ -29,5 +29,19 @@ else
   echo "Warning: no valid model found — deploying without model. CI will restore it on the next run."
 fi
 
-rm -f "$TMPMODEL"
+# Preserve royalty model in the same way.
+TMPROYALTY=$(mktemp)
+if curl -sf https://hiinakas-355.web.app/models/royalty_nn.bin -o "$TMPROYALTY" && is_valid_model "$TMPROYALTY"; then
+  cp "$TMPROYALTY" dist/models/royalty_nn.bin
+  RSIZE=$(wc -c < dist/models/royalty_nn.bin)
+  echo "Royalty model fetched from live site ($(( RSIZE / 1024 )) KB)"
+elif is_valid_model models/royalty_nn.bin; then
+  cp models/royalty_nn.bin dist/models/royalty_nn.bin
+  RSIZE=$(wc -c < dist/models/royalty_nn.bin)
+  echo "Royalty model copied from local models/ ($(( RSIZE / 1024 )) KB)"
+else
+  echo "No royalty model yet — deploying without it."
+fi
+
+rm -f "$TMPMODEL" "$TMPROYALTY"
 firebase deploy --only hosting
