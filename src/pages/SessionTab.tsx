@@ -18,6 +18,24 @@ import {
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy } from '../worker/client'
 
+const DEFAULT_ROOT_TOP_K = 35
+
+// Heuristic MC brute-forces a full rollout per candidate with no NN/tree-search
+// guidance, so it needs a far smaller sims budget than the MCTS-based modes to
+// stay usable over a whole session (mirrors the same tradeoff in Arena/coach).
+const DEFAULT_SIMS_FOR: Record<BotPolicy, number> = {
+  nn: 500,
+  royalty: 1000,
+  'royalty-nn': 1000,
+  heuristic: 20,
+}
+const MAX_SIMS_FOR: Record<BotPolicy, number> = {
+  nn: 10_000,
+  royalty: 10_000,
+  'royalty-nn': 10_000,
+  heuristic: 200,
+}
+
 // ── Error boundary ────────────────────────────────────────────────────────────
 
 class SessionErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
@@ -269,9 +287,9 @@ interface CachedDecision {
   topCandidates: Array<{ placement: Placement; ev: number }>
 }
 
-function sessionCacheKey(decisions: DecisionPoint[], mode: BotPolicy): string {
+function sessionCacheKey(decisions: DecisionPoint[], mode: BotPolicy, sims: number, rootTopK: number): string {
   if (decisions.length === 0) return ''
-  return `session_ev_${CACHE_VERSION}:${mode}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
+  return `session_ev_${CACHE_VERSION}:${mode}:${sims}:${rootTopK}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
 }
 
 function saveToCache(key: string, analyzed: AnalyzedDecision[]): void {
@@ -414,7 +432,10 @@ function HandDetail({ gameDecs, analyzedMap, players }: {
 
 // ── Blunder card ──────────────────────────────────────────────────────────────
 
-function BlunderCard({ d, dec, rank }: { d: AnalyzedDecision; dec?: DecisionPoint; rank: number }) {
+function BlunderCard({ d, dec, rank, gameNumber, onJumpToGame }: {
+  d: AnalyzedDecision; dec?: DecisionPoint; rank: number
+  gameNumber?: number; onJumpToGame?: () => void
+}) {
   const [open, setOpen] = useState(false)
   const isOptimal = d.evLost < 0.05
   const board = dec?.infoState.board ?? d.infoState.board
@@ -427,6 +448,15 @@ function BlunderCard({ d, dec, rank }: { d: AnalyzedDecision; dec?: DecisionPoin
       >
         <div className="flex items-center gap-2">
           <span className="text-gray-500 text-xs">#{rank}</span>
+          {gameNumber != null && (
+            <button
+              onClick={e => { e.stopPropagation(); onJumpToGame?.() }}
+              className="text-indigo-400 hover:text-indigo-300 hover:underline text-xs shrink-0"
+              title="Jump to this game in the Game Log"
+            >
+              Game #{gameNumber}
+            </button>
+          )}
           <span className="text-gray-300 text-xs font-medium">
             {new Date(d.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             {' · '}Street {d.street}
@@ -492,14 +522,14 @@ function StatCard({ label, value, sub, color }: {
 
 // ── Game log table ────────────────────────────────────────────────────────────
 
-function GameLogTable({ summaries, players, analyzed, decisions }: {
+function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, setSelectedGame }: {
   summaries: GameSummary[]
   players: string[]
   analyzed: AnalyzedDecision[]
   decisions: DecisionPoint[]
+  selectedGame: string | null
+  setSelectedGame: (gameId: string | null) => void
 }) {
-  const [selectedGame, setSelectedGame] = useState<string | null>(null)
-
   const decisionsByGame = useMemo(() => {
     const map = new Map<string, DecisionPoint[]>()
     for (const d of decisions) {
@@ -629,11 +659,19 @@ function SessionTabInner() {
   const [analyzed, setAnalyzed] = useState<AnalyzedDecision[]>([])
   const [noModel, setNoModel] = useState(false)
   const [analysisMode, setAnalysisMode] = useState<BotPolicy>('nn')
+  const [sims, setSims] = useState(DEFAULT_SIMS_FOR.nn)
+  const [rootTopK, setRootTopK] = useState(DEFAULT_ROOT_TOP_K)
+  const [selectedGame, setSelectedGame] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const gameLogRef = useRef<HTMLDivElement>(null)
+  const jumpToGame = useCallback((gameId: string) => {
+    setSelectedGame(gameId)
+    gameLogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
 
   const handleFile = useCallback((file: File) => {
     setError(''); setAnalyzed([]); setNoModel(false)
-    setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn')
+    setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setSelectedGame(null)
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -678,7 +716,7 @@ function SessionTabInner() {
   // Restore from cache, enriching boards from freshly-parsed decisions
   useEffect(() => {
     if (decisions.length === 0 || analyzed.length > 0) return
-    const key = sessionCacheKey(decisions, analysisMode)
+    const key = sessionCacheKey(decisions, analysisMode, sims, rootTopK)
     const cached = key ? loadFromCache(key) : null
     if (!cached || cached.length === 0) return
     const enriched = cached.map(a => {
@@ -743,15 +781,14 @@ function SessionTabInner() {
 
       const results = await workerClient.analyzePositions(
         positions,
-        // Heuristic MC brute-forces a full rollout per candidate with no NN/tree-search
-        // guidance, so it needs a far smaller budget to stay usable over a whole session.
-        analysisMode === 'heuristic' ? 20 : 200,
+        sims,
         (done, total, item) => {
           partialMap.set(item.id, item.candidates)
           setAnalyzeProgress({ done, total })
           setAnalyzed(buildAnalyzed(decisions, partialMap))
         },
         analysisMode,
+        analysisMode === 'nn' ? rootTopK : undefined,
       )
 
       if (results.length > 0 && !results[0]!.hasModel) { setNoModel(true); return }
@@ -763,12 +800,20 @@ function SessionTabInner() {
         : partialMap
       const built = buildAnalyzed(decisions, sourceMap)
       setAnalyzed(built)
-      const key = sessionCacheKey(decisions, analysisMode)
+      const key = sessionCacheKey(decisions, analysisMode, sims, rootTopK)
       if (key && results.length > 0) saveToCache(key, built)
     } finally {
       setAnalyzing(false); setAnalyzeProgress(null)
     }
-  }, [decisions, analysisMode])
+  }, [decisions, analysisMode, sims, rootTopK])
+
+  // Game log row number (1-based, matching the Game Log table's # column) so
+  // mistakes can be cross-referenced to the full board state for all players.
+  const gameNumberByGameId = useMemo(() => {
+    const m = new Map<string, number>()
+    summaries.forEach((s, i) => m.set(s.gameId, i + 1))
+    return m
+  }, [summaries])
 
   const blundersByPlayer = useMemo(() => {
     if (!activeGroups || allPlayers.length === 0 || analyzed.length === 0) return new Map<string, AnalyzedDecision[]>()
@@ -978,24 +1023,49 @@ function SessionTabInner() {
             {/* Analysis mode selector */}
             <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
               <button
-                onClick={() => { setAnalysisMode('nn'); setAnalyzed([]); setNoModel(false) }}
+                onClick={() => { setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setAnalyzed([]); setNoModel(false) }}
                 className={`px-2 py-1 transition-colors ${analysisMode === 'nn' ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
               >
                 NN + MCTS
               </button>
               <button
-                onClick={() => { setAnalysisMode('royalty'); setAnalyzed([]); setNoModel(false) }}
+                onClick={() => { setAnalysisMode('royalty'); setSims(DEFAULT_SIMS_FOR.royalty); setAnalyzed([]); setNoModel(false) }}
                 className={`px-2 py-1 transition-colors ${analysisMode === 'royalty' ? 'bg-amber-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
               >
                 Royalty
               </button>
               <button
-                onClick={() => { setAnalysisMode('heuristic'); setAnalyzed([]); setNoModel(false) }}
+                onClick={() => { setAnalysisMode('heuristic'); setSims(DEFAULT_SIMS_FOR.heuristic); setAnalyzed([]); setNoModel(false) }}
                 className={`px-2 py-1 transition-colors ${analysisMode === 'heuristic' ? 'bg-teal-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
               >
                 Heuristic
               </button>
             </div>
+            {/* Sims / root top-K controls */}
+            <label className="flex items-center gap-1 text-[10px] text-gray-500">
+              <span>Sims</span>
+              <input
+                type="number"
+                className="w-16 bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-white text-[10px]"
+                value={sims}
+                min={1}
+                max={MAX_SIMS_FOR[analysisMode]}
+                onChange={e => setSims(Math.max(1, Math.min(MAX_SIMS_FOR[analysisMode], Number(e.target.value))))}
+              />
+            </label>
+            {analysisMode === 'nn' && (
+              <label className="flex items-center gap-1 text-[10px] text-gray-500">
+                <span>Root top-K</span>
+                <input
+                  type="number"
+                  className="w-14 bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-white text-[10px]"
+                  value={rootTopK}
+                  min={1}
+                  max={500}
+                  onChange={e => setRootTopK(Math.max(1, Math.min(500, Number(e.target.value))))}
+                />
+              </label>
+            )}
             {analyzing && analyzeProgress && (
               <span className="text-xs text-gray-400">
                 {analyzeProgress.done}/{analyzeProgress.total} positions…
@@ -1052,24 +1122,11 @@ function SessionTabInner() {
                 <div key={p} className="space-y-2">
                   <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — top mistakes</p>
                   {blist.slice(0, 5).map((d, i) => (
-                    <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
-                  ))}
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {analyzed.length > 0 && (
-          <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
-            {players.map((p) => {
-              const blist = blundersByPlayer.get(p) ?? []
-              const best = [...blist].sort((a, b) => a.evLost - b.evLost).slice(0, 3)
-              return (
-                <div key={p} className="space-y-2">
-                  <p className="text-emerald-400 text-xs font-medium uppercase tracking-wider">{p} — best plays</p>
-                  {best.map((d, i) => (
-                    <BlunderCard key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1} />
+                    <BlunderCard
+                      key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1}
+                      gameNumber={gameNumberByGameId.get(d.gameId)}
+                      onJumpToGame={() => jumpToGame(d.gameId)}
+                    />
                   ))}
                 </div>
               )
@@ -1084,12 +1141,15 @@ function SessionTabInner() {
 
       {/* Game log */}
       {summaries.length > 0 && (
-        <div className="space-y-2">
+        <div ref={gameLogRef} className="space-y-2">
           <div className="flex items-center gap-2">
             <h3 className="text-gray-300 text-sm font-medium">Game Log</h3>
             <span className="text-gray-600 text-xs">· click a row to see play-by-play</span>
           </div>
-          <GameLogTable summaries={summaries} players={players} analyzed={analyzed} decisions={decisions} />
+          <GameLogTable
+            summaries={summaries} players={players} analyzed={analyzed} decisions={decisions}
+            selectedGame={selectedGame} setSelectedGame={setSelectedGame}
+          />
         </div>
       )}
     </div>

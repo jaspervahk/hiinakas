@@ -171,12 +171,13 @@ export class WorkerClient {
     rollouts = 0,
     onProgress?: (done: number, total: number, item: AnalysisResult) => void,
     policy?: BotPolicy,
+    rootTopK?: number,
   ): Promise<AnalysisResult[]> {
     const id = makeId()
     const seed = (Date.now() * 1000003) >>> 0
     return new Promise((resolve) => {
       this.handlers.set(id, { kind: 'analysis', resolve, onProgress })
-      const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions, rollouts, seed, policy } }
+      const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions, rollouts, seed, policy, rootTopK } }
       this.getWorker().postMessage(req)
     })
   }

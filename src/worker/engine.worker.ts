@@ -123,11 +123,14 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       self.postMessage({ id: msg.id, type: 'BOT_MOVE', payload: placement } as WorkerResponse)
 
     } else if (msg.type === 'ANALYZE_POSITIONS') {
-      const { positions, rollouts = 0, seed = 0, policy } = msg.payload
+      const { positions, rollouts = 0, seed = 0, policy, rootTopK } = msg.payload
       const total = positions.length
-      const opts: MCTSOptions = rollouts > 0
-        ? { ...ANALYSIS_MCTS_OPTS, nSims: Math.max(rollouts, ANALYSIS_MCTS_OPTS.nSims) }
-        : ANALYSIS_MCTS_OPTS
+      const opts: MCTSOptions = {
+        ...ANALYSIS_MCTS_OPTS,
+        ...(rollouts > 0 ? { nSims: rollouts } : {}),
+        ...(rootTopK !== undefined ? { rootTopK } : {}),
+      }
+      const royaltySims = rollouts > 0 ? rollouts : ROYALTY_MCTS_SIMS
       const allResults: Array<{ id: string; candidates: ScoredPlacement[]; hasModel: boolean }> = []
 
       for (let i = 0; i < total; i++) {
@@ -138,9 +141,9 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
           let candidates: ScoredPlacement[]
 
           if (policy === 'royalty-nn' && royaltyNnModel) {
-            candidates = royaltyNnMctsScoredPlacements(state, royaltyNnModel, ROYALTY_MCTS_SIMS, rng)
+            candidates = royaltyNnMctsScoredPlacements(state, royaltyNnModel, royaltySims, rng)
           } else if (policy === 'royalty' || policy === 'royalty-nn') {
-            candidates = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
+            candidates = royaltyMctsScoredPlacements(state, royaltySims, rng)
           } else if (policy === 'heuristic') {
             let lastResults: ScoredPlacement[] = []
             for (const results of runMC(state, { totalRollouts: rollouts > 0 ? rollouts : 200, batchSize: 10 }, rng)) {
