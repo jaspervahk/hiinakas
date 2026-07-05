@@ -1,11 +1,10 @@
 name: Royalty NN Training
 
 # Mirrors GTO Training cadence: triggers every 30 min at :15/:45 (GTO fires
-# at :00/:30) so deploys interleave rather than race. Royalty NN MCTS has no
-# NN opponent inference in rollouts (heuristic opponents, depth 2), estimated
-# 8–15 g/s at 150 sims vs GTO's 1.6 g/s. 30000 games targets ~33–63 min/shard
-# so runs queue 1–2 deep like GTO's 83-min shards. Tune GAMES up once actual
-# throughput is measured from the first MCTS run.
+# at :00/:30) so deploys interleave rather than race. Royalty NN MCTS runs at
+# 3 g/s (150 sims, heuristic opponents, depth 2, WASM+SIMD — measured). 13000
+# games = ~72 min/shard, comfortably within the 90-min timeout and queues 2–3
+# runs deep like GTO's 83-min shards.
 on:
   schedule:
     - cron: '15,45 * * * *'  # every 30 min at :15 and :45
@@ -13,13 +12,13 @@ on:
     inputs:
       games:
         description: 'Self-play games per shard'
-        default: '30000'
+        default: '13000'
       epochs:
         description: 'Training epochs'
         default: '20'
 
 env:
-  GAMES:     ${{ github.event.inputs.games  || '30000' }}
+  GAMES:     ${{ github.event.inputs.games  || '13000' }}
   EPOCHS:    ${{ github.event.inputs.epochs || '20' }}
   # 150 sims — matches GTO quality; royalty_nn.bin now exists from first heuristic run.
   MCTS_SIMS: '150'
