@@ -1,27 +1,30 @@
 name: Royalty NN Training
 
 # Separate from GTO Training to avoid interference with NN+MCTS training.
-# Runs at :15 past each hour (GTO runs at :00 and :30), avoiding overlap.
-# Each run: ~8000 games × 4 shards with heuristic royalty MCTS (~fast).
-# Once royalty_nn.bin exists, MCTS_SIMS sims are used for self-play.
+# Runs at :15 and :45 (GTO triggers at :00 and :30), so deploys interleave
+# rather than race. Each royalty run takes ~15 min total (selfplay is ~77s at
+# 645 g/s heuristic vs 83 min for GTO at 150 MCTS sims), so 30-min cadence
+# keeps the model refreshing continuously with negligible CI cost.
+# 4 shards × 50000 games = 200000 games/run, ~96 runs/day.
 on:
   schedule:
-    - cron: '15 */2 * * *'   # every 2 hours at :15 — lighter load than GTO
+    - cron: '15,45 * * * *'  # every 30 min at :15 and :45
   workflow_dispatch:
     inputs:
       games:
         description: 'Self-play games per shard'
-        default: '8000'
+        default: '50000'
       epochs:
         description: 'Training epochs'
         default: '20'
 
 env:
-  GAMES:     ${{ github.event.inputs.games  || '8000' }}
+  GAMES:     ${{ github.event.inputs.games  || '50000' }}
   EPOCHS:    ${{ github.event.inputs.epochs || '20' }}
-  # 0 = heuristic royalty MCTS (fast, ~10 g/s). Raise once royalty_nn.bin is stable.
+  # 0 = heuristic royalty MCTS (~645 g/s). Raise once royalty_nn.bin is stable.
   MCTS_SIMS: '0'
-  WINDOW:    '12'
+  # 24 batches = 6 runs = ~3 hours of replay buffer. Prune keeps 30 (6 buffer).
+  WINDOW:    '24'
 
 jobs:
   # ── Self-play shards ──────────────────────────────────────────────────────────
@@ -146,7 +149,7 @@ jobs:
       - name: Prune old royalty batches
         run: |
           mkdir -p data-royalty
-          cd data-royalty && ls -t *.bin 2>/dev/null | tail -n +19 | xargs -r rm; cd ..
+          cd data-royalty && ls -t *.bin 2>/dev/null | tail -n +31 | xargs -r rm; cd ..
           echo "Royalty data: $(ls data-royalty/*.bin 2>/dev/null | wc -l) batches, $(du -sh data-royalty/ 2>/dev/null | cut -f1)"
 
       - name: Train royalty value network
