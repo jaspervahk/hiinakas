@@ -32,6 +32,23 @@ const BOT_KIND_SHORT: Record<BotKind, string> = {
   'heuristic': 'Heur',
 }
 
+// Heuristic MC brute-forces every legal placement with a full rollout each —
+// no tree search or NN guidance — so it needs a far smaller sims budget than
+// the MCTS-based bots to stay usable (232 candidates on street 0 alone means
+// 500 sims there takes ~40s for a single decision).
+const DEFAULT_SIMS_FOR: Record<BotKind, number> = {
+  'nn-mcts': DEFAULT_SIMS,
+  'royalty-mcts': DEFAULT_SIMS,
+  'royalty-nn': DEFAULT_SIMS,
+  'heuristic': 20,
+}
+const MAX_SIMS_FOR: Record<BotKind, number> = {
+  'nn-mcts': 10_000,
+  'royalty-mcts': 10_000,
+  'royalty-nn': 10_000,
+  'heuristic': 200,
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // Middle / bottom: category index → [label, royalty mid, royalty bot]
@@ -96,7 +113,10 @@ function BotConfigEditor({ label, cfg, onChange }: {
           <select
             className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
             value={cfg.kind}
-            onChange={e => onChange({ ...cfg, kind: e.target.value as BotKind })}
+            onChange={e => {
+              const kind = e.target.value as BotKind
+              onChange({ ...cfg, kind, sims: DEFAULT_SIMS_FOR[kind] })
+            }}
           >
             {BOT_KINDS.map(k => <option key={k} value={k}>{BOT_KIND_LABELS[k]}</option>)}
           </select>
@@ -108,9 +128,12 @@ function BotConfigEditor({ label, cfg, onChange }: {
             className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
             value={cfg.sims}
             min={1}
-            max={10_000}
-            onChange={e => onChange({ ...cfg, sims: Math.max(1, Math.min(10_000, Number(e.target.value))) })}
+            max={MAX_SIMS_FOR[cfg.kind]}
+            onChange={e => onChange({ ...cfg, sims: Math.max(1, Math.min(MAX_SIMS_FOR[cfg.kind], Number(e.target.value))) })}
           />
+          {cfg.kind === 'heuristic' && (
+            <span className="text-[10px] text-amber-500 max-w-[8rem]">Brute-force rollouts — slow, keep low</span>
+          )}
         </label>
         {cfg.kind === 'nn-mcts' && (
           <label className="flex flex-col gap-1">
