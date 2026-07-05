@@ -1,6 +1,6 @@
 import type { InfoState, ScoredPlacement } from '../engine/mc'
-import type { MatchHandRecord } from '../engine/matchTypes'
-export type { ScoredPlacement, MatchHandRecord }
+import type { MatchHandRecord, BotSpec } from '../engine/matchTypes'
+export type { ScoredPlacement, MatchHandRecord, BotSpec }
 
 export type BotPolicy = 'nn' | 'royalty' | 'royalty-nn'
 
@@ -54,10 +54,8 @@ export interface WorkerRequestRunMatch {
   payload: {
     totalHands: number
     baseSeed: number
-    nnSims: number
-    royaltySims: number
-    rootTopK?: number
-    royaltyPolicy?: 'mcts' | 'nn'  // 'nn' uses royalty NN model if loaded, else falls back to MCTS
+    botA: BotSpec
+    botB: BotSpec
   }
 }
 

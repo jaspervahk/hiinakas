@@ -4,6 +4,16 @@
 import type { Card, PartialBoard, Board, HandCategory } from './types'
 import type { Placement } from './placement'
 
+// A bot that can occupy either arena seat. `sims` means MCTS simulations for
+// nn-mcts/royalty-mcts/royalty-nn, or rollout count for heuristic.
+export type BotKind = 'nn-mcts' | 'royalty-mcts' | 'royalty-nn' | 'heuristic'
+
+export interface BotSpec {
+  kind: BotKind
+  sims: number
+  rootTopK?: number   // nn-mcts only
+}
+
 // One street's decision captured for replay.
 export interface StreetSnap {
   hand: readonly Card[]
@@ -38,11 +48,11 @@ export interface PlayerMatchRecord {
   sideRoyalties?: number
 }
 
-// Full record for one match hand (always 2-player: NN+MCTS vs Royalty).
+// Full record for one match hand (always 2-player, any bot pairing).
 export interface MatchHandRecord {
   idx: number                           // 0-based hand index
   seed: number
-  players: [PlayerMatchRecord, PlayerMatchRecord]  // [NN+MCTS, Royalty]
+  players: [PlayerMatchRecord, PlayerMatchRecord]  // [seat A, seat B]
   normalScore: [number, number]         // net from normal game
   bonusScore: [number, number]          // net from bonus round (0 if none)
   totalScore: [number, number]          // combined

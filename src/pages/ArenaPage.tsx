@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import type { AppPage } from '../App'
 import { arenaWorkerClient, ROYALTY_MODEL_URL } from '../worker/client'
-import type { MatchHandRecord } from '../worker/client'
+import type { MatchHandRecord, BotKind, BotSpec } from '../worker/client'
 import { BoardView } from '../components/BoardView'
 import type { PartialBoard } from '../engine/types'
 
@@ -11,11 +11,26 @@ interface ArenaPageProps {
 
 // ── Config defaults ──────────────────────────────────────────────────────────
 
-const DEFAULT_HANDS       = 100
-const DEFAULT_NN_SIMS     = 500
-const DEFAULT_ROY_SIMS    = 500
-const DEFAULT_SEED        = 42
-const DEFAULT_ROOT_TOP_K  = 35
+const DEFAULT_HANDS      = 100
+const DEFAULT_SIMS       = 500
+const DEFAULT_SEED       = 42
+const DEFAULT_ROOT_TOP_K = 35
+
+const BOT_KINDS: BotKind[] = ['nn-mcts', 'royalty-mcts', 'royalty-nn', 'heuristic']
+
+const BOT_KIND_LABELS: Record<BotKind, string> = {
+  'nn-mcts': 'NN+MCTS',
+  'royalty-mcts': 'Royalty MCTS',
+  'royalty-nn': 'Royalty NN',
+  'heuristic': 'Heuristic MC',
+}
+
+const BOT_KIND_SHORT: Record<BotKind, string> = {
+  'nn-mcts': 'NN',
+  'royalty-mcts': 'RoyM',
+  'royalty-nn': 'RoyNN',
+  'heuristic': 'Heur',
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -54,13 +69,65 @@ function pct(n: number, d: number): string {
 
 // ── Config panel ─────────────────────────────────────────────────────────────
 
+interface BotConfig {
+  kind: BotKind
+  sims: number
+  rootTopK: number
+}
+
 interface Config {
   hands: number
-  nnSims: number
-  roySims: number
   seed: number
-  rootTopK: number
-  royaltyPolicy: 'mcts' | 'nn'
+  botA: BotConfig
+  botB: BotConfig
+}
+
+function BotConfigEditor({ label, cfg, onChange }: {
+  label: string
+  cfg: BotConfig
+  onChange: (c: BotConfig) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1 bg-gray-900 border border-gray-800 rounded p-2">
+      <span className="text-xs text-gray-400 font-medium">{label}</span>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-gray-500">Bot</span>
+          <select
+            className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+            value={cfg.kind}
+            onChange={e => onChange({ ...cfg, kind: e.target.value as BotKind })}
+          >
+            {BOT_KINDS.map(k => <option key={k} value={k}>{BOT_KIND_LABELS[k]}</option>)}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-gray-500">Sims</span>
+          <input
+            type="number"
+            className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+            value={cfg.sims}
+            min={1}
+            max={10_000}
+            onChange={e => onChange({ ...cfg, sims: Math.max(1, Math.min(10_000, Number(e.target.value))) })}
+          />
+        </label>
+        {cfg.kind === 'nn-mcts' && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-gray-500">Root top-K</span>
+            <input
+              type="number"
+              className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+              value={cfg.rootTopK}
+              min={1}
+              max={500}
+              onChange={e => onChange({ ...cfg, rootTopK: Math.max(1, Math.min(500, Number(e.target.value))) })}
+            />
+          </label>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function ConfigPanel({ cfg, onChange, onStart }: {
@@ -68,65 +135,51 @@ function ConfigPanel({ cfg, onChange, onStart }: {
   onChange: (c: Config) => void
   onStart: () => void
 }) {
-  function numInput(label: string, key: keyof Config, min: number, max: number) {
-    return (
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-gray-400">{label}</span>
-        <input
-          type="number"
-          className="w-32 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
-          value={cfg[key]}
-          min={min}
-          max={max}
-          onChange={e => onChange({ ...cfg, [key]: Math.max(min, Math.min(max, Number(e.target.value))) })}
-        />
-      </label>
-    )
-  }
-
   return (
-    <div className="flex flex-wrap items-end gap-4">
-      {numInput('Hands', 'hands', 1, 100_000)}
-      {numInput('NN sims', 'nnSims', 1, 10_000)}
-      {numInput('Royalty sims', 'roySims', 1, 10_000)}
-      {numInput('Root top-K', 'rootTopK', 1, 500)}
-      <label className="flex flex-col gap-1">
-        <span className="text-xs text-gray-400">Bot 2 policy</span>
-        <select
-          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
-          value={cfg.royaltyPolicy}
-          onChange={e => onChange({ ...cfg, royaltyPolicy: e.target.value as 'mcts' | 'nn' })}
-        >
-          <option value="mcts">Royalty MCTS</option>
-          <option value="nn">Royalty NN</option>
-        </select>
-      </label>
-      <div className="flex flex-col gap-1">
-        <span className="text-xs text-gray-400">Seed</span>
-        <div className="flex gap-1">
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-gray-400">Hands</span>
           <input
             type="number"
-            className="w-28 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
-            value={cfg.seed}
-            min={0}
-            max={2_147_483_647}
-            onChange={e => onChange({ ...cfg, seed: Math.max(0, Math.min(2_147_483_647, Number(e.target.value))) })}
+            className="w-32 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+            value={cfg.hands}
+            min={1}
+            max={100_000}
+            onChange={e => onChange({ ...cfg, hands: Math.max(1, Math.min(100_000, Number(e.target.value))) })}
           />
-          <button
-            onClick={() => onChange({ ...cfg, seed: Math.floor(Math.random() * 2_147_483_647) })}
-            className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-sm"
-            title="Random seed"
-          >
-            ⟳
-          </button>
+        </label>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-gray-400">Seed</span>
+          <div className="flex gap-1">
+            <input
+              type="number"
+              className="w-28 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+              value={cfg.seed}
+              min={0}
+              max={2_147_483_647}
+              onChange={e => onChange({ ...cfg, seed: Math.max(0, Math.min(2_147_483_647, Number(e.target.value))) })}
+            />
+            <button
+              onClick={() => onChange({ ...cfg, seed: Math.floor(Math.random() * 2_147_483_647) })}
+              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-sm"
+              title="Random seed"
+            >
+              ⟳
+            </button>
+          </div>
         </div>
+        <button
+          onClick={onStart}
+          className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-medium"
+        >
+          Run
+        </button>
       </div>
-      <button
-        onClick={onStart}
-        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm font-medium"
-      >
-        Run
-      </button>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <BotConfigEditor label="Bot A" cfg={cfg.botA} onChange={botA => onChange({ ...cfg, botA })} />
+        <BotConfigEditor label="Bot B" cfg={cfg.botB} onChange={botB => onChange({ ...cfg, botB })} />
+      </div>
     </div>
   )
 }
@@ -135,109 +188,109 @@ function ConfigPanel({ cfg, onChange, onStart }: {
 
 interface RunStats {
   hands: number
-  totalNN: number
-  totalRoy: number
-  bustsNN: number
-  bustsRoy: number
+  totalA: number
+  totalB: number
+  bustsA: number
+  bustsB: number
   bonusHands: number
-  bonusTriggeredByNN: number
-  bonusTriggeredByRoy: number
+  bonusTriggeredByA: number
+  bonusTriggeredByB: number
   bonusTriggeredByBoth: number
-  bonusFoulNN: number
-  bonusFoulRoy: number
-  sideFoulNN: number
-  sideFoulRoy: number
+  bonusFoulA: number
+  bonusFoulB: number
+  sideFoulA: number
+  sideFoulB: number
   // Category distributions (index = HandCategory value, length 10)
-  topCatNN: number[]; topCatRoy: number[]
-  midCatNN: number[]; midCatRoy: number[]
-  botCatNN: number[]; botCatRoy: number[]
+  topCatA: number[]; topCatB: number[]
+  midCatA: number[]; midCatB: number[]
+  botCatA: number[]; botCatB: number[]
   // Top row royalty sub-dist: distinguishes pair rank (1-9) and trips rank (10-22)
-  topRoyNN: Record<number, number>; topRoyRoy: Record<number, number>
-  royNN: number
-  royRoy: number
+  topRoyA: Record<number, number>; topRoyB: Record<number, number>
+  royA: number
+  royB: number
 }
 
 function emptyStats(): RunStats {
   return {
-    hands: 0, totalNN: 0, totalRoy: 0,
-    bustsNN: 0, bustsRoy: 0,
-    bonusHands: 0, bonusTriggeredByNN: 0, bonusTriggeredByRoy: 0, bonusTriggeredByBoth: 0,
-    bonusFoulNN: 0, bonusFoulRoy: 0, sideFoulNN: 0, sideFoulRoy: 0,
-    topCatNN: new Array(10).fill(0), topCatRoy: new Array(10).fill(0),
-    midCatNN: new Array(10).fill(0), midCatRoy: new Array(10).fill(0),
-    botCatNN: new Array(10).fill(0), botCatRoy: new Array(10).fill(0),
-    topRoyNN: {}, topRoyRoy: {},
-    royNN: 0, royRoy: 0,
+    hands: 0, totalA: 0, totalB: 0,
+    bustsA: 0, bustsB: 0,
+    bonusHands: 0, bonusTriggeredByA: 0, bonusTriggeredByB: 0, bonusTriggeredByBoth: 0,
+    bonusFoulA: 0, bonusFoulB: 0, sideFoulA: 0, sideFoulB: 0,
+    topCatA: new Array(10).fill(0), topCatB: new Array(10).fill(0),
+    midCatA: new Array(10).fill(0), midCatB: new Array(10).fill(0),
+    botCatA: new Array(10).fill(0), botCatB: new Array(10).fill(0),
+    topRoyA: {}, topRoyB: {},
+    royA: 0, royB: 0,
   }
 }
 
 function accumulate(s: RunStats, hands: MatchHandRecord[]): RunStats {
   const n: RunStats = {
     ...s,
-    topCatNN: [...s.topCatNN], topCatRoy: [...s.topCatRoy],
-    midCatNN: [...s.midCatNN], midCatRoy: [...s.midCatRoy],
-    botCatNN: [...s.botCatNN], botCatRoy: [...s.botCatRoy],
-    topRoyNN: { ...s.topRoyNN }, topRoyRoy: { ...s.topRoyRoy },
+    topCatA: [...s.topCatA], topCatB: [...s.topCatB],
+    midCatA: [...s.midCatA], midCatB: [...s.midCatB],
+    botCatA: [...s.botCatA], botCatB: [...s.botCatB],
+    topRoyA: { ...s.topRoyA }, topRoyB: { ...s.topRoyB },
   }
 
   for (const h of hands) {
     n.hands++
-    n.totalNN  += h.totalScore[0]
-    n.totalRoy += h.totalScore[1]
+    n.totalA += h.totalScore[0]
+    n.totalB += h.totalScore[1]
     const [p0, p1] = h.players
-    if (p0.foul) n.bustsNN++
-    if (p1.foul) n.bustsRoy++
+    if (p0.foul) n.bustsA++
+    if (p1.foul) n.bustsB++
     // Only count row categories for non-fouled boards; fouled boards get the Foul row instead.
     if (!p0.foul) {
-      n.topCatNN[p0.topCategory]++
-      n.midCatNN[p0.midCategory]++
-      n.botCatNN[p0.botCategory]++
-      if (p0.topRoyalty > 0) n.topRoyNN[p0.topRoyalty] = (n.topRoyNN[p0.topRoyalty] ?? 0) + 1
+      n.topCatA[p0.topCategory]++
+      n.midCatA[p0.midCategory]++
+      n.botCatA[p0.botCategory]++
+      if (p0.topRoyalty > 0) n.topRoyA[p0.topRoyalty] = (n.topRoyA[p0.topRoyalty] ?? 0) + 1
     }
     if (!p1.foul) {
-      n.topCatRoy[p1.topCategory]++
-      n.midCatRoy[p1.midCategory]++
-      n.botCatRoy[p1.botCategory]++
-      if (p1.topRoyalty > 0) n.topRoyRoy[p1.topRoyalty] = (n.topRoyRoy[p1.topRoyalty] ?? 0) + 1
+      n.topCatB[p1.topCategory]++
+      n.midCatB[p1.midCategory]++
+      n.botCatB[p1.botCategory]++
+      if (p1.topRoyalty > 0) n.topRoyB[p1.topRoyalty] = (n.topRoyB[p1.topRoyalty] ?? 0) + 1
     }
-    n.royNN  += p0.royaltiesEarned
-    n.royRoy += p1.royaltiesEarned
+    n.royA += p0.royaltiesEarned
+    n.royB += p1.royaltiesEarned
     if (h.bonusTriggered) {
       n.bonusHands++
-      if (h.bonusTriggerPlayer === 0 || h.bonusTriggerPlayer === 2) n.bonusTriggeredByNN++
-      if (h.bonusTriggerPlayer === 1 || h.bonusTriggerPlayer === 2) n.bonusTriggeredByRoy++
+      if (h.bonusTriggerPlayer === 0 || h.bonusTriggerPlayer === 2) n.bonusTriggeredByA++
+      if (h.bonusTriggerPlayer === 1 || h.bonusTriggerPlayer === 2) n.bonusTriggeredByB++
       if (h.bonusTriggerPlayer === 2) n.bonusTriggeredByBoth++
-      if (p0.bonusFoul) n.bonusFoulNN++
-      if (p1.bonusFoul) n.bonusFoulRoy++
-      if (p0.sideFoul) n.sideFoulNN++
-      if (p1.sideFoul) n.sideFoulRoy++
+      if (p0.bonusFoul) n.bonusFoulA++
+      if (p1.bonusFoul) n.bonusFoulB++
+      if (p0.sideFoul) n.sideFoulA++
+      if (p1.sideFoul) n.sideFoulB++
     }
   }
   return n
 }
 
-type CatRow = { label: string; royLabel: string; nn: number; roy: number }
+type CatRow = { label: string; royLabel: string; a: number; b: number }
 
-function RowTable({ rows, total }: { rows: CatRow[]; total: number }) {
+function RowTable({ rows, total, labelA, labelB }: { rows: CatRow[]; total: number; labelA: string; labelB: string }) {
   return (
     <table className="text-xs w-full">
       <thead>
         <tr className="text-gray-600">
           <th className="text-left py-0.5">Hand</th>
           <th className="text-left py-0.5 pl-2">Roy</th>
-          <th className="text-right py-0.5 text-blue-300">NN+MCTS</th>
-          <th className="text-right py-0.5 text-amber-300">Royalty</th>
+          <th className="text-right py-0.5 text-blue-300">{labelA}</th>
+          <th className="text-right py-0.5 text-amber-300">{labelB}</th>
         </tr>
       </thead>
       <tbody>
         {rows.map((r, i) => {
-          if (r.nn === 0 && r.roy === 0) return null
+          if (r.a === 0 && r.b === 0) return null
           return (
             <tr key={i} className={`border-t border-gray-800 ${r.royLabel === '' ? 'text-gray-500' : 'text-gray-200'}`}>
               <td className="py-0.5 pr-1">{r.label}</td>
               <td className="py-0.5 pl-2 text-amber-500 tabular-nums">{r.royLabel}</td>
-              <td className="py-0.5 text-right tabular-nums">{pct(r.nn,  total)}</td>
-              <td className="py-0.5 text-right tabular-nums">{pct(r.roy, total)}</td>
+              <td className="py-0.5 text-right tabular-nums">{pct(r.a, total)}</td>
+              <td className="py-0.5 text-right tabular-nums">{pct(r.b, total)}</td>
             </tr>
           )
         })}
@@ -248,58 +301,58 @@ function RowTable({ rows, total }: { rows: CatRow[]; total: number }) {
 
 function buildTopRows(s: RunStats): CatRow[] {
   const rows: CatRow[] = []
-  rows.push({ label: 'Foul', royLabel: '', nn: s.bustsNN, roy: s.bustsRoy })
+  rows.push({ label: 'Foul', royLabel: '', a: s.bustsA, b: s.bustsB })
   // High card
-  rows.push({ label: 'High card', royLabel: '', nn: s.topCatNN[0]!, roy: s.topCatRoy[0]! })
+  rows.push({ label: 'High card', royLabel: '', a: s.topCatA[0]!, b: s.topCatB[0]! })
   // Non-scoring pairs (22–55): total pairs minus scoring pairs (royalty 1–9)
-  const scoringPairsNN  = Object.entries(s.topRoyNN).filter(([k]) => +k <= 9).reduce((a, [, v]) => a + v, 0)
-  const scoringPairsRoy = Object.entries(s.topRoyRoy).filter(([k]) => +k <= 9).reduce((a, [, v]) => a + v, 0)
-  const lowPairNN  = s.topCatNN[1]!  - scoringPairsNN
-  const lowPairRoy = s.topCatRoy[1]! - scoringPairsRoy
-  if (lowPairNN > 0 || lowPairRoy > 0)
-    rows.push({ label: 'Pair 2–5', royLabel: '', nn: lowPairNN, roy: lowPairRoy })
+  const scoringPairsA = Object.entries(s.topRoyA).filter(([k]) => +k <= 9).reduce((a, [, v]) => a + v, 0)
+  const scoringPairsB = Object.entries(s.topRoyB).filter(([k]) => +k <= 9).reduce((a, [, v]) => a + v, 0)
+  const lowPairA = s.topCatA[1]! - scoringPairsA
+  const lowPairB = s.topCatB[1]! - scoringPairsB
+  if (lowPairA > 0 || lowPairB > 0)
+    rows.push({ label: 'Pair 2–5', royLabel: '', a: lowPairA, b: lowPairB })
   // Scoring pairs 66–AA (+1 to +9)
   for (let r = 1; r <= 9; r++) {
-    const nn  = s.topRoyNN[r]  ?? 0
-    const roy = s.topRoyRoy[r] ?? 0
-    if (nn > 0 || roy > 0)
-      rows.push({ label: TOP_PAIR_LABELS[r]!, royLabel: `+${r}`, nn, roy })
+    const a = s.topRoyA[r] ?? 0
+    const b = s.topRoyB[r] ?? 0
+    if (a > 0 || b > 0)
+      rows.push({ label: TOP_PAIR_LABELS[r]!, royLabel: `+${r}`, a, b })
   }
   // Trips by rank (+10 to +22)
   for (let r = 10; r <= 22; r++) {
-    const nn  = s.topRoyNN[r]  ?? 0
-    const roy = s.topRoyRoy[r] ?? 0
-    if (nn > 0 || roy > 0)
-      rows.push({ label: TOP_TRIPS_LABELS[r]!, royLabel: `+${r}`, nn, roy })
+    const a = s.topRoyA[r] ?? 0
+    const b = s.topRoyB[r] ?? 0
+    if (a > 0 || b > 0)
+      rows.push({ label: TOP_TRIPS_LABELS[r]!, royLabel: `+${r}`, a, b })
   }
   return rows
 }
 
 function buildMidRows(s: RunStats): CatRow[] {
   return [
-    { label: 'Foul', royLabel: '', nn: s.bustsNN, roy: s.bustsRoy },
+    { label: 'Foul', royLabel: '', a: s.bustsA, b: s.bustsB },
     ...MID_ROWS.map(([label, midRoy], i) => ({
       label,
       royLabel: midRoy > 0 ? `+${midRoy}` : '',
-      nn:  s.midCatNN[i]!,
-      roy: s.midCatRoy[i]!,
+      a: s.midCatA[i]!,
+      b: s.midCatB[i]!,
     })),
   ]
 }
 
 function buildBotRows(s: RunStats): CatRow[] {
   return [
-    { label: 'Foul', royLabel: '', nn: s.bustsNN, roy: s.bustsRoy },
+    { label: 'Foul', royLabel: '', a: s.bustsA, b: s.bustsB },
     ...MID_ROWS.map(([label, , botRoy], i) => ({
       label,
       royLabel: botRoy > 0 ? `+${botRoy}` : '',
-      nn:  s.botCatNN[i]!,
-      roy: s.botCatRoy[i]!,
+      a: s.botCatA[i]!,
+      b: s.botCatB[i]!,
     })),
   ]
 }
 
-function StatsPanel({ s }: { s: RunStats }) {
+function StatsPanel({ s, labelA, labelB }: { s: RunStats; labelA: string; labelB: string }) {
   if (s.hands === 0) return null
 
   return (
@@ -307,18 +360,18 @@ function StatsPanel({ s }: { s: RunStats }) {
       {/* Summary */}
       <div className="bg-gray-900 rounded p-4 space-y-1">
         <div className="text-gray-400 font-medium mb-2">Summary ({s.hands} hands)</div>
-        <Row label="Total score"          nn={sign(s.totalNN)}   roy={sign(s.totalRoy)} />
-        <Row label="Avg / hand"           nn={(s.totalNN  / s.hands).toFixed(2)} roy={(s.totalRoy / s.hands).toFixed(2)} />
-        <Row label="Bust rate"            nn={pct(s.bustsNN, s.hands)} roy={pct(s.bustsRoy, s.hands)} />
-        <Row label="Avg royalties / hand" nn={(s.royNN / s.hands).toFixed(2)} roy={(s.royRoy / s.hands).toFixed(2)} />
+        <Row label="Total score"          a={sign(s.totalA)}   b={sign(s.totalB)} />
+        <Row label="Avg / hand"           a={(s.totalA  / s.hands).toFixed(2)} b={(s.totalB / s.hands).toFixed(2)} />
+        <Row label="Bust rate"            a={pct(s.bustsA, s.hands)} b={pct(s.bustsB, s.hands)} />
+        <Row label="Avg royalties / hand" a={(s.royA / s.hands).toFixed(2)} b={(s.royB / s.hands).toFixed(2)} />
         <div className="pt-2 border-t border-gray-800 text-gray-400">
           Bonus games: {s.bonusHands} ({pct(s.bonusHands, s.hands)})
         </div>
-        <Row label="Triggered by NN"      nn={String(s.bonusTriggeredByNN)}    roy="" />
-        <Row label="Triggered by Royalty" nn=""  roy={String(s.bonusTriggeredByRoy)} />
-        <Row label="Triggered by both"    nn={String(s.bonusTriggeredByBoth)}  roy="" />
-        <Row label="Bonus foul"           nn={pct(s.bonusFoulNN, s.bonusTriggeredByNN)} roy={pct(s.bonusFoulRoy, s.bonusTriggeredByRoy)} />
-        <Row label="Side foul"            nn={pct(s.sideFoulNN, s.bonusHands - s.bonusTriggeredByNN)} roy={pct(s.sideFoulRoy, s.bonusHands - s.bonusTriggeredByRoy)} />
+        <Row label={`Triggered by ${labelA}`} a={String(s.bonusTriggeredByA)}    b="" />
+        <Row label={`Triggered by ${labelB}`} a=""  b={String(s.bonusTriggeredByB)} />
+        <Row label="Triggered by both"    a={String(s.bonusTriggeredByBoth)}  b="" />
+        <Row label="Bonus foul"           a={pct(s.bonusFoulA, s.bonusTriggeredByA)} b={pct(s.bonusFoulB, s.bonusTriggeredByB)} />
+        <Row label="Side foul"            a={pct(s.sideFoulA, s.bonusHands - s.bonusTriggeredByA)} b={pct(s.sideFoulB, s.bonusHands - s.bonusTriggeredByB)} />
       </div>
 
       {/* Per-row hand distributions */}
@@ -330,7 +383,7 @@ function StatsPanel({ s }: { s: RunStats }) {
         ].map(({ label, rows }) => (
           <div key={label} className="bg-gray-900 rounded p-3">
             <div className="text-gray-400 text-xs font-medium mb-1">{label}</div>
-            <RowTable rows={rows} total={s.hands} />
+            <RowTable rows={rows} total={s.hands} labelA={labelA} labelB={labelB} />
           </div>
         ))}
       </div>
@@ -338,13 +391,13 @@ function StatsPanel({ s }: { s: RunStats }) {
   )
 }
 
-function Row({ label, nn, roy }: { label: string; nn: string; roy: string }) {
+function Row({ label, a, b }: { label: string; a: string; b: string }) {
   return (
     <div className="flex justify-between text-gray-200">
       <span className="text-gray-400">{label}</span>
       <span className="text-xs flex gap-6">
-        <span className="text-blue-300 w-14 text-right">{nn}</span>
-        <span className="text-amber-300 w-14 text-right">{roy}</span>
+        <span className="text-blue-300 w-14 text-right">{a}</span>
+        <span className="text-amber-300 w-14 text-right">{b}</span>
       </span>
     </div>
   )
@@ -352,10 +405,12 @@ function Row({ label, nn, roy }: { label: string; nn: string; roy: string }) {
 
 // ── Hand list ────────────────────────────────────────────────────────────────
 
-type SortKey = 'idx' | 'nnScore' | 'royScore' | 'totalNN' | 'totalRoy'
+type SortKey = 'idx' | 'aScore' | 'bScore' | 'totalA' | 'totalB'
 
-function HandList({ hands, onSelect }: {
+function HandList({ hands, labelA, labelB, onSelect }: {
   hands: MatchHandRecord[]
+  labelA: string
+  labelB: string
   onSelect: (h: MatchHandRecord) => void
 }) {
   const [sort, setSort] = useState<SortKey>('idx')
@@ -368,14 +423,14 @@ function HandList({ hands, onSelect }: {
 
   const sorted = [...hands].sort((a, b) => {
     const va = sort === 'idx' ? a.idx
-      : sort === 'nnScore' ? a.normalScore[0]
-      : sort === 'royScore' ? a.normalScore[1]
-      : sort === 'totalNN' ? a.totalScore[0]
+      : sort === 'aScore' ? a.normalScore[0]
+      : sort === 'bScore' ? a.normalScore[1]
+      : sort === 'totalA' ? a.totalScore[0]
       : a.totalScore[1]
     const vb = sort === 'idx' ? b.idx
-      : sort === 'nnScore' ? b.normalScore[0]
-      : sort === 'royScore' ? b.normalScore[1]
-      : sort === 'totalNN' ? b.totalScore[0]
+      : sort === 'aScore' ? b.normalScore[0]
+      : sort === 'bScore' ? b.normalScore[1]
+      : sort === 'totalA' ? b.totalScore[0]
       : b.totalScore[1]
     return asc ? va - vb : vb - va
   })
@@ -399,10 +454,10 @@ function HandList({ hands, onSelect }: {
             <Th k="idx" label="#" />
             <th className="py-1 px-2 text-gray-400 text-left">Bonus</th>
             <th className="py-1 px-2 text-gray-400 text-left">Foul</th>
-            <Th k="nnScore" label="NN norm" />
-            <Th k="royScore" label="Roy norm" />
-            <Th k="totalNN" label="NN total" />
-            <Th k="totalRoy" label="Roy total" />
+            <Th k="aScore" label={`${labelA} norm`} />
+            <Th k="bScore" label={`${labelB} norm`} />
+            <Th k="totalA" label={`${labelA} total`} />
+            <Th k="totalB" label={`${labelB} total`} />
           </tr>
         </thead>
         <tbody>
@@ -415,7 +470,7 @@ function HandList({ hands, onSelect }: {
               <td className="py-0.5 px-2 text-right text-gray-400">{h.idx + 1}</td>
               <td className="py-0.5 px-2 text-gray-400">{h.bonusTriggered ? `P${h.bonusTriggerPlayer === 2 ? '0+1' : h.bonusTriggerPlayer}` : ''}</td>
               <td className="py-0.5 px-2 text-gray-400">
-                {[h.players[0].foul && 'NN', h.players[1].foul && 'Roy'].filter(Boolean).join(' ')}
+                {[h.players[0].foul && labelA, h.players[1].foul && labelB].filter(Boolean).join(' ')}
               </td>
               <td className={`py-0.5 px-2 text-right ${h.normalScore[0] >= 0 ? 'text-green-400' : 'text-red-400'}`}>{sign(h.normalScore[0])}</td>
               <td className={`py-0.5 px-2 text-right ${h.normalScore[1] >= 0 ? 'text-green-400' : 'text-red-400'}`}>{sign(h.normalScore[1])}</td>
@@ -433,7 +488,12 @@ function HandList({ hands, onSelect }: {
 
 function cardKey(c: { rank: number; suit: string }) { return `${c.rank}${c.suit}` }
 
-function ReplayView({ hand, onClose }: { hand: MatchHandRecord; onClose: () => void }) {
+function ReplayView({ hand, labelA, labelB, onClose }: {
+  hand: MatchHandRecord
+  labelA: string
+  labelB: string
+  onClose: () => void
+}) {
   const [street, setStreet] = useState(0)
   const [section, setSection] = useState<'normal' | 'bonus' | 'side'>('normal')
 
@@ -522,13 +582,13 @@ function ReplayView({ hand, onClose }: { hand: MatchHandRecord; onClose: () => v
           return (
             <div className="grid grid-cols-2 gap-4 text-xs text-gray-400">
               <div>
-                <div className="mb-1 text-blue-300 font-medium">NN+MCTS dealt</div>
+                <div className="mb-1 text-blue-300 font-medium">{labelA} dealt</div>
                 <div className="flex gap-1 flex-wrap">
                   {h0.map(c => <span key={cardKey(c)} className="bg-gray-800 px-1 rounded">{c.rank}{c.suit}</span>)}
                 </div>
               </div>
               <div>
-                <div className="mb-1 text-amber-300 font-medium">Royalty dealt</div>
+                <div className="mb-1 text-amber-300 font-medium">{labelB} dealt</div>
                 <div className="flex gap-1 flex-wrap">
                   {h1.map(c => <span key={cardKey(c)} className="bg-gray-800 px-1 rounded">{c.rank}{c.suit}</span>)}
                 </div>
@@ -541,13 +601,13 @@ function ReplayView({ hand, onClose }: { hand: MatchHandRecord; onClose: () => v
         <div className="grid grid-cols-2 gap-4">
           <div>
             <div className="text-blue-300 text-xs font-medium mb-1">
-              NN+MCTS {p0.foul ? '(FOUL)' : `+${p0.royaltiesEarned} roy`}
+              {labelA} {p0.foul ? '(FOUL)' : `+${p0.royaltiesEarned} roy`}
             </div>
             <BoardView board={board0} showStatus={section === 'normal' && street === 4} />
           </div>
           <div>
             <div className="text-amber-300 text-xs font-medium mb-1">
-              Royalty {p1.foul ? '(FOUL)' : `+${p1.royaltiesEarned} roy`}
+              {labelB} {p1.foul ? '(FOUL)' : `+${p1.royaltiesEarned} roy`}
             </div>
             <BoardView board={board1} showStatus={section === 'normal' && street === 4} />
           </div>
@@ -556,18 +616,18 @@ function ReplayView({ hand, onClose }: { hand: MatchHandRecord; onClose: () => v
         {/* Scores */}
         {section === 'normal' && street === 4 && (
           <div className="text-sm text-gray-300 border-t border-gray-800 pt-3 space-y-1">
-            <div>Normal: NN {sign(hand.normalScore[0])} / Roy {sign(hand.normalScore[1])}</div>
+            <div>Normal: {labelA} {sign(hand.normalScore[0])} / {labelB} {sign(hand.normalScore[1])}</div>
             {hand.bonusTriggered && (
-              <div>Bonus: NN {sign(hand.bonusScore[0])} / Roy {sign(hand.bonusScore[1])}</div>
+              <div>Bonus: {labelA} {sign(hand.bonusScore[0])} / {labelB} {sign(hand.bonusScore[1])}</div>
             )}
-            <div className="font-medium">Total: NN {sign(hand.totalScore[0])} / Roy {sign(hand.totalScore[1])}</div>
+            <div className="font-medium">Total: {labelA} {sign(hand.totalScore[0])} / {labelB} {sign(hand.totalScore[1])}</div>
           </div>
         )}
 
         {section === 'bonus' && (
           <div className="text-xs text-gray-400 space-y-1">
-            {p0.bonusCards && <div className="text-blue-300">NN bonus cards: {p0.bonusCards.map(c => `${c.rank}${c.suit}`).join(' ')}</div>}
-            {p1.bonusCards && <div className="text-amber-300">Roy bonus cards: {p1.bonusCards.map(c => `${c.rank}${c.suit}`).join(' ')}</div>}
+            {p0.bonusCards && <div className="text-blue-300">{labelA} bonus cards: {p0.bonusCards.map(c => `${c.rank}${c.suit}`).join(' ')}</div>}
+            {p1.bonusCards && <div className="text-amber-300">{labelB} bonus cards: {p1.bonusCards.map(c => `${c.rank}${c.suit}`).join(' ')}</div>}
           </div>
         )}
       </div>
@@ -580,23 +640,23 @@ function ReplayView({ hand, onClose }: { hand: MatchHandRecord; onClose: () => v
 export default function ArenaPage({ onNavigate }: ArenaPageProps) {
   const [cfg, setCfg] = useState<Config>({
     hands: DEFAULT_HANDS,
-    nnSims: DEFAULT_NN_SIMS,
-    roySims: DEFAULT_ROY_SIMS,
     seed: DEFAULT_SEED,
-    rootTopK: DEFAULT_ROOT_TOP_K,
-    royaltyPolicy: 'mcts',
+    botA: { kind: 'nn-mcts', sims: DEFAULT_SIMS, rootTopK: DEFAULT_ROOT_TOP_K },
+    botB: { kind: 'royalty-mcts', sims: DEFAULT_SIMS, rootTopK: DEFAULT_ROOT_TOP_K },
   })
   const [royaltyNnStatus, setRoyaltyNnStatus] = useState<'idle' | 'loading' | 'loaded' | 'unavailable'>('idle')
 
-  // Load the royalty NN model when the user selects that policy.
+  const needsRoyaltyNn = cfg.botA.kind === 'royalty-nn' || cfg.botB.kind === 'royalty-nn'
+
+  // Load the royalty NN model when either seat selects that policy.
   useEffect(() => {
-    if (cfg.royaltyPolicy !== 'nn') return
+    if (!needsRoyaltyNn) return
     if (royaltyNnStatus !== 'idle') return
     setRoyaltyNnStatus('loading')
     arenaWorkerClient.loadRoyaltyModel(ROYALTY_MODEL_URL).then(ok => {
       setRoyaltyNnStatus(ok ? 'loaded' : 'unavailable')
     })
-  }, [cfg.royaltyPolicy, royaltyNnStatus])
+  }, [needsRoyaltyNn, royaltyNnStatus])
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState(0)
   const [total, setTotal] = useState(0)
@@ -608,6 +668,11 @@ export default function ArenaPage({ onNavigate }: ArenaPageProps) {
   // Authoritative accumulator — survives stop without depending on promise resolution.
   const handsRef = useRef<MatchHandRecord[]>([])
 
+  const labelA = BOT_KIND_LABELS[cfg.botA.kind]
+  const labelB = BOT_KIND_LABELS[cfg.botB.kind]
+  const shortA = BOT_KIND_SHORT[cfg.botA.kind]
+  const shortB = BOT_KIND_SHORT[cfg.botB.kind]
+
   const start = useCallback(() => {
     handsRef.current = []
     setError(null)
@@ -617,11 +682,14 @@ export default function ArenaPage({ onNavigate }: ArenaPageProps) {
     setTotal(cfg.hands)
     setRunning(true)
 
+    const botASpec: BotSpec = { kind: cfg.botA.kind, sims: cfg.botA.sims, rootTopK: cfg.botA.rootTopK }
+    const botBSpec: BotSpec = { kind: cfg.botB.kind, sims: cfg.botB.sims, rootTopK: cfg.botB.rootTopK }
+
     const { promise, cancel } = arenaWorkerClient.runMatch(
       cfg.hands,
-      cfg.nnSims,
-      cfg.roySims,
       cfg.seed,
+      botASpec,
+      botBSpec,
       (done, tot, batch) => {
         handsRef.current = [...handsRef.current, ...batch]
         setProgress(done)
@@ -629,8 +697,6 @@ export default function ArenaPage({ onNavigate }: ArenaPageProps) {
         setHands(prev => [...prev, ...batch])
         setStats(s => accumulate(s, batch))
       },
-      cfg.rootTopK,
-      cfg.royaltyPolicy,
     )
     cancelRef.current = cancel
     promise.then(allHands => {
@@ -661,14 +727,14 @@ export default function ArenaPage({ onNavigate }: ArenaPageProps) {
     <div className="min-h-screen bg-gray-950 text-gray-200 p-4 space-y-4">
       <div className="flex items-center gap-4">
         <button onClick={() => onNavigate('game')} className="text-gray-500 hover:text-gray-300 text-sm">← Back</button>
-        <h1 className="text-lg font-semibold text-white">Arena — NN+MCTS vs Royalty</h1>
-        {cfg.royaltyPolicy === 'nn' && royaltyNnStatus === 'loading' && (
+        <h1 className="text-lg font-semibold text-white">Arena — {labelA} vs {labelB}</h1>
+        {needsRoyaltyNn && royaltyNnStatus === 'loading' && (
           <span className="text-xs text-gray-400">Loading royalty NN…</span>
         )}
-        {cfg.royaltyPolicy === 'nn' && royaltyNnStatus === 'unavailable' && (
+        {needsRoyaltyNn && royaltyNnStatus === 'unavailable' && (
           <span className="text-xs text-red-400">Royalty NN unavailable — falling back to MCTS</span>
         )}
-        {cfg.royaltyPolicy === 'nn' && royaltyNnStatus === 'loaded' && (
+        {needsRoyaltyNn && royaltyNnStatus === 'loaded' && (
           <span className="text-xs text-green-400">Royalty NN loaded</span>
         )}
       </div>
@@ -701,13 +767,13 @@ export default function ArenaPage({ onNavigate }: ArenaPageProps) {
             {!running && hasResults && <span className="text-gray-500 text-xs">stopped</span>}
             {hasResults && (
               <>
-                <span className="text-blue-300 tabular-nums ml-2">NN avg {(stats.totalNN / stats.hands).toFixed(2)}</span>
-                <span className="text-amber-300 tabular-nums">Roy avg {(stats.totalRoy / stats.hands).toFixed(2)}</span>
+                <span className="text-blue-300 tabular-nums ml-2">{shortA} avg {(stats.totalA / stats.hands).toFixed(2)}</span>
+                <span className="text-amber-300 tabular-nums">{shortB} avg {(stats.totalB / stats.hands).toFixed(2)}</span>
               </>
             )}
           </div>
 
-          {hasResults && <StatsPanel s={stats} />}
+          {hasResults && <StatsPanel s={stats} labelA={shortA} labelB={shortB} />}
 
           {hasResults && (
             <div className="bg-gray-900 rounded p-3">
@@ -715,14 +781,14 @@ export default function ArenaPage({ onNavigate }: ArenaPageProps) {
                 Hands — click to replay
                 <span className="text-xs text-gray-500 ml-2">(headers sortable)</span>
               </div>
-              <HandList hands={hands} onSelect={setSelected} />
+              <HandList hands={hands} labelA={shortA} labelB={shortB} onSelect={setSelected} />
             </div>
           )}
         </>
       )}
 
       {selected && (
-        <ReplayView hand={selected} onClose={() => setSelected(null)} />
+        <ReplayView hand={selected} labelA={labelA} labelB={labelB} onClose={() => setSelected(null)} />
       )}
     </div>
   )

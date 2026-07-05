@@ -1,7 +1,8 @@
 import type { InfoState, MCOptions, ScoredPlacement } from '../engine/mc'
 import type { Placement } from '../engine/placement'
-import type { WorkerRequest, WorkerResponse, BotPolicy, MatchHandRecord } from './types'
-export type { BotPolicy, MatchHandRecord }
+import type { WorkerRequest, WorkerResponse, BotPolicy, MatchHandRecord, BotSpec } from './types'
+import type { BotKind } from '../engine/matchTypes'
+export type { BotPolicy, MatchHandRecord, BotSpec, BotKind }
 
 // Available model variants served via Firebase Hosting.
 export const MODEL_URLS = {
@@ -216,12 +217,10 @@ export class WorkerClient {
 
   runMatch(
     totalHands: number,
-    nnSims: number,
-    royaltySims: number,
     seed: number,
+    botA: BotSpec,
+    botB: BotSpec,
     onProgress?: (done: number, total: number, batch: MatchHandRecord[]) => void,
-    rootTopK?: number,
-    royaltyPolicy?: 'mcts' | 'nn',
   ): { promise: Promise<MatchHandRecord[]>; cancel: () => void } {
     const id = makeId()
     let cancelled = false
@@ -235,7 +234,7 @@ export class WorkerClient {
       const req: WorkerRequest = {
         id,
         type: 'RUN_MATCH',
-        payload: { totalHands, baseSeed: seed, nnSims, royaltySims, rootTopK, royaltyPolicy },
+        payload: { totalHands, baseSeed: seed, botA, botB },
       }
       this.getWorker().postMessage(req)
     })

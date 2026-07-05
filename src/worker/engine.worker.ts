@@ -155,18 +155,20 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       self.postMessage({ id: msg.id, type: 'ANALYSIS_DONE', payload: allResults } as WorkerResponse)
 
     } else if (msg.type === 'RUN_MATCH') {
-      const { totalHands, baseSeed, nnSims, royaltySims, rootTopK, royaltyPolicy } = msg.payload
-      if (!loadedModel) {
-        self.postMessage({ id: msg.id, type: 'ERROR', payload: 'No model loaded' } as WorkerResponse)
+      const { totalHands, baseSeed, botA, botB } = msg.payload
+      if ((botA.kind === 'nn-mcts' || botB.kind === 'nn-mcts') && !loadedModel) {
+        self.postMessage({ id: msg.id, type: 'ERROR', payload: 'No NN model loaded' } as WorkerResponse)
         return
       }
-      const model = loadedModel
-      const nnOpts: MCTSOptions = { ...BOT_MCTS_OPTS, nSims: nnSims, ...(rootTopK !== undefined ? { rootTopK } : {}) }
-      const royNnModel = (royaltyPolicy === 'nn' && royaltyNnModel) ? royaltyNnModel : undefined
+      if ((botA.kind === 'royalty-nn' || botB.kind === 'royalty-nn') && !royaltyNnModel) {
+        self.postMessage({ id: msg.id, type: 'ERROR', payload: 'No royalty NN model loaded' } as WorkerResponse)
+        return
+      }
+      const models = { nn: loadedModel ?? undefined, royaltyNn: royaltyNnModel ?? undefined }
       const allHands: MatchHandRecord[] = []
       for (let i = 0; i < totalHands; i++) {
         const seed = ((baseSeed + i * 1_664_525 + 1_013_904_223) >>> 0)
-        const hand = runMatchHand(i, seed, model, nnOpts, royaltySims, royNnModel)
+        const hand = runMatchHand(i, seed, botA, botB, models)
         allHands.push(hand)
         // Send every hand so the UI counter increments smoothly.
         self.postMessage({

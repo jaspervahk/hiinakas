@@ -1,4 +1,4 @@
-// Bot-vs-bot match simulator: NN+MCTS (player 0) vs Royalty MCTS (player 1).
+// Bot-vs-bot match simulator: any two BotSpecs can occupy the two seats.
 // Produces a MatchHandRecord with full replay data for every decision.
 
 import { Deck } from './deck'
@@ -8,11 +8,13 @@ import { isFoul, royalties, topRoyalty, middleRoyalty, bottomRoyalty, bonusTrigg
 import { evaluate3, evaluate5 } from './evaluate'
 import { bestBonusBoard } from './bestBonus'
 import { mctsPickPlacement } from './mcts'
-import type { MCTSOptions } from './mcts'
+import { getBotMove } from './mc'
+import type { InfoState } from './mc'
 import { royaltyMctsPickPlacement, royaltyNnMctsPickPlacement } from './royaltyMcts'
 import type { NNModel } from './wasmModel'
 import type { Card, PartialBoard, Board } from './types'
-import type { MatchHandRecord, PlayerMatchRecord, StreetSnap } from './matchTypes'
+import type { Placement } from './placement'
+import type { MatchHandRecord, PlayerMatchRecord, StreetSnap, BotSpec } from './matchTypes'
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0
@@ -25,13 +27,43 @@ function mulberry32(seed: number): () => number {
   }
 }
 
+// Models available for whichever seat needs them; only the kinds actually
+// requested by botA/botB need to be populated.
+export interface MatchModels {
+  nn?: NNModel
+  royaltyNn?: NNModel
+}
+
+function pickPlacement(
+  spec: BotSpec,
+  state: InfoState,
+  rng: () => number,
+  models: MatchModels,
+): Placement {
+  switch (spec.kind) {
+    case 'nn-mcts':
+      if (!models.nn) throw new Error('nn-mcts bot requires the NN model to be loaded')
+      return mctsPickPlacement(
+        state, models.nn,
+        { nSims: spec.sims, maxDepth: 2, nnOpponents: true, ...(spec.rootTopK !== undefined ? { rootTopK: spec.rootTopK } : {}) },
+        rng,
+      )
+    case 'royalty-mcts':
+      return royaltyMctsPickPlacement(state, spec.sims, rng)
+    case 'royalty-nn':
+      if (!models.royaltyNn) throw new Error('royalty-nn bot requires the royalty NN model to be loaded')
+      return royaltyNnMctsPickPlacement(state, models.royaltyNn, spec.sims, rng)
+    case 'heuristic':
+      return getBotMove(state, spec.sims, rng)
+  }
+}
+
 export function runMatchHand(
   idx: number,
   seed: number,
-  model: NNModel,
-  nnOpts: MCTSOptions,
-  royaltySims: number,
-  royaltyNnModel?: NNModel,   // when provided, player 1 uses royalty NN MCTS
+  botA: BotSpec,
+  botB: BotSpec,
+  models: MatchModels,
 ): MatchHandRecord {
   const nnRng  = mulberry32((seed ^ 0x1A2B3C4D) >>> 0)
   const royRng = mulberry32((seed ^ 0x5E6F7A8B) >>> 0)
@@ -58,19 +90,16 @@ export function runMatchHand(
     const snap0 = { top: [...boards[0].top], middle: [...boards[0].middle], bottom: [...boards[0].bottom] }
     const snap1 = { top: [...boards[1].top], middle: [...boards[1].middle], bottom: [...boards[1].bottom] }
 
-    const pl0 = mctsPickPlacement(
+    const pl0 = pickPlacement(
+      botA,
       { board: snap0, hand: dealt[0][s]!, street: s, revealedOpponentBoards: [snap1], discards: discards[0] },
-      model, nnOpts, nnRng,
+      nnRng, models,
     )
-    const pl1 = royaltyNnModel
-      ? royaltyNnMctsPickPlacement(
-          { board: snap1, hand: dealt[1][s]!, street: s, revealedOpponentBoards: [snap0], discards: discards[1] },
-          royaltyNnModel, royaltySims, royRng,
-        )
-      : royaltyMctsPickPlacement(
-          { board: snap1, hand: dealt[1][s]!, street: s, revealedOpponentBoards: [snap0], discards: discards[1] },
-          royaltySims, royRng,
-        )
+    const pl1 = pickPlacement(
+      botB,
+      { board: snap1, hand: dealt[1][s]!, street: s, revealedOpponentBoards: [snap0], discards: discards[1] },
+      royRng, models,
+    )
 
     boards[0] = applyPlacement(snap0, pl0)
     boards[1] = applyPlacement(snap1, pl1)
@@ -156,10 +185,8 @@ export function runMatchHand(
             discards: sideDisc[i]!,
           }
           const pl = p === 0
-            ? mctsPickPlacement(info, model, nnOpts, nnRng)
-            : royaltyNnModel
-              ? royaltyNnMctsPickPlacement(info, royaltyNnModel, royaltySims, royRng)
-              : royaltyMctsPickPlacement(info, royaltySims, royRng)
+            ? pickPlacement(botA, info, nnRng, models)
+            : pickPlacement(botB, info, royRng, models)
           sideBoards[i] = applyPlacement(snaps[i]!, pl)
           sideSS[i]!.push({ hand, placement: pl, boardAfter: sideBoards[i] })
           if (pl.discard) sideDisc[i]!.push(pl.discard)
