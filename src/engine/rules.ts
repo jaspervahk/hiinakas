@@ -86,3 +86,23 @@ export function bonusDealCount(qualifier: BonusQualifier): number {
     case 'AA_OR_TRIPS': return 15
   }
 }
+
+// Expected net royalties from optimal bonus-board play, averaged over 5000
+// random deals, minus the side-game opponent's expected score. Lets rollout-
+// style evaluators value a completed top-row qualifier's bonus-round upside
+// without actually simulating the bonus deal.
+//
+// QQ  (13 cards, 0 discards): avg_royalties=9.0  -> net=7.0
+// KK  (14 cards, 1 discard):  avg_royalties=12.7 -> net=10.7
+// AA+ (15 cards, 2 discards): avg_royalties=19.2 -> net=17.2
+export const BONUS_EV_QQ       = 7.0
+export const BONUS_EV_KK       = 10.7
+export const BONUS_EV_AA_TRIPS = 17.2
+
+export function bonusGameValue(board: Board): number {
+  const q = bonusTrigger(board)
+  if (q === 'QQ')          return BONUS_EV_QQ
+  if (q === 'KK')          return BONUS_EV_KK
+  if (q === 'AA_OR_TRIPS') return BONUS_EV_AA_TRIPS
+  return 0
+}

@@ -10,7 +10,7 @@
 
 import type { Card, PartialBoard } from './types'
 import type { Board } from './types'
-import { isFoul, royalties, bonusTrigger, evaluate3, evaluate5 } from './index'
+import { isFoul, royalties, bonusGameValue, BONUS_EV_QQ, BONUS_EV_KK, BONUS_EV_AA_TRIPS, evaluate3, evaluate5 } from './index'
 import { HandCategory } from './types'
 import type { InfoState, RNG, ScoredPlacement } from './mc'
 import { buildLiveDeck, fisherYates } from './mc'
@@ -22,28 +22,6 @@ import type { NNModel } from './wasmModel'
 
 // Easy to bump without touching call sites.
 export const ROYALTY_MCTS_SIMS = 1000
-
-// ── Bonus EV constants ────────────────────────────────────────────────────────
-//
-// Expected royalties from optimal bonus board play, averaged over 5000 random
-// deals. Subtract 2 for the side-game opponent's expected score to get the net
-// additional reward for qualifying at the top row.
-//
-// QQ  (13 cards, 0 discards): avg_royalties=9.0 → net=7.0
-// KK  (14 cards, 1 discard):  avg_royalties=12.7 → net=10.7
-// AA+ (15 cards, 2 discards): avg_royalties=19.2 → net=17.2
-const BONUS_EV_QQ        = 7.0
-const BONUS_EV_KK        = 10.7
-const BONUS_EV_AA_TRIPS  = 17.2
-
-// Net bonus EV for a completed board's top-row qualifier.
-function bonusGameValue(board: Board): number {
-  const q = bonusTrigger(board)
-  if (q === 'QQ')         return BONUS_EV_QQ
-  if (q === 'KK')         return BONUS_EV_KK
-  if (q === 'AA_OR_TRIPS') return BONUS_EV_AA_TRIPS
-  return 0
-}
 
 // Terminal evaluation: royalties + bonus game EV if not bust, -6 if bust.
 export function computeRoyaltyScore(board: Board): number {

@@ -1,6 +1,7 @@
 import type { Card, PartialBoard } from './types'
 import { FULL_DECK } from './deck'
 import { scoreTable } from './scoring'
+import { bonusGameValue } from './rules'
 import type { Board } from './types'
 import { legalPlacements, applyPlacement } from './placement'
 import type { Placement } from './placement'
@@ -135,7 +136,9 @@ function rollout(
 
   const allBoards = [actorBrd as Board, ...(oppBrds as Board[])]
   const nets = scoreTable(allBoards)
-  return nets[0] ?? 0
+  // scoreTable only covers the normal 5-street game; add the actor's expected
+  // bonus-round upside (0 if fouled or non-qualifying) same as royaltyMcts.ts.
+  return (nets[0] ?? 0) + bonusGameValue(actorBrd as Board)
 }
 
 // ── EV computation for a single placement ─────────────────────────────────
