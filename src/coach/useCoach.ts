@@ -109,7 +109,7 @@ function infoStateKey(s: InfoState): string {
 
 // `enabled` only controls the panel's visibility — computation always runs so that
 // results are ready instantly when the panel is shown, and are preserved while hidden.
-export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, policy: BotPolicy = 'nn', disabled = false): CoachResult {
+export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, policy: BotPolicy = 'nn', disabled = false, rootTopK?: number): CoachResult {
   const [placements, setPlacements] = useState<ScoredPlacement[]>([])
   const [isComputing, setIsComputing] = useState(false)
   const [rolloutsDone, setRolloutsDone] = useState(0)
@@ -119,7 +119,7 @@ export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, po
 
   // Always build info regardless of enabled state so computation runs in the background.
   const info = buildInfoState(state)
-  const key = (info && !disabled) ? infoStateKey(info) + `|r${rollouts}|p${policy}` : null
+  const key = (info && !disabled) ? infoStateKey(info) + `|r${rollouts}|p${policy}|k${rootTopK ?? ''}` : null
 
   useEffect(() => {
     if (cancelRef.current) {
@@ -171,6 +171,7 @@ export function useCoach(state: GameState, _enabled: boolean, rollouts = 200, po
       onDone,
       policy,
       onError,
+      rootTopK,
     )
     cancelRef.current = cancel
 

@@ -13,6 +13,7 @@ export interface WorkerRequestGetEV {
     batchSize?: number
     seed: number
     policy?: BotPolicy
+    rootTopK?: number
   }
 }
 
@@ -24,6 +25,7 @@ export interface WorkerRequestGetBotMove {
     rollouts: number
     seed: number
     policy?: BotPolicy
+    rootTopK?: number
   }
 }
 

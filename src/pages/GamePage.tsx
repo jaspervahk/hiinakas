@@ -9,7 +9,7 @@ import { CoachPanel } from '../components/CoachPanel'
 import { useCoach } from '../coach/useCoach'
 import { botWorkerClient } from '../worker/client'
 import type { AppPage } from '../App'
-import type { StreetLog, HandLog } from '../game/types'
+import type { StreetLog, HandLog, CoachMode } from '../game/types'
 import { saveHand } from '../firestore/persistence'
 import { analyzerBridge } from '../game/analyzerBridge'
 
@@ -23,12 +23,16 @@ function bonusQualifierLabel(q: string): string {
   return 'Aces / Trips — 15 cards, 2 discards'
 }
 
-const COACH_ROLLOUTS = 500
-const ROYALTY_COACH_SIMS = 1000
-// Heuristic MC brute-forces a full rollout per candidate with no NN/tree-search
-// guidance, so it needs a far smaller budget to stay usable live (see the
-// same tradeoff in Arena's Heuristic MC default).
-const HEURISTIC_COACH_ROLLOUTS = 20
+// Default sims when a policy/mode is first selected — the user can override
+// via the Sims field. Heuristic MC brute-forces a full rollout per candidate
+// with no NN/tree-search guidance, so it needs a far smaller budget to stay
+// usable live (see the same tradeoff in Arena's Heuristic MC default).
+const DEFAULT_BOT_SIMS_FOR: Record<'nn' | 'royalty' | 'royalty-nn', number> = {
+  nn: 500, royalty: 1000, 'royalty-nn': 1000,
+}
+const DEFAULT_COACH_SIMS_FOR: Record<CoachMode, number> = {
+  nn: 500, royalty: 1000, 'royalty-nn': 1000, heuristic: 20,
+}
 
 interface GamePageProps {
   onNavigate: (p: AppPage) => void
@@ -62,11 +66,11 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
   const botCount = state.playerCount - 1
   const botLabels = labels.slice(1)
 
-  const { coachMode, botPolicy } = state.appSettings
-  const coachRollouts = coachMode === 'nn' ? COACH_ROLLOUTS
-    : coachMode === 'heuristic' ? HEURISTIC_COACH_ROLLOUTS
-    : ROYALTY_COACH_SIMS
-  const coach = useCoach(state, state.appSettings.coachEnabled, coachRollouts, coachMode)
+  const { coachMode, botPolicy, coachSims, coachRootTopK, botSims, botRootTopK } = state.appSettings
+  const coach = useCoach(
+    state, state.appSettings.coachEnabled, coachSims, coachMode, undefined,
+    coachMode === 'nn' ? coachRootTopK : undefined,
+  )
 
   // Best bonus board (for bonus_oneshot coaching)
   const bonusOptimal = useMemo<PartialBoard | null>(() => {
@@ -140,7 +144,7 @@ export default function GamePage({ onNavigate, currentPage }: GamePageProps) {
         revealedOpponentBoards: [humanBoard, ...otherBotBoards],
       }
       const seed = ((state.seed ^ (street * 0x9e3779b9)) + i * 0x517cc1b7) | 0
-      promises.push(botWorkerClient.getBotMove(infoState, 500, seed, botPolicy))
+      promises.push(botWorkerClient.getBotMove(infoState, botSims, seed, botPolicy, botPolicy === 'nn' ? botRootTopK : undefined))
     }
 
     const all = Promise.all(promises)
@@ -695,7 +699,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
             {(['nn', 'royalty', 'royalty-nn'] as const).map(p => (
               <button
                 key={p}
-                onClick={() => onUpdateSettings({ botPolicy: p })}
+                onClick={() => onUpdateSettings({ botPolicy: p, botSims: DEFAULT_BOT_SIMS_FOR[p] })}
                 className={[
                   'px-3 py-1 transition-colors',
                   settings.botPolicy === p
@@ -706,6 +710,34 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                 {p === 'nn' ? 'NN + MCTS' : p === 'royalty' ? 'Royalty' : 'Royalty NN'}
               </button>
             ))}
+          </div>
+        </div>
+
+        {/* Bot sims / root top-K */}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">Bot sims</span>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
+              value={settings.botSims}
+              min={1}
+              max={10_000}
+              onChange={e => onUpdateSettings({ botSims: Math.max(1, Math.min(10_000, Number(e.target.value))) })}
+            />
+            {settings.botPolicy === 'nn' && (
+              <>
+                <span className="text-xs text-gray-500">top-K</span>
+                <input
+                  type="number"
+                  className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
+                  value={settings.botRootTopK}
+                  min={1}
+                  max={500}
+                  onChange={e => onUpdateSettings({ botRootTopK: Math.max(1, Math.min(500, Number(e.target.value))) })}
+                />
+              </>
+            )}
           </div>
         </div>
 
@@ -727,25 +759,55 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
 
         {/* Coach mode — only relevant when coach is on */}
         {settings.coachEnabled && (
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-400">Coach mode</span>
-            <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-              {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(m => (
-                <button
-                  key={m}
-                  onClick={() => onUpdateSettings({ coachMode: m })}
-                  className={[
-                    'px-3 py-1 transition-colors',
-                    settings.coachMode === m
-                      ? 'bg-indigo-700 text-white'
-                      : 'bg-gray-800 text-gray-500 hover:text-gray-300',
-                  ].join(' ')}
-                >
-                  {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : m === 'royalty-nn' ? 'Royalty NN' : 'Heuristic'}
-                </button>
-              ))}
+          <>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-400">Coach mode</span>
+              <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
+                {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => onUpdateSettings({ coachMode: m, coachSims: DEFAULT_COACH_SIMS_FOR[m] })}
+                    className={[
+                      'px-3 py-1 transition-colors',
+                      settings.coachMode === m
+                        ? 'bg-indigo-700 text-white'
+                        : 'bg-gray-800 text-gray-500 hover:text-gray-300',
+                    ].join(' ')}
+                  >
+                    {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : m === 'royalty-nn' ? 'Royalty NN' : 'Heuristic'}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+
+            {/* Coach sims / root top-K */}
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-500">Coach sims</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
+                  value={settings.coachSims}
+                  min={1}
+                  max={settings.coachMode === 'heuristic' ? 200 : 10_000}
+                  onChange={e => onUpdateSettings({ coachSims: Math.max(1, Math.min(settings.coachMode === 'heuristic' ? 200 : 10_000, Number(e.target.value))) })}
+                />
+                {settings.coachMode === 'nn' && (
+                  <>
+                    <span className="text-xs text-gray-500">top-K</span>
+                    <input
+                      type="number"
+                      className="w-16 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
+                      value={settings.coachRootTopK}
+                      min={1}
+                      max={500}
+                      onChange={e => onUpdateSettings({ coachRootTopK: Math.max(1, Math.min(500, Number(e.target.value))) })}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          </>
         )}
       </div>
 

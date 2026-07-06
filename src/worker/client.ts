@@ -110,6 +110,7 @@ export class WorkerClient {
     onDone: (r: ScoredPlacement[]) => void,
     policy?: BotPolicy,
     onError?: () => void,
+    rootTopK?: number,
   ): () => void {
     const id = makeId()
     this.latestGeneration += 1
@@ -137,7 +138,7 @@ export class WorkerClient {
     const req: WorkerRequest = {
       id,
       type: 'GET_EV',
-      payload: { state, totalRollouts: opts.totalRollouts, batchSize: opts.batchSize, seed, policy },
+      payload: { state, totalRollouts: opts.totalRollouts, batchSize: opts.batchSize, seed, policy, rootTopK },
     }
     this.getWorker().postMessage(req)
 
@@ -149,7 +150,7 @@ export class WorkerClient {
     }
   }
 
-  getBotMove(state: InfoState, rollouts: number, seed: number, policy?: BotPolicy): Promise<Placement> {
+  getBotMove(state: InfoState, rollouts: number, seed: number, policy?: BotPolicy, rootTopK?: number): Promise<Placement> {
     const id = makeId()
     return new Promise<Placement>((resolve, reject) => {
       this.handlers.set(id, {
@@ -160,7 +161,7 @@ export class WorkerClient {
       const req: WorkerRequest = {
         id,
         type: 'GET_BOT_MOVE',
-        payload: { state, rollouts, seed, policy },
+        payload: { state, rollouts, seed, policy, rootTopK },
       }
       this.getWorker().postMessage(req)
     })

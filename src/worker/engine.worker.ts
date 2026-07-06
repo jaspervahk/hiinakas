@@ -65,18 +65,19 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
   const msg = event.data
   try {
     if (msg.type === 'GET_EV') {
-      const { state, totalRollouts, batchSize, seed, policy } = msg.payload
+      const { state, totalRollouts, batchSize, seed, policy, rootTopK } = msg.payload
       const rng = makeRNG(seed)
       console.log(`[worker] GET_EV street=${state.street} policy=${policy} hasModel=${!!loadedModel}`)
+      const royaltySims = totalRollouts > 0 ? totalRollouts : ROYALTY_MCTS_SIMS
 
       if (policy === 'royalty-nn' && royaltyNnModel) {
         // Royalty NN MCTS — uses learned royalty value function + domination filter.
-        const results = royaltyNnMctsScoredPlacements(state, royaltyNnModel, ROYALTY_MCTS_SIMS, rng)
+        const results = royaltyNnMctsScoredPlacements(state, royaltyNnModel, royaltySims, rng)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
         self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: results } as WorkerResponse)
       } else if (policy === 'royalty' || policy === 'royalty-nn') {
         // Heuristic royalty MCTS (no NN loaded yet).
-        const results = royaltyMctsScoredPlacements(state, ROYALTY_MCTS_SIMS, rng)
+        const results = royaltyMctsScoredPlacements(state, royaltySims, rng)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
         self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: results } as WorkerResponse)
       } else if (policy === 'heuristic') {
@@ -94,7 +95,12 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: nnResults } as WorkerResponse)
 
         // Step 2: MCTS refinement — depth-2 search averaged over sampled worlds.
-        const mctsResults = mctsScoredPlacements(state, loadedModel, COACH_MCTS_OPTS, rng)
+        const coachOpts: MCTSOptions = {
+          ...COACH_MCTS_OPTS,
+          ...(totalRollouts > 0 ? { nSims: totalRollouts } : {}),
+          ...(rootTopK !== undefined ? { rootTopK } : {}),
+        }
+        const mctsResults = mctsScoredPlacements(state, loadedModel, coachOpts, rng)
         console.log(`[worker] MCTS done: ${mctsResults.length} candidates`)
         self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: mctsResults } as WorkerResponse)
         self.postMessage({ id: msg.id, type: 'EV_DONE',     payload: mctsResults } as WorkerResponse)
@@ -110,7 +116,7 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       }
 
     } else if (msg.type === 'GET_BOT_MOVE') {
-      const { state, rollouts, seed, policy } = msg.payload
+      const { state, rollouts, seed, policy, rootTopK } = msg.payload
       const placement = (policy === 'royalty-nn' && royaltyNnModel)
         ? royaltyNnMctsPickPlacement(state, royaltyNnModel, rollouts || ROYALTY_MCTS_SIMS, makeRNG(seed))
         : (policy === 'royalty' || policy === 'royalty-nn')
@@ -118,7 +124,11 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         : policy === 'heuristic'
         ? getBotMove(state, rollouts, makeRNG(seed))
         : loadedModel
-          ? mctsPickPlacement(state, loadedModel, { ...BOT_MCTS_OPTS, nSims: rollouts || BOT_MCTS_OPTS.nSims }, makeRNG(seed))
+          ? mctsPickPlacement(
+              state, loadedModel,
+              { ...BOT_MCTS_OPTS, nSims: rollouts || BOT_MCTS_OPTS.nSims, ...(rootTopK !== undefined ? { rootTopK } : {}) },
+              makeRNG(seed),
+            )
           : getBotMove(state, rollouts, makeRNG(seed))
       self.postMessage({ id: msg.id, type: 'BOT_MOVE', payload: placement } as WorkerResponse)
 

@@ -104,7 +104,10 @@ export function makeInitialState(): GameState {
     bonusScores: [],
     totalScores: [],
     currentStreetLogs: [],
-    appSettings: { coachEnabled: true, playerCount: 2, botPolicy: 'nn', coachMode: 'nn' },
+    appSettings: {
+      coachEnabled: true, playerCount: 2, botPolicy: 'nn', coachMode: 'nn',
+      botSims: 500, botRootTopK: 35, coachSims: 500, coachRootTopK: 35,
+    },
   }
 }
 

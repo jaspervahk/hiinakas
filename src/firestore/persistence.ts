@@ -120,6 +120,10 @@ export async function loadSettings(): Promise<AppSettings | null> {
         playerCount: data.playerCount,
         botPolicy: data.botPolicy ?? 'nn',
         coachMode: data.coachMode ?? 'nn',
+        botSims: data.botSims ?? 500,
+        botRootTopK: data.botRootTopK ?? 35,
+        coachSims: data.coachSims ?? 500,
+        coachRootTopK: data.coachRootTopK ?? 35,
       }
     }
     return null

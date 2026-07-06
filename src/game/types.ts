@@ -109,4 +109,8 @@ export interface AppSettings {
   playerCount: 2 | 3
   botPolicy: 'nn' | 'royalty' | 'royalty-nn'
   coachMode: CoachMode
+  botSims: number
+  botRootTopK: number     // nn policy only
+  coachSims: number
+  coachRootTopK: number   // nn mode only
 }
