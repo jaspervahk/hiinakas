@@ -5,7 +5,9 @@ import { runMatchHand } from '../engine/matchSimulator'
 import type { MatchHandRecord } from '../engine/matchTypes'
 import { runMC, getBotMove, legalPlacements } from '../engine/mc'
 import type { InfoState, ScoredPlacement } from '../engine/mc'
-import type { WorkerRequest, WorkerResponse } from './types'
+import { bestBonusBoard } from '../engine/bestBonus'
+import { isFoul, royalties } from '../engine/rules'
+import type { WorkerRequest, WorkerResponse, BonusAnalysisResult } from './types'
 import type { NNModel } from '../engine/wasmModel'
 import { createJSModel, createWasmModel } from '../engine/wasmModel'
 import { nnRankCandidates } from '../engine/nnPolicy'
@@ -182,6 +184,31 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       }
 
       self.postMessage({ id: msg.id, type: 'ANALYSIS_DONE', payload: allResults } as WorkerResponse)
+
+    } else if (msg.type === 'ANALYZE_BONUS') {
+      const { positions } = msg.payload
+      const total = positions.length
+      const allResults: BonusAnalysisResult[] = []
+
+      for (let i = 0; i < total; i++) {
+        const { id, cards, numDiscard, actualBoard } = positions[i]!
+        try {
+          const bestBoard = bestBonusBoard(cards, numDiscard)
+          const bestRoyalties = isFoul(bestBoard) ? 0 : royalties(bestBoard)
+          const actualFoul = isFoul(actualBoard)
+          const actualRoyalties = actualFoul ? 0 : royalties(actualBoard)
+          const item: BonusAnalysisResult = {
+            id, bestBoard, bestRoyalties, actualRoyalties, actualFoul,
+            evLost: bestRoyalties - actualRoyalties,
+          }
+          allResults.push(item)
+          self.postMessage({ id: msg.id, type: 'BONUS_PROGRESS', payload: { done: i + 1, total, item } } as WorkerResponse)
+        } catch (err) {
+          console.error(`[worker] ANALYZE_BONUS: position ${id} failed`, err)
+        }
+      }
+
+      self.postMessage({ id: msg.id, type: 'BONUS_DONE', payload: allResults } as WorkerResponse)
 
     } else if (msg.type === 'RUN_MATCH') {
       const { totalHands, baseSeed, botA, botB } = msg.payload

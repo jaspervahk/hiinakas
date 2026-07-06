@@ -1,8 +1,9 @@
 import type { InfoState, MCOptions, ScoredPlacement } from '../engine/mc'
 import type { Placement } from '../engine/placement'
-import type { WorkerRequest, WorkerResponse, BotPolicy, MatchHandRecord, BotSpec } from './types'
+import type { Card, Board } from '../engine/types'
+import type { WorkerRequest, WorkerResponse, BotPolicy, MatchHandRecord, BotSpec, BonusAnalysisResult } from './types'
 import type { BotKind } from '../engine/matchTypes'
-export type { BotPolicy, MatchHandRecord, BotSpec, BotKind }
+export type { BotPolicy, MatchHandRecord, BotSpec, BotKind, BonusAnalysisResult }
 
 // Available model variants served via Firebase Hosting.
 export const MODEL_URLS = {
@@ -31,6 +32,7 @@ type Handler =
   | { kind: 'model'; resolve: (ok: boolean) => void }
   | { kind: 'analysis'; resolve: (r: AnalysisResult[]) => void; onProgress?: (done: number, total: number, item: AnalysisResult) => void }
   | { kind: 'match'; resolve: (r: MatchHandRecord[]) => void; onProgress?: (done: number, total: number, batch: MatchHandRecord[]) => void; onError: () => void }
+  | { kind: 'bonus'; resolve: (r: BonusAnalysisResult[]) => void; onProgress?: (done: number, total: number, item: BonusAnalysisResult) => void }
 
 export class WorkerClient {
   private worker: Worker | null = null
@@ -49,6 +51,7 @@ export class WorkerClient {
         if (h.kind === 'bot') h.reject('Worker error')
         else if (h.kind === 'model') h.resolve(false)
         else if (h.kind === 'analysis') h.resolve([])
+        else if (h.kind === 'bonus') h.resolve([])
         else h.onError('Worker error')
       }
       this.handlers.clear()
@@ -91,10 +94,18 @@ export class WorkerClient {
         if (handler.kind === 'match') handler.resolve(msg.payload.hands)
         this.handlers.delete(msg.id)
         return
+      case 'BONUS_PROGRESS':
+        if (handler.kind === 'bonus') handler.onProgress?.(msg.payload.done, msg.payload.total, msg.payload.item)
+        return
+      case 'BONUS_DONE':
+        if (handler.kind === 'bonus') handler.resolve(msg.payload)
+        this.handlers.delete(msg.id)
+        return
       case 'ERROR':
         if (handler.kind === 'bot') handler.reject(msg.payload)
         else if (handler.kind === 'model') handler.resolve(false)
         else if (handler.kind === 'analysis') handler.resolve([])
+        else if (handler.kind === 'bonus') handler.resolve([])
         else if (handler.kind === 'match') { handler.onError(); handler.resolve([]) }
         else handler.onError(msg.payload)
         this.handlers.delete(msg.id)
@@ -179,6 +190,18 @@ export class WorkerClient {
     return new Promise((resolve) => {
       this.handlers.set(id, { kind: 'analysis', resolve, onProgress })
       const req: WorkerRequest = { id, type: 'ANALYZE_POSITIONS', payload: { positions, rollouts, seed, policy, rootTopK } }
+      this.getWorker().postMessage(req)
+    })
+  }
+
+  analyzeBonusPositions(
+    positions: Array<{ id: string; cards: Card[]; numDiscard: number; actualBoard: Board }>,
+    onProgress?: (done: number, total: number, item: BonusAnalysisResult) => void,
+  ): Promise<BonusAnalysisResult[]> {
+    const id = makeId()
+    return new Promise((resolve) => {
+      this.handlers.set(id, { kind: 'bonus', resolve, onProgress })
+      const req: WorkerRequest = { id, type: 'ANALYZE_BONUS', payload: { positions } }
       this.getWorker().postMessage(req)
     })
   }

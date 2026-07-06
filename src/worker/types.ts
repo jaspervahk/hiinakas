@@ -1,5 +1,6 @@
 import type { InfoState, ScoredPlacement } from '../engine/mc'
 import type { MatchHandRecord, BotSpec } from '../engine/matchTypes'
+import type { Card, Board } from '../engine/types'
 export type { ScoredPlacement, MatchHandRecord, BotSpec }
 
 export type BotPolicy = 'nn' | 'royalty' | 'royalty-nn' | 'heuristic'
@@ -61,6 +62,15 @@ export interface WorkerRequestRunMatch {
   }
 }
 
+// One-shot bonus-round board analysis — no streets, no opponents, solved via
+// exhaustive search (bestBonusBoard), so it's a separate request type from
+// ANALYZE_POSITIONS's street-based InfoState candidates.
+export interface WorkerRequestAnalyzeBonus {
+  id: string
+  type: 'ANALYZE_BONUS'
+  payload: { positions: Array<{ id: string; cards: Card[]; numDiscard: number; actualBoard: Board }> }
+}
+
 export type WorkerRequest =
   | WorkerRequestGetEV
   | WorkerRequestGetBotMove
@@ -68,6 +78,7 @@ export type WorkerRequest =
   | WorkerRequestLoadRoyaltyModel
   | WorkerRequestAnalyzePositions
   | WorkerRequestRunMatch
+  | WorkerRequestAnalyzeBonus
 
 export interface WorkerResponseProgress {
   id: string
@@ -124,6 +135,27 @@ export interface WorkerResponseMatchDone {
   payload: { hands: MatchHandRecord[] }
 }
 
+export interface BonusAnalysisResult {
+  id: string
+  bestBoard: Board
+  bestRoyalties: number
+  actualRoyalties: number
+  actualFoul: boolean
+  evLost: number
+}
+
+export interface WorkerResponseBonusProgress {
+  id: string
+  type: 'BONUS_PROGRESS'
+  payload: { done: number; total: number; item: BonusAnalysisResult }
+}
+
+export interface WorkerResponseBonusDone {
+  id: string
+  type: 'BONUS_DONE'
+  payload: BonusAnalysisResult[]
+}
+
 export type WorkerResponse =
   | WorkerResponseProgress
   | WorkerResponseDone
@@ -134,3 +166,5 @@ export type WorkerResponse =
   | WorkerResponseAnalysisProgress
   | WorkerResponseMatchProgress
   | WorkerResponseMatchDone
+  | WorkerResponseBonusProgress
+  | WorkerResponseBonusDone

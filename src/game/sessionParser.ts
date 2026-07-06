@@ -1,8 +1,9 @@
 // Parse pokker6 JSON export into engine-compatible structures for EV analysis.
-// Supports 2- and 3-player games. 'bonus_submit' is used only as the revealed
-// opponent board for side-game decisions, never analysed directly.
+// Supports 2- and 3-player games. 'bonus_submit' (the one-shot bonus-round
+// board) is parsed into BonusDecisionPoints and analysed separately from the
+// street-based DecisionPoints, since it has no streets or opponents.
 
-import type { Card, Rank, Suit, PartialBoard } from '../engine/types'
+import type { Card, Rank, Suit, PartialBoard, Board } from '../engine/types'
 import type { InfoState } from '../engine/mc'
 import type { Placement } from '../engine/placement'
 
@@ -92,6 +93,21 @@ export interface GameSummary {
   busts: Record<string, boolean>     // fouled? per player
   runs: Record<string, number>       // cumulative running totals
   normalBreakdown: P6NormalBreakdown[] | null
+}
+
+// A one-shot bonus-round board submission (player triggered QQ/KK/AA-or-trips
+// on top and was dealt 13/14/15 cards to place in a single go). Unlike normal
+// DecisionPoints, this has no streets or opponents — it's a solved
+// combinatorial problem, so it's analysed separately via bestBonusBoard.
+export interface BonusDecisionPoint {
+  id: string
+  gameId: string
+  gameTime: string
+  username: string
+  uid: string
+  numDiscard: number   // 0 (QQ) / 1 (KK) / 2 (AA or trips)
+  cards: Card[]        // all dealt cards
+  actualBoard: Board   // board as actually played
 }
 
 // ── Card conversion ──────────────────────────────────────────────────────────
@@ -204,9 +220,9 @@ function parseMovesToDecisions(
 export function parseSessionGames(
   games: P6Game[],
   playerGroups: string[][],
-): { decisions: DecisionPoint[]; summaries: GameSummary[]; allPlayers: string[] } {
+): { decisions: DecisionPoint[]; bonusDecisions: BonusDecisionPoint[]; summaries: GameSummary[]; allPlayers: string[] } {
   if (playerGroups.length === 0 || playerGroups.every(g => g.length < 2)) {
-    return { decisions: [], summaries: [], allPlayers: [] }
+    return { decisions: [], bonusDecisions: [], summaries: [], allPlayers: [] }
   }
 
   // Build an exact-match key for each group.
@@ -226,6 +242,7 @@ export function parseSessionGames(
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 
   const decisions: DecisionPoint[] = []
+  const bonusDecisions: BonusDecisionPoint[] = []
   const summaries: GameSummary[] = []
   const runs: Record<string, number> = {}
   for (const n of allPlayers) runs[n] = 0
@@ -338,9 +355,38 @@ export function parseSessionGames(
         )
       )
     }
+
+    // Bonus-round board submission — the one-shot 13/14/15-card board played
+    // by whoever triggered the bonus. No streets, no opponents; analysed
+    // separately against bestBonusBoard rather than through the MCTS pipeline.
+    for (const [pname, data] of playerData) {
+      const submit = moves.find(
+        m => m.uid === data.uid && m.segment === 'bonus_submit' && m.top && m.middle && m.bottom,
+      )
+      if (!submit) continue
+
+      const actualBoard: Board = {
+        top: (submit.top ?? []).map(toCard),
+        middle: (submit.middle ?? []).map(toCard),
+        bottom: (submit.bottom ?? []).map(toCard),
+      }
+      const discards = (submit.discards ?? []).map(toCard)
+      const cards = [...actualBoard.top, ...actualBoard.middle, ...actualBoard.bottom, ...discards]
+
+      bonusDecisions.push({
+        id: `${game.gameId}:${data.uid}:bonus_submit`,
+        gameId: game.gameId,
+        gameTime: game.createdAt,
+        username: pname,
+        uid: data.uid,
+        numDiscard: discards.length,
+        cards,
+        actualBoard,
+      })
+    }
   }
 
-  return { decisions, summaries, allPlayers }
+  return { decisions, bonusDecisions, summaries, allPlayers }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

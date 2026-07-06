@@ -13,10 +13,11 @@ import {
   matchesActual,
   type P6Export,
   type DecisionPoint,
+  type BonusDecisionPoint,
   type GameSummary,
 } from '../game/sessionParser'
 import { workerClient, MODEL_URLS } from '../worker/client'
-import type { BotPolicy } from '../worker/client'
+import type { BotPolicy, BonusAnalysisResult } from '../worker/client'
 
 const DEFAULT_ROOT_TOP_K = 35
 
@@ -506,6 +507,77 @@ function BlunderCard({ d, dec, rank, gameNumber, onJumpToGame }: {
   )
 }
 
+// ── Bonus round card ───────────────────────────────────────────────────────────
+
+function BonusCard({ d, result, rank, gameNumber, onJumpToGame }: {
+  d: BonusDecisionPoint; result?: BonusAnalysisResult; rank: number
+  gameNumber?: number; onJumpToGame?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const isOptimal = result != null && result.evLost < 0.05
+
+  return (
+    <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+      <div
+        className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-800/30 transition-colors"
+        onClick={() => setOpen(o => !o)}
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-gray-500 text-xs">#{rank}</span>
+          {gameNumber != null && (
+            <button
+              onClick={e => { e.stopPropagation(); onJumpToGame?.() }}
+              className="text-indigo-400 hover:text-indigo-300 hover:underline text-xs shrink-0"
+              title="Jump to this game in the Game Log"
+            >
+              Game #{gameNumber}
+            </button>
+          )}
+          <span className="text-gray-300 text-xs font-medium">
+            {new Date(d.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {' · '}{13 + d.numDiscard} cards
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {!result ? (
+            <span className="text-gray-600 text-xs">—</span>
+          ) : result.actualFoul ? (
+            <span className="text-red-400 text-sm font-semibold">fouled</span>
+          ) : (
+            <span className={`text-sm font-semibold ${isOptimal ? 'text-emerald-400' : result.evLost > 5 ? 'text-red-400' : 'text-amber-400'}`}>
+              {isOptimal ? 'optimal' : `-${result.evLost.toFixed(1)} roy`}
+            </span>
+          )}
+          <span className="text-gray-600 text-[10px]">{open ? '▲' : '▼'}</span>
+        </div>
+      </div>
+
+      {open && (
+        <div className="border-t border-gray-800 px-3 py-3 bg-gray-950/60 space-y-3">
+          <div>
+            <p className="text-gray-600 text-[10px] uppercase mb-1">Dealt</p>
+            <span className="inline-flex flex-wrap gap-0.5">
+              {d.cards.map((c, i) => <CardChip key={i} c={c} />)}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-gray-600 text-[10px] uppercase mb-1">Played</p>
+              <BoardMini board={d.actualBoard} />
+            </div>
+            {result && (
+              <div>
+                <p className="text-emerald-600 text-[10px] uppercase mb-1">Best</p>
+                <BoardMini board={result.bestBoard} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Summary stat card ─────────────────────────────────────────────────────────
 
 function StatCard({ label, value, sub, color }: {
@@ -662,6 +734,9 @@ function SessionTabInner() {
   const [sims, setSims] = useState(DEFAULT_SIMS_FOR.nn)
   const [rootTopK, setRootTopK] = useState(DEFAULT_ROOT_TOP_K)
   const [selectedGame, setSelectedGame] = useState<string | null>(null)
+  const [bonusAnalyzing, setBonusAnalyzing] = useState(false)
+  const [bonusAnalyzeProgress, setBonusAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
+  const [bonusAnalyzed, setBonusAnalyzed] = useState<Map<string, BonusAnalysisResult>>(new Map())
   const fileRef = useRef<HTMLInputElement>(null)
   const gameLogRef = useRef<HTMLDivElement>(null)
   const jumpToGame = useCallback((gameId: string) => {
@@ -672,6 +747,7 @@ function SessionTabInner() {
   const handleFile = useCallback((file: File) => {
     setError(''); setAnalyzed([]); setNoModel(false)
     setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setSelectedGame(null)
+    setBonusAnalyzed(new Map()); setBonusAnalyzeProgress(null)
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -698,7 +774,10 @@ function SessionTabInner() {
   }, [handleFile])
 
   const parseResult = useMemo(() => {
-    const empty = { decisions: [] as DecisionPoint[], summaries: [] as GameSummary[], allPlayers: [] as string[], parseError: '' }
+    const empty = {
+      decisions: [] as DecisionPoint[], bonusDecisions: [] as BonusDecisionPoint[],
+      summaries: [] as GameSummary[], allPlayers: [] as string[], parseError: '',
+    }
     if (!rawData || !activeGroups || activeGroups.length === 0) return empty
     try {
       const result = parseSessionGames(rawData.games, activeGroups)
@@ -707,7 +786,7 @@ function SessionTabInner() {
       return { ...empty, parseError: e instanceof Error ? e.message : String(e) }
     }
   }, [rawData, activeGroups])
-  const { decisions, summaries, allPlayers, parseError } = parseResult
+  const { decisions, bonusDecisions, summaries, allPlayers, parseError } = parseResult
 
   const groups = useMemo(() => rawData ? detectPlayerGroups(rawData.games) : [], [rawData])
 
@@ -807,6 +886,25 @@ function SessionTabInner() {
     }
   }, [decisions, analysisMode, sims, rootTopK])
 
+  const runBonusAnalysis = useCallback(async () => {
+    if (bonusDecisions.length === 0) return
+    setBonusAnalyzing(true); setBonusAnalyzeProgress(null)
+    try {
+      const positions = bonusDecisions.map(d => ({
+        id: d.id, cards: d.cards, numDiscard: d.numDiscard, actualBoard: d.actualBoard,
+      }))
+      const partialMap = new Map<string, BonusAnalysisResult>()
+      const results = await workerClient.analyzeBonusPositions(positions, (done, total, item) => {
+        partialMap.set(item.id, item)
+        setBonusAnalyzeProgress({ done, total })
+        setBonusAnalyzed(new Map(partialMap))
+      })
+      setBonusAnalyzed(new Map(results.map(r => [r.id, r])))
+    } finally {
+      setBonusAnalyzing(false); setBonusAnalyzeProgress(null)
+    }
+  }, [bonusDecisions])
+
   // Game log row number (1-based, matching the Game Log table's # column) so
   // mistakes can be cross-referenced to the full board state for all players.
   const gameNumberByGameId = useMemo(() => {
@@ -832,6 +930,17 @@ function SessionTabInner() {
     }
     return map
   }, [analyzed, activeGroups, allPlayers])
+
+  const bonusByPlayer = useMemo(() => {
+    if (!activeGroups || allPlayers.length === 0) return new Map<string, BonusDecisionPoint[]>()
+    const map = new Map<string, BonusDecisionPoint[]>()
+    for (const p of allPlayers) {
+      const list = bonusDecisions.filter(d => d.username === p)
+        .sort((a, b) => (bonusAnalyzed.get(b.id)?.evLost ?? 0) - (bonusAnalyzed.get(a.id)?.evLost ?? 0))
+      map.set(p, list)
+    }
+    return map
+  }, [bonusDecisions, allPlayers, activeGroups, bonusAnalyzed])
 
   // ── No file ───────────────────────────────────────────────────────────────
 
@@ -1118,16 +1227,32 @@ function SessionTabInner() {
           <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
             {players.map((p, pi) => {
               const blist = blundersByPlayer.get(p) ?? []
+              const normalList = blist.filter(d => d.segment === 'normal_play')
+              const sideList = blist.filter(d => d.segment === 'bonus_play')
               return (
-                <div key={p} className="space-y-2">
-                  <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — top mistakes</p>
-                  {blist.slice(0, 5).map((d, i) => (
-                    <BlunderCard
-                      key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1}
-                      gameNumber={gameNumberByGameId.get(d.gameId)}
-                      onJumpToGame={() => jumpToGame(d.gameId)}
-                    />
-                  ))}
+                <div key={p} className="space-y-3">
+                  <div className="space-y-2">
+                    <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — top mistakes</p>
+                    {normalList.slice(0, 5).map((d, i) => (
+                      <BlunderCard
+                        key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1}
+                        gameNumber={gameNumberByGameId.get(d.gameId)}
+                        onJumpToGame={() => jumpToGame(d.gameId)}
+                      />
+                    ))}
+                  </div>
+                  {sideList.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-purple-400 text-xs font-medium uppercase tracking-wider">{p} — side-game mistakes</p>
+                      {sideList.slice(0, 5).map((d, i) => (
+                        <BlunderCard
+                          key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1}
+                          gameNumber={gameNumberByGameId.get(d.gameId)}
+                          onJumpToGame={() => jumpToGame(d.gameId)}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -1137,6 +1262,53 @@ function SessionTabInner() {
 
       {parseError && (
         <p className="text-red-400 text-xs bg-red-900/20 rounded px-3 py-2">Parse error: {parseError}</p>
+      )}
+
+      {/* Bonus rounds — the one-shot 13/14/15-card board, solved exhaustively */}
+      {bonusDecisions.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-gray-300 text-sm font-medium">Bonus Rounds</h3>
+            <div className="flex items-center gap-2">
+              {bonusAnalyzing && bonusAnalyzeProgress && (
+                <span className="text-xs text-gray-400">
+                  {bonusAnalyzeProgress.done}/{bonusAnalyzeProgress.total} boards…
+                </span>
+              )}
+              {!bonusAnalyzing && bonusAnalyzed.size === 0 && (
+                <button onClick={runBonusAnalysis}
+                  className="px-3 py-1 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                  Run Bonus Analysis ({bonusDecisions.length})
+                </button>
+              )}
+              {!bonusAnalyzing && bonusAnalyzed.size > 0 && (
+                <button onClick={runBonusAnalysis}
+                  className="px-3 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+                  Rerun
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+            {players.map((p, pi) => {
+              const blist = bonusByPlayer.get(p) ?? []
+              if (blist.length === 0) return null
+              return (
+                <div key={p} className="space-y-2">
+                  <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — bonus boards</p>
+                  {blist.map((d, i) => (
+                    <BonusCard
+                      key={d.id} d={d} result={bonusAnalyzed.get(d.id)} rank={i + 1}
+                      gameNumber={gameNumberByGameId.get(d.gameId)}
+                      onJumpToGame={() => jumpToGame(d.gameId)}
+                    />
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+        </div>
       )}
 
       {/* Game log */}
