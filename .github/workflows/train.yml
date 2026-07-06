@@ -176,6 +176,17 @@ jobs:
             --epochs "$EPOCHS" \
             --batch 512
 
+      # This job can run ~90+ min after the workflow was triggered (waits on
+      # the selfplay matrix). Without this, "Build app" below would compile
+      # whatever main looked like at checkout — stale by the time we deploy —
+      # and silently revert any manual deploy that landed in between. Always
+      # build from the current tip of main so training/deploy races with
+      # manual pushes can never clobber newer app code.
+      - name: Sync app code to latest main before building
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+
       - name: Build app
         env:
           VITE_FIREBASE_API_KEY: AIzaSyAZJ6kZHk--spDOJg3YqYzukftMXr0JYdA
