@@ -46,7 +46,7 @@ const MAX_SIMS_FOR: Record<BotKind, number> = {
   'nn-mcts': 10_000,
   'royalty-mcts': 10_000,
   'royalty-nn': 10_000,
-  'heuristic': 200,
+  'heuristic': 500,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

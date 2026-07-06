@@ -33,7 +33,7 @@ const MAX_SIMS_FOR: Record<BotPolicy, number> = {
   nn: 10_000,
   royalty: 10_000,
   'royalty-nn': 10_000,
-  heuristic: 200,
+  heuristic: 500,
 }
 
 // ── Error boundary ────────────────────────────────────────────────────────────

@@ -789,8 +789,8 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                   className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
                   value={settings.coachSims}
                   min={1}
-                  max={settings.coachMode === 'heuristic' ? 200 : 10_000}
-                  onChange={e => onUpdateSettings({ coachSims: Math.max(1, Math.min(settings.coachMode === 'heuristic' ? 200 : 10_000, Number(e.target.value))) })}
+                  max={settings.coachMode === 'heuristic' ? 500 : 10_000}
+                  onChange={e => onUpdateSettings({ coachSims: Math.max(1, Math.min(settings.coachMode === 'heuristic' ? 500 : 10_000, Number(e.target.value))) })}
                 />
                 {settings.coachMode === 'nn' && (
                   <>
