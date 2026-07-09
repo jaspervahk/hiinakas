@@ -87,22 +87,59 @@ export function bonusDealCount(qualifier: BonusQualifier): number {
   }
 }
 
-// Expected net royalties from optimal bonus-board play, averaged over 5000
-// random deals, minus the side-game opponent's expected score. Lets rollout-
-// style evaluators value a completed top-row qualifier's bonus-round upside
-// without actually simulating the bonus deal.
+// Expected net pairwise score (scorePair-equivalent: row-score + royalty
+// differential) from optimal bonus-board play, computed via exact Monte
+// Carlo simulation (scripts/compute-bonus-ev.ts, shared-deck trials, 200-4000
+// per cell depending on cost) against every possible opponent scenario.
 //
-// QQ  (13 cards, 0 discards): avg_royalties=9.0  -> net=7.0
-// KK  (14 cards, 1 discard):  avg_royalties=12.7 -> net=10.7
-// AA+ (15 cards, 2 discards): avg_royalties=19.2 -> net=17.2
-export const BONUS_EV_QQ       = 7.0
-export const BONUS_EV_KK       = 10.7
-export const BONUS_EV_AA_TRIPS = 17.2
+// The bonus round is scored pairwise against EVERY active opponent, exactly
+// like a normal round (docs/01_RULES_AND_SCORING.md section 8), so a flat
+// single-opponent constant undervalues the bonus round in 3-player games
+// (2 opponents) relative to 2-player (1 opponent) — and an opponent who
+// independently also qualifies for their own bonus board is worth a very
+// different amount than one playing the (much weaker-royalty) side game.
+// BONUS_NET[actorTier][oppScenario] is the expected net score for ONE such
+// pairwise matchup; summing over however many real opponents exist (using
+// each one's ACTUAL simulated final-board tier) gives an EV that is
+// automatically correct for both 2p and 3p and automatically accounts for
+// opponents who are about to trigger their own bonus round.
+//
+// Diagonal cells (actor tier === opponent tier) are exactly 0 by symmetry
+// (two boards drawn i.i.d. from the same distribution ⇒ E[net] = E[-net] = 0).
+// Off-diagonal cells are symmetrized from both simulated directions
+// (net(A,B) = -net(B,A) exactly, for any specific pair of boards, so
+// averaging both directions' independent samples halves the estimation
+// variance for free). BASE (non-qualifying opponent playing the 17-card
+// side game) has no such counterpart and uses the raw simulated value.
+export type BonusOppScenario = 'BASE' | BonusQualifier
 
-export function bonusGameValue(board: Board): number {
-  const q = bonusTrigger(board)
-  if (q === 'QQ')          return BONUS_EV_QQ
-  if (q === 'KK')          return BONUS_EV_KK
-  if (q === 'AA_OR_TRIPS') return BONUS_EV_AA_TRIPS
-  return 0
+export const BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>> = {
+  QQ:          { BASE: 13.97, QQ: 0,     KK: -5.44,  AA_OR_TRIPS: -9.24 },
+  KK:          { BASE: 17.77, QQ: 5.44,  KK: 0,      AA_OR_TRIPS: -4.91 },
+  AA_OR_TRIPS: { BASE: 21.40, QQ: 9.24,  KK: 4.91,   AA_OR_TRIPS: 0     },
+}
+
+// Deprecated: the single-opponent ("BASE") net values, kept for callers
+// (royaltyMcts.ts's solitaire-style objective) that don't model opponents.
+export const BONUS_EV_QQ       = BONUS_NET.QQ.BASE
+export const BONUS_EV_KK       = BONUS_NET.KK.BASE
+export const BONUS_EV_AA_TRIPS = BONUS_NET.AA_OR_TRIPS.BASE
+
+// Expected bonus-round upside for `actorBoard`'s top-row qualifier, summed
+// over each entry in `opponentBoards` (their ACTUAL simulated final board —
+// each one's own qualifier tier, if any, is looked up via bonusTrigger so a
+// co-qualifying opponent is valued correctly instead of assumed generic).
+// With no opponent boards supplied, falls back to a single BASE opponent
+// (the old default single-opponent behavior, for callers that don't model
+// opponents at all).
+export function bonusGameValue(actorBoard: Board, opponentBoards: readonly Board[] = []): number {
+  const q = bonusTrigger(actorBoard)
+  if (!q) return 0
+  if (opponentBoards.length === 0) return BONUS_NET[q].BASE
+  let total = 0
+  for (const oppBoard of opponentBoards) {
+    const oppQ = bonusTrigger(oppBoard)
+    total += BONUS_NET[q][oppQ ?? 'BASE']
+  }
+  return total
 }

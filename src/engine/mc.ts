@@ -138,8 +138,11 @@ function rollout(
   const allBoards = [actorBrd as Board, ...(oppBrds as Board[])]
   const nets = scoreTable(allBoards)
   // scoreTable only covers the normal 5-street game; add the actor's expected
-  // bonus-round upside (0 if fouled or non-qualifying) same as royaltyMcts.ts.
-  return (nets[0] ?? 0) + (includeBonusEV ? bonusGameValue(actorBrd as Board) : 0)
+  // bonus-round upside (0 if fouled or non-qualifying). Passing the actual
+  // simulated opponent boards lets bonusGameValue sum one term per real
+  // opponent (correct for both 2p and 3p) and value a co-qualifying
+  // opponent's own bonus board correctly instead of assuming a generic one.
+  return (nets[0] ?? 0) + (includeBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[]) : 0)
 }
 
 // ── EV computation for a single placement ─────────────────────────────────

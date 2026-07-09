@@ -5,7 +5,8 @@ export { HandCategory } from './types'
 
 export { Deck, FULL_DECK, RANKS, SUITS, parseCard, parseCards } from './deck'
 export { evaluate3, evaluate5, compareHandRank } from './evaluate'
-export { isFoul, royalties, bonusTrigger, bonusDealCount, bonusGameValue, BONUS_EV_QQ, BONUS_EV_KK, BONUS_EV_AA_TRIPS } from './rules'
+export type { BonusOppScenario } from './rules'
+export { isFoul, royalties, bonusTrigger, bonusDealCount, bonusGameValue, BONUS_NET, BONUS_EV_QQ, BONUS_EV_KK, BONUS_EV_AA_TRIPS } from './rules'
 export { scorePair, scoreTable } from './scoring'
 
 // P2
