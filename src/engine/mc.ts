@@ -92,6 +92,7 @@ function rollout(
   actorBoardAfterPlacement: PartialBoard,
   state: InfoState,
   shuffledLiveDeck: Card[],
+  includeBonusEV = true,
 ): number {
   let di = 0 // deck index into shuffledLiveDeck
   let actorBrd = actorBoardAfterPlacement
@@ -138,7 +139,7 @@ function rollout(
   const nets = scoreTable(allBoards)
   // scoreTable only covers the normal 5-street game; add the actor's expected
   // bonus-round upside (0 if fouled or non-qualifying) same as royaltyMcts.ts.
-  return (nets[0] ?? 0) + bonusGameValue(actorBrd as Board)
+  return (nets[0] ?? 0) + (includeBonusEV ? bonusGameValue(actorBrd as Board) : 0)
 }
 
 // ── EV computation for a single placement ─────────────────────────────────
@@ -223,6 +224,7 @@ export function getBotMove(
   state: InfoState,
   rollouts: number,
   rng: RNG,
+  includeBonusEV = true,
 ): Placement {
   const candidates = legalPlacements(state.board, state.hand, state.street)
   if (candidates.length === 0) throw new Error('No legal placements')
@@ -235,7 +237,7 @@ export function getBotMove(
   for (let r = 0; r < rollouts; r++) {
     const shuffled = fisherYates(liveDeck, rng)
     for (let pi = 0; pi < candidates.length; pi++) {
-      sums[pi] += rollout(boardsAfter[pi]!, state, shuffled)
+      sums[pi] += rollout(boardsAfter[pi]!, state, shuffled, includeBonusEV)
     }
   }
 

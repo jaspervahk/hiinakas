@@ -23,6 +23,7 @@ import { createJSModel, createWasmModel } from '../src/engine/wasmModel'
 import type { NNModel } from '../src/engine/wasmModel'
 import { nnPickPlacement } from '../src/engine/nnPolicy'
 import { mctsPickPlacement } from '../src/engine/mcts'
+import { getBotMove } from '../src/engine/mc'
 import { initSync, MlpModel } from '../src/engine/wasm/ofc_nn.js'
 
 // ── WASM init ─────────────────────────────────────────────────────────────────
@@ -60,6 +61,17 @@ const MODEL_PATH   = getArg('model', 'models/policy.bin')
 // MCTS actually explores flush draws and scoring top pairs, not just the NN's
 // depth-1 ranking. Lower values (≤100) effectively collapse to NN depth-1 at K=35.
 const MCTS_SIMS    = parseInt(getArg('mcts-sims', '0'), 10)
+// Heuristic MC rollouts per decision for BOTH seats (0 = disabled). Takes
+// priority over the NN/MCTS policy below — used to distill a strong,
+// NN-free teacher's self-play outcomes into the value net as a warm-start,
+// since heuristicPolicy (the no-model fallback below) is a cheap one-shot
+// heuristic with no rollouts, much weaker than getBotMove's N-rollout search.
+const HEURISTIC_MC_SIMS = parseInt(getArg('heuristic-mc-sims', '0'), 10)
+// Diagnostic flag: exclude bonusGameValue from the teacher's rollout scoring.
+// Hypothesis being tested: with only HEURISTIC_MC_SIMS rollouts, the large
+// (+7..+17) bonus-EV term may make the teacher gamble on top-heavy lines that
+// sometimes foul, producing training data the value net learns badly from.
+const NO_BONUS_EV = args.includes('--no-bonus-ev')
 
 // ── Seeded RNG ────────────────────────────────────────────────────────────────
 
@@ -92,8 +104,10 @@ const SAMPLE_BYTES = (ENCODE_DIM + 1) * 4
 const outDir = path.dirname(OUT_PATH)
 if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
 
-// Pre-allocate a large write buffer (flush every 500 games).
-const FLUSH_EVERY  = 500
+// Pre-allocate a write buffer, flushed every FLUSH_EVERY games (configurable —
+// long unattended runs should flush often so a kill/crash only loses a few
+// minutes of samples instead of the whole buffer).
+const FLUSH_EVERY  = parseInt(getArg('flush-every', '500'), 10)
 const BUF_SAMPLES  = FLUSH_EVERY * PLAYER_COUNT * 5  // 5 decisions per player per game
 const writeBuf = Buffer.allocUnsafe(BUF_SAMPLES * SAMPLE_BYTES)
 let bufOffset = 0
@@ -135,9 +149,12 @@ console.log(`Self-play: ${NUM_GAMES} games × ${PLAYER_COUNT} players → ${OUT_
 console.log(`Feature dim: ${ENCODE_DIM}, seed: ${SEED}`)
 
 // Load NN policy if a trained model is available; otherwise fall back to heuristic.
+// Skipped entirely in heuristic-mc mode — that path never touches the model.
 let loadedModel: NNModel | null = null
 let basePolicy: SimPolicy = heuristicPolicy
-if (fs.existsSync(MODEL_PATH)) {
+if (HEURISTIC_MC_SIMS > 0) {
+  console.log(`Policy: Heuristic MC (${HEURISTIC_MC_SIMS} rollouts/decision, both seats, bonusEV=${!NO_BONUS_EV}) — distillation teacher, no model used`)
+} else if (fs.existsSync(MODEL_PATH)) {
   try {
     const buf = fs.readFileSync(MODEL_PATH)
     const modelBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
@@ -163,10 +180,15 @@ const t0 = Date.now()
 for (let g = 0; g < NUM_GAMES; g++) {
   const gameSeed = (rng() * 0x7fffffff) | 0
 
-  // When MCTS is enabled, create a per-game policy closure capturing a fresh RNG.
-  // The RNG is seeded independently from the deck so that MCTS search decisions
-  // are reproducible given the same SEED argument but vary across games.
-  const policy: SimPolicy = (MCTS_SIMS > 0 && loadedModel)
+  // When MCTS/heuristic-MC is enabled, create a per-game policy closure capturing
+  // a fresh RNG. The RNG is seeded independently from the deck so that search
+  // decisions are reproducible given the same SEED argument but vary across games.
+  const policy: SimPolicy = HEURISTIC_MC_SIMS > 0
+    ? (() => {
+        const hmcRng = mulberry32((gameSeed ^ 0xB4C3A2D1) >>> 0)
+        return (info: Parameters<SimPolicy>[0]) => getBotMove(info, HEURISTIC_MC_SIMS, hmcRng, !NO_BONUS_EV)
+      })()
+    : (MCTS_SIMS > 0 && loadedModel)
     ? (() => {
         const mctsRng = mulberry32((gameSeed ^ 0xA5A5A5A5) >>> 0)
         const m = loadedModel!

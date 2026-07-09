@@ -154,7 +154,14 @@ def train(args: argparse.Namespace) -> None:
     print(f'Total: {len(x_np):,} samples  (label range [{y_np.min():.1f}, {y_np.max():.1f}])')
 
     # Normalise labels to roughly [-1, 1] for stable training.
-    y_scale = float(np.abs(y_np).max()) or 1.0
+    # Using the true max is fragile: heavy-tailed labels (e.g. rare bonus-round
+    # jackpots) can set a scale far larger than the bulk of the distribution,
+    # compressing common-but-important signal (like the foul-vs-non-foul gap)
+    # into a tiny sliver near zero where MSE struggles to resolve it. A
+    # percentile-based scale (--y-scale-percentile, default 100 = old behavior)
+    # trades a bit of headroom for rare outliers for much better resolution on
+    # the common case.
+    y_scale = float(np.percentile(np.abs(y_np), args.y_scale_percentile)) or 1.0
     y_np_norm = y_np / y_scale
 
     x = torch.from_numpy(x_np).to(device)
@@ -187,7 +194,9 @@ def train(args: argparse.Namespace) -> None:
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
-    loss_fn = nn.MSELoss()
+    # Huber (SmoothL1) is less dominated by residual outliers beyond the
+    # percentile clip than MSE — same rationale as the scale change above.
+    loss_fn = nn.SmoothL1Loss() if args.loss == 'huber' else nn.MSELoss()
 
     best_val = float('inf')
     for epoch in range(1, args.epochs + 1):
@@ -243,5 +252,11 @@ if __name__ == '__main__':
                         help='Path to existing OFCW weights to warm-start from (iterative self-play)')
     parser.add_argument('--window', type=int, default=0,
                         help='Use only the last N batch files (0=all). Prevents distribution shift from old policy data.')
+    parser.add_argument('--y-scale-percentile', type=float, default=100.0,
+                        help='Percentile of |label| used to set the normalization scale (default 100 = true max, '
+                             'the original behavior). Lower values (e.g. 99) are more robust to rare heavy-tailed '
+                             'outcomes (bonus-round jackpots) dominating the scale.')
+    parser.add_argument('--loss', choices=['mse', 'huber'], default='mse',
+                        help='Loss function. huber (SmoothL1) is less sensitive to residual outliers than mse.')
     args = parser.parse_args()
     train(args)
