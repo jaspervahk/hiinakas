@@ -139,7 +139,7 @@ function doTransition(
     const visibleToOpp: PartialBoard[] = [newBoard, ...oppBrds.filter((_, j) => j !== i)]
     const pl = model
       ? nnPickPlacement(model, oppBrds[i]!, oppHand, node.street, visibleToOpp)
-      : heuristicPlacement(oppBrds[i]!, oppHand, node.street)
+      : heuristicPlacement(oppBrds[i]!, oppHand, node.street, visibleToOpp)
     oppBrds[i] = applyPlacement(oppBrds[i]!, pl)
   }
 

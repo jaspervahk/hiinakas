@@ -89,8 +89,8 @@ export function bonusDealCount(qualifier: BonusQualifier): number {
 
 // Expected net pairwise score (scorePair-equivalent: row-score + royalty
 // differential) from optimal bonus-board play, computed via exact Monte
-// Carlo simulation (scripts/compute-bonus-ev.ts, shared-deck trials, 200-4000
-// per cell depending on cost) against every possible opponent scenario.
+// Carlo simulation (scripts/compute-bonus-ev.ts, shared-deck trials, flat
+// 500 trials per cell) against every possible opponent scenario.
 //
 // The bonus round is scored pairwise against EVERY active opponent, exactly
 // like a normal round (docs/01_RULES_AND_SCORING.md section 8), so a flat
@@ -114,9 +114,9 @@ export function bonusDealCount(qualifier: BonusQualifier): number {
 export type BonusOppScenario = 'BASE' | BonusQualifier
 
 export const BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>> = {
-  QQ:          { BASE: 13.97, QQ: 0,     KK: -5.44,  AA_OR_TRIPS: -9.24 },
-  KK:          { BASE: 17.77, QQ: 5.44,  KK: 0,      AA_OR_TRIPS: -4.91 },
-  AA_OR_TRIPS: { BASE: 21.40, QQ: 9.24,  KK: 4.91,   AA_OR_TRIPS: 0     },
+  QQ:          { BASE: 13.89, QQ: 0,     KK: -4.57,  AA_OR_TRIPS: -9.65 },
+  KK:          { BASE: 18.21, QQ: 4.57,  KK: 0,      AA_OR_TRIPS: -4.68 },
+  AA_OR_TRIPS: { BASE: 21.68, QQ: 9.65,  KK: 4.68,   AA_OR_TRIPS: 0     },
 }
 
 // Deprecated: the single-opponent ("BASE") net values, kept for callers
@@ -132,6 +132,18 @@ export const BONUS_EV_AA_TRIPS = BONUS_NET.AA_OR_TRIPS.BASE
 // With no opponent boards supplied, falls back to a single BASE opponent
 // (the old default single-opponent behavior, for callers that don't model
 // opponents at all).
+//
+// Note on a related, tested-and-rejected refinement: in a 3-player game
+// where BOTH opponents are non-qualifying, they play their side games
+// against each other with mutual street-by-street visibility (heuristic-
+// Placement is opponent-aware — see opponentComparisonAdj in heuristic.ts),
+// so their average play could plausibly differ from a solo non-qualifying
+// opponent's. Measured directly (scripts/_compute-paired-base.ts, n=1500
+// trials/tier, comparing two mutually-visible side-gamers against one
+// solo side-gamer): QQ diff=-0.04, KK diff=+0.55, AA_OR_TRIPS diff=-0.01 —
+// inconsistent in sign and small relative to the ~14-22 point scale of
+// BASE itself, i.e. not distinguishable from sampling noise. Both scenarios
+// use the same BASE constant; no separate "paired" constant was added.
 export function bonusGameValue(actorBoard: Board, opponentBoards: readonly Board[] = []): number {
   const q = bonusTrigger(actorBoard)
   if (!q) return 0

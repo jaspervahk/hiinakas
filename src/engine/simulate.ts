@@ -30,9 +30,9 @@ import { encodeBoardState } from './encode'
 
 export type SimPolicy = (info: InfoState) => Placement
 
-// Default policy: fast heuristic (greedy row score).
+// Default policy: fast heuristic (greedy row score), opponent-aware.
 export function heuristicPolicy(info: InfoState): Placement {
-  return heuristicPlacement(info.board, info.hand, info.street)
+  return heuristicPlacement(info.board, info.hand, info.street, info.revealedOpponentBoards)
 }
 
 export interface TrainSample {
@@ -112,7 +112,7 @@ function runBonusRound(
       const p = sideIndices[i]!
       const hand = bonusDeck.deal(sideSizes[s]!)
       const oppBoards = snapshots.filter((_, j) => j !== i)
-      const pl = heuristicPlacement(snapshots[i]!, hand, s)
+      const pl = heuristicPlacement(snapshots[i]!, hand, s, oppBoards)
       const boardAfter = applyPlacement(snapshots[i]!, pl)
       const disc = sideDiscardLists[i]!
       const allDiscards = pl.discard ? [...disc, pl.discard] : [...disc]

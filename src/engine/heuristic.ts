@@ -49,8 +49,48 @@ function foulPenalty(board: PartialBoard): number {
   return penalty
 }
 
-// Score a placement for the heuristic. Higher = better.
-function scorePlacement(board: PartialBoard, p: Placement): number {
+const ROW_WEIGHT = { top: 1.0, middle: 2.0, bottom: 3.0 } as const
+// How much of a row's own weighted score to discount when we're clearly
+// behind the strongest visible opponent in that same row — small and
+// bounded (never more than this fraction of the raw shortfall) so it nudges
+// candidate ranking toward rows we can still win / redirects into royalties
+// elsewhere, without swamping the base row-strength scoring above.
+const OPPONENT_AWARENESS_FRACTION = 0.15
+
+// Compare our candidate row strengths against the strongest visible opponent
+// in each same row (using whatever opponent boards the caller can see — per
+// info-set hygiene, only ever their REVEALED placed cards, never hidden
+// hands/discards/stub). Rows we're clearly behind in get a small discount:
+// fighting a likely-lost row is worth less than banking royalties or safety
+// elsewhere. Returns 0 (no adjustment) when no opponent info is available,
+// exactly preserving old behavior for callers that don't pass any.
+function opponentComparisonAdj(newBoard: PartialBoard, oppBoards: readonly PartialBoard[]): number {
+  if (oppBoards.length === 0) return 0
+  let adj = 0
+  for (const row of ['top', 'middle', 'bottom'] as const) {
+    const ourCards = newBoard[row]
+    if (ourCards.length === 0) continue
+    const isTop = row === 'top'
+    const ourScore = partialRowScore(ourCards, isTop)
+    let maxOppScore = 0
+    for (const opp of oppBoards) {
+      const oppCards = opp[row]
+      if (oppCards.length === 0) continue
+      const s = partialRowScore(oppCards, isTop)
+      if (s > maxOppScore) maxOppScore = s
+    }
+    if (maxOppScore === 0) continue // no opponent has cards in this row yet — no signal
+    if (ourScore < maxOppScore) {
+      adj -= (maxOppScore - ourScore) * ROW_WEIGHT[row] * OPPONENT_AWARENESS_FRACTION
+    }
+  }
+  return adj
+}
+
+// Score a placement for the heuristic. Higher = better. `oppBoards` (each
+// opponent's own revealed board so far) is optional — when supplied, adds a
+// small opponent-comparison signal on top of the base row-strength scoring.
+function scorePlacement(board: PartialBoard, p: Placement, oppBoards: readonly PartialBoard[] = []): number {
   const newTop    = [...board.top,    ...p.topAdd]
   const newMid    = [...board.middle, ...p.middleAdd]
   const newBot    = [...board.bottom, ...p.bottomAdd]
@@ -61,7 +101,8 @@ function scorePlacement(board: PartialBoard, p: Placement): number {
     partialRowScore(newBot, false) * 3.0 +
     partialRowScore(newMid, false) * 2.0 +
     partialRowScore(newTop, true)  * 1.0 +
-    foulPenalty(newBoard)
+    foulPenalty(newBoard) +
+    opponentComparisonAdj(newBoard, oppBoards)
 
   return score
 }
@@ -69,21 +110,26 @@ function scorePlacement(board: PartialBoard, p: Placement): number {
 // ── Heuristic placement policy ─────────────────────────────────────────────
 //
 // Fast greedy: pick the legal placement with the highest heuristic score.
-// Used as the rollout policy in MC (argmax, not sampling).
+// Used as the rollout policy in MC (argmax, not sampling). `oppBoards` is
+// optional (defaults to none, preserving old opponent-blind behavior) — pass
+// each visible opponent's revealed board (never their hidden hand/discards/
+// the stub) to let the heuristic favor rows it can still win over ones it's
+// clearly already lost.
 
 export function heuristicPlacement(
   board: PartialBoard,
   dealt: readonly Card[],
   street: number,
+  oppBoards: readonly PartialBoard[] = [],
 ): Placement {
   const candidates = legalPlacements(board, dealt, street)
   if (candidates.length === 0) {
     throw new Error('No legal placements — board/dealt mismatch')
   }
   let best = candidates[0]!
-  let bestScore = scorePlacement(board, best)
+  let bestScore = scorePlacement(board, best, oppBoards)
   for (let i = 1; i < candidates.length; i++) {
-    const s = scorePlacement(board, candidates[i]!)
+    const s = scorePlacement(board, candidates[i]!, oppBoards)
     if (s > bestScore) {
       bestScore = s
       best = candidates[i]!

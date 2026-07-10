@@ -39,14 +39,27 @@ function botOneShotBonus(cards: Card[]): PartialBoard {
   }
 }
 
-// Compute all 5 streets of a bot side game up front.
-function botFullSideGame(sideDealt: Card[][]): PartialBoard {
-  let board: PartialBoard = emptyBoard()
+// Compute all 5 streets of MULTIPLE bots' side games together, interleaved
+// street-by-street so each one sees the others' revealed boards from
+// previous streets — matching how side-gamers actually play (see
+// docs/01_RULES_AND_SCORING.md section 8 and simulate.ts's runBonusRound,
+// which already interleaved this way for training-sample encoding; bot
+// gameplay had been computing each side game in isolation instead).
+function botSideGamesInterleaved(sideDealtList: Card[][][]): PartialBoard[] {
+  const n = sideDealtList.length
+  const boards: PartialBoard[] = Array.from({ length: n }, () => emptyBoard())
   for (let s = 0; s <= 4; s++) {
-    const hand = sideDealt[s]!
-    board = applyPlacement(board, heuristicPlacement(board, hand, s))
+    const snapshots: PartialBoard[] = boards.map(b =>
+      ({ top: [...b.top], middle: [...b.middle], bottom: [...b.bottom] })
+    )
+    for (let i = 0; i < n; i++) {
+      const hand = sideDealtList[i]![s]!
+      const oppBoards = snapshots.filter((_, j) => j !== i)
+      const pl = heuristicPlacement(snapshots[i]!, hand, s, oppBoards)
+      boards[i] = applyPlacement(snapshots[i]!, pl)
+    }
   }
-  return board
+  return boards
 }
 
 // Remove first occurrence of card from array; returns new array.
@@ -406,16 +419,28 @@ function startBonus(state: GameState): GameState {
     }
   }
 
-  // Pre-compute bot non-qualifying side game boards
-  const botSideBoards: PartialBoard[] = []
-  let sideIdx = humanInSide ? 1 : 0
-  for (let i = 0; i < botQs.length; i++) {
-    if (botInSide[i]) {
-      botSideBoards.push(botFullSideGame(sidePreDealt[sideIdx]!))
-      sideIdx++
-    } else {
-      botSideBoards.push(emptyBoard()) // not participating in side game
+  // Pre-compute bot non-qualifying side game boards. Interleaved across all
+  // participating bots (see botSideGamesInterleaved) so if more than one bot
+  // is in the side game, they see each other's revealed boards, not just
+  // cards in isolation.
+  const botSideBoards: PartialBoard[] = new Array(botQs.length).fill(null)
+  const sideBotIndices: number[] = []
+  const sideBotDealt: Card[][][] = []
+  {
+    let sideIdx = humanInSide ? 1 : 0
+    for (let i = 0; i < botQs.length; i++) {
+      if (botInSide[i]) {
+        sideBotIndices.push(i)
+        sideBotDealt.push(sidePreDealt[sideIdx]!)
+        sideIdx++
+      } else {
+        botSideBoards[i] = emptyBoard() // not participating in side game
+      }
     }
+  }
+  const interleavedBoards = botSideGamesInterleaved(sideBotDealt)
+  for (let k = 0; k < sideBotIndices.length; k++) {
+    botSideBoards[sideBotIndices[k]!] = interleavedBoards[k]!
   }
 
   if (humanInSide) {

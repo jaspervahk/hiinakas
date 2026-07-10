@@ -22,7 +22,7 @@ export interface EngineInterface {
   scoreTable(boards: Board[]): number[]
   legalPlacements(board: PartialBoard, dealt: readonly Card[], street: number): Placement[]
   applyPlacement(board: PartialBoard, p: Placement): PartialBoard
-  heuristicPlacement(board: PartialBoard, dealt: readonly Card[], street: number): Placement
+  heuristicPlacement(board: PartialBoard, dealt: readonly Card[], street: number, oppBoards?: readonly PartialBoard[]): Placement
   bestBonusBoard(cards: Card[], numDiscard: number): Board
 }
 
@@ -39,8 +39,8 @@ export class LocalEngine implements EngineInterface {
     return legalPlacements(board, dealt, street)
   }
   applyPlacement(board: PartialBoard, p: Placement): PartialBoard { return applyPlacement(board, p) }
-  heuristicPlacement(board: PartialBoard, dealt: readonly Card[], street: number): Placement {
-    return heuristicPlacement(board, dealt, street)
+  heuristicPlacement(board: PartialBoard, dealt: readonly Card[], street: number, oppBoards: readonly PartialBoard[] = []): Placement {
+    return heuristicPlacement(board, dealt, street, oppBoards)
   }
   bestBonusBoard(cards: Card[], numDiscard: number): Board { return bestBonusBoard(cards, numDiscard) }
 }

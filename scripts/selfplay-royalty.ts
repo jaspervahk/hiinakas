@@ -194,7 +194,8 @@ function runRoyaltyGame(
 
     // Dummy opponents place first (using heuristic) so we see their boards.
     for (let p = 1; p < playerCount; p++) {
-      const pl = heuristicPlacement(snapshots[p]!, dealt[p]![s]!, s)
+      const oppBoardsForP = snapshots.filter((_, j) => j !== p)
+      const pl = heuristicPlacement(snapshots[p]!, dealt[p]![s]!, s, oppBoardsForP)
       boards[p] = applyPlacement(snapshots[p]!, pl)
       if (pl.discard) playerDiscards[p]!.push(pl.discard)
     }
@@ -221,7 +222,7 @@ function runRoyaltyGame(
     } else if (MCTS_SIMS > 0) {
       pl = royaltyMctsPickPlacement(infoState, MCTS_SIMS, mctsRng)
     } else {
-      pl = heuristicPlacement(ourBoard, hand, s)
+      pl = heuristicPlacement(ourBoard, hand, s, revealedOppBoards)
     }
 
     const boardAfter = applyPlacement(ourBoard, pl)

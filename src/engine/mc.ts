@@ -100,8 +100,9 @@ function rollout(
     top: [...b.top], middle: [...b.middle], bottom: [...b.bottom],
   }))
 
-  // Use NN policy if loaded, otherwise heuristic.
-  const pick = activePolicy ?? ((b, h, s) => heuristicPlacement(b, h, s))
+  // Use NN policy if loaded, otherwise heuristic (now opponent-aware: forward
+  // the 4th arg so it can weigh visible opponent progress per row).
+  const pick = activePolicy ?? ((b, h, s, opp) => heuristicPlacement(b, h, s, opp))
 
   const cardsPerStreet = (s: number) => s === 0 ? 5 : 3
 

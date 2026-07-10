@@ -32,8 +32,8 @@ export class WasmEngine implements EngineInterface {
     return this.inner.legalPlacements(board, dealt, street)
   }
   applyPlacement(board: PartialBoard, p: Placement): PartialBoard { return this.inner.applyPlacement(board, p) }
-  heuristicPlacement(board: PartialBoard, dealt: readonly Card[], street: number): Placement {
-    return this.inner.heuristicPlacement(board, dealt, street)
+  heuristicPlacement(board: PartialBoard, dealt: readonly Card[], street: number, oppBoards: readonly PartialBoard[] = []): Placement {
+    return this.inner.heuristicPlacement(board, dealt, street, oppBoards)
   }
   bestBonusBoard(cards: Card[], numDiscard: number): Board { return this.inner.bestBonusBoard(cards, numDiscard) }
 }

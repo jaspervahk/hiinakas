@@ -53,20 +53,15 @@ const DISCARDS: Record<BonusQualifier, number> = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 
 type OppScenario = 'BASE' | BonusQualifier
 const OPP_SCENARIOS: readonly OppScenario[] = ['BASE', 'QQ', 'KK', 'AA_OR_TRIPS']
 
-// bestBonusBoard's cost scales with C(dealt, 13) — the number of ways to
-// choose which 13 of the dealt cards to keep (0 discards → C(13,13)=1,
-// 1 discard → C(14,13)=14, 2 discards → C(15,13)=105). BASE (heuristic
-// 5-street side game) is cheap by comparison. Pick trial counts per cell so
-// every cell takes roughly the same wall-clock budget instead of a flat
-// trial count (which would make AA_OR_TRIPS-involving cells take 100x+ longer).
-const RELATIVE_COST: Record<OppScenario, number> = { BASE: 1, QQ: 25, KK: 25 * 14, AA_OR_TRIPS: 25 * 105 }
-const TARGET_MS_PER_CELL = 45_000
-const MS_PER_COST_UNIT = 0.5 // calibrated so QQ-vs-BASE (cost 26) lands near ~4000 trials
+// Flat trial count per cell — uniform precision across all 12 combinations
+// regardless of bestBonusBoard's cost (which scales with C(dealt, 13): 0
+// discards → C(13,13)=1, 1 discard → C(14,13)=14, 2 discards → C(15,13)=105,
+// so AA_OR_TRIPS-involving cells take much longer per trial than QQ/BASE
+// ones, but get the same trial count for consistent precision).
+const TRIALS_PER_CELL = 500
 
-function trialsFor(actorTier: BonusQualifier, oppScenario: OppScenario): number {
-  const cost = RELATIVE_COST[actorTier] + RELATIVE_COST[oppScenario]
-  const n = Math.round(TARGET_MS_PER_CELL / (cost * MS_PER_COST_UNIT))
-  return Math.max(25, Math.min(n, 5000))
+function trialsFor(_actorTier: BonusQualifier, _oppScenario: OppScenario): number {
+  return TRIALS_PER_CELL
 }
 
 // Build a full 5-street 3-5-5 board via the standard heuristic policy
