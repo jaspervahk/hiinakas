@@ -16,6 +16,11 @@ import {
   type BonusDecisionPoint,
   type GameSummary,
 } from '../game/sessionParser'
+import type { ReviewDecision, PersistedBonusDecision, SavedAnalysisMeta } from '../game/sessionAnalysisTypes'
+import { loadSessionAnalysis, saveSessionAnalysis } from '../firestore/sessionAnalysis'
+import { SavedAnalysesList } from '../components/SavedAnalysesList'
+import { CardChip, PlacementSummary, CandidateList } from '../components/CandidateList'
+import { DecisionStepper } from '../components/DecisionStepper'
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy, BonusAnalysisResult } from '../worker/client'
 
@@ -73,48 +78,6 @@ const PLAYER_COLORS = [
 ]
 function pc(i: number) { return PLAYER_COLORS[i % PLAYER_COLORS.length]! }
 
-// ── Card display ──────────────────────────────────────────────────────────────
-
-const RANK_LABELS: Record<number, string> = {
-  14: 'A', 13: 'K', 12: 'Q', 11: 'J', 10: 'T',
-  9: '9', 8: '8', 7: '7', 6: '6', 5: '5', 4: '4', 3: '3', 2: '2',
-}
-const SUIT_SYM: Record<string, string> = { s: '♠', c: '♣', h: '♥', d: '♦' }
-const SUIT_COLOR: Record<string, string> = {
-  s: 'text-slate-200', c: 'text-emerald-400', h: 'text-red-400', d: 'text-orange-400',
-}
-function cl(c: Card) { return `${RANK_LABELS[c.rank] ?? c.rank}${SUIT_SYM[c.suit] ?? c.suit}` }
-function CardChip({ c }: { c: Card }) {
-  return <span className={`inline-block font-mono text-xs ${SUIT_COLOR[c.suit] ?? 'text-slate-200'}`}>{cl(c)}</span>
-}
-function CardRow({ label, cards }: { label: string; cards: readonly Card[] }) {
-  if (cards.length === 0) return null
-  return (
-    <span className="inline-flex items-center gap-1">
-      <span className="text-gray-500 text-[10px]">{label}:</span>
-      {cards.map((c, i) => <CardChip key={i} c={c} />)}
-    </span>
-  )
-}
-
-// ── Placement summary ─────────────────────────────────────────────────────────
-
-function PlacementSummary({ p }: { p: Placement }) {
-  return (
-    <span className="inline-flex flex-wrap gap-x-2 gap-y-0.5">
-      {p.topAdd.length > 0 && <CardRow label="T" cards={p.topAdd} />}
-      {p.middleAdd.length > 0 && <CardRow label="M" cards={p.middleAdd} />}
-      {p.bottomAdd.length > 0 && <CardRow label="B" cards={p.bottomAdd} />}
-      {p.discard && (
-        <span className="inline-flex items-center gap-1">
-          <span className="text-gray-500 text-[10px]">disc:</span>
-          <span className="text-gray-400 line-through text-xs font-mono">{cl(p.discard)}</span>
-        </span>
-      )}
-    </span>
-  )
-}
-
 // ── Board mini display ────────────────────────────────────────────────────────
 
 function BoardMini({ board }: { board: PartialBoard }) {
@@ -133,40 +96,6 @@ function BoardMini({ board }: { board: PartialBoard }) {
         )
       })}
     </span>
-  )
-}
-
-// ── Candidate ranked list ─────────────────────────────────────────────────────
-
-function CandidateList({ topCandidates, actualPlacement, bestEV }: {
-  topCandidates: Array<{ placement: Placement; ev: number }>
-  actualPlacement: Placement
-  bestEV: number
-}) {
-  return (
-    <div className="space-y-0.5">
-      {topCandidates.map((c, i) => {
-        const isPlayed = matchesActual(c.placement, actualPlacement)
-        const isBest = i === 0
-        const evDiff = c.ev - bestEV
-        return (
-          <div key={i} className={`flex items-center gap-1.5 text-xs rounded px-1.5 py-0.5 ${
-            isPlayed ? 'bg-amber-950/60 border border-amber-800/30' : isBest ? 'bg-emerald-950/40' : ''
-          }`}>
-            <span className="text-gray-600 w-3 shrink-0 text-right">{i + 1}</span>
-            <span className="flex-1 min-w-0"><PlacementSummary p={c.placement} /></span>
-            <span className={`font-mono text-xs shrink-0 ${c.ev >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {c.ev >= 0 ? '+' : ''}{c.ev.toFixed(1)}
-            </span>
-            {isBest && <span className="text-emerald-500 text-[10px] shrink-0">↑best</span>}
-            {isPlayed && <span className="text-amber-300 text-[10px] shrink-0">▶played</span>}
-            {isPlayed && evDiff < -0.05 && (
-              <span className="text-red-400 text-[10px] shrink-0">({evDiff.toFixed(1)})</span>
-            )}
-          </div>
-        )
-      })}
-    </div>
   )
 }
 
@@ -248,20 +177,15 @@ function RunningChart({ summaries, players }: { summaries: GameSummary[]; player
 }
 
 // ── Analyzed decision ─────────────────────────────────────────────────────────
-
-interface AnalyzedDecision extends DecisionPoint {
-  candidates: ScoredPlacement[]
-  topCandidates: Array<{ placement: Placement; ev: number }>
-  bestPlacement: Placement
-  playedEV: number
-  bestEV: number
-  evLost: number
-}
+// ReviewDecision (src/game/sessionAnalysisTypes.ts) is flat — board/hand
+// directly, not nested under infoState, and drops the full `candidates`
+// ranking (never read after display, only `topCandidates` is) — so the same
+// shape works whether it was just computed here or reopened from Firestore.
 
 function buildAnalyzed(
   decisions: DecisionPoint[],
   results: Map<string, ScoredPlacement[]>,
-): AnalyzedDecision[] {
+): ReviewDecision[] {
   return decisions.flatMap(d => {
     const candidates = results.get(d.id)
     if (!candidates || candidates.length === 0) return []
@@ -270,7 +194,17 @@ function buildAnalyzed(
     const played = candidates.find(c => matchesActual(c.placement, d.actualPlacement))
     const playedEV = played?.ev ?? bestEV
     const topCandidates = candidates.slice(0, 8).map(c => ({ placement: c.placement, ev: c.ev }))
-    return [{ ...d, candidates, topCandidates, bestPlacement: best.placement, playedEV, bestEV, evLost: bestEV - playedEV }]
+    const { infoState, ...rest } = d
+    return [{
+      ...rest,
+      board: infoState.board,
+      hand: infoState.hand,
+      topCandidates,
+      bestPlacement: best.placement,
+      playedEV,
+      bestEV,
+      evLost: bestEV - playedEV,
+    }]
   })
 }
 
@@ -293,13 +227,13 @@ function sessionCacheKey(decisions: DecisionPoint[], mode: BotPolicy, sims: numb
   return `session_ev_${CACHE_VERSION}:${mode}:${sims}:${rootTopK}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
 }
 
-function saveToCache(key: string, analyzed: AnalyzedDecision[]): void {
+function saveToCache(key: string, analyzed: ReviewDecision[]): void {
   try {
     const slim: CachedDecision[] = analyzed.map(d => ({
       id: d.id, gameId: d.gameId, gameTime: d.gameTime,
       username: d.username, uid: d.uid,
       segment: d.segment, street: d.street,
-      hand: [...d.infoState.hand],
+      hand: [...d.hand],
       actualPlacement: d.actualPlacement, bestPlacement: d.bestPlacement,
       playedEV: d.playedEV, bestEV: d.bestEV, evLost: d.evLost,
       topCandidates: d.topCandidates,
@@ -308,28 +242,21 @@ function saveToCache(key: string, analyzed: AnalyzedDecision[]): void {
   } catch { /* quota exceeded */ }
 }
 
-function loadFromCache(key: string): AnalyzedDecision[] | null {
+function loadFromCache(key: string): ReviewDecision[] | null {
   try {
     const raw = localStorage.getItem(key)
     if (!raw) return null
     const cached = JSON.parse(raw) as CachedDecision[]
     return cached.map(c => ({
       ...c,
-      infoState: {
-        board: { top: [], middle: [], bottom: [] }, // enriched later from decisions
-        hand: c.hand,
-        street: c.street,
-        revealedOpponentBoards: [],
-        discards: [],
-      },
-      candidates: [],
+      board: { top: [], middle: [], bottom: [] }, // enriched later from decisions
     }))
   } catch { return null }
 }
 
 // ── Hand decision row (inside hand detail panel) ──────────────────────────────
 
-function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecision }) {
+function HandDecisionRow({ dec, ev }: { dec: ReviewDecision; ev?: ReviewDecision }) {
   const [open, setOpen] = useState(false)
   const hasEV = !!ev
   const isMistake = hasEV && ev.evLost > 0.1
@@ -346,7 +273,7 @@ function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecisio
           {dec.segment === 'bonus_play' && <span className="text-purple-500 ml-1">[S]</span>}
         </span>
         <span className="flex gap-0.5 shrink-0">
-          {dec.infoState.hand.map((c, i) => <CardChip key={i} c={c} />)}
+          {dec.hand.map((c, i) => <CardChip key={i} c={c} />)}
         </span>
         <span className="text-gray-500 text-[10px] shrink-0 pt-0.5">→</span>
         <span className="flex-1 min-w-0 text-xs"><PlacementSummary p={dec.actualPlacement} /></span>
@@ -362,7 +289,7 @@ function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecisio
         <div className="ml-16 mt-1 mb-2 space-y-2">
           <div className="flex items-start gap-2">
             <span className="text-gray-600 text-[10px] uppercase shrink-0 w-10 pt-0.5">Board</span>
-            <BoardMini board={dec.infoState.board} />
+            <BoardMini board={dec.board} />
           </div>
           {hasEV && (
             <div className="space-y-0.5">
@@ -399,8 +326,8 @@ function HandDecisionRow({ dec, ev }: { dec: DecisionPoint; ev?: AnalyzedDecisio
 // ── Hand detail panel ─────────────────────────────────────────────────────────
 
 function HandDetail({ gameDecs, analyzedMap, players }: {
-  gameDecs: DecisionPoint[]
-  analyzedMap: Map<string, AnalyzedDecision>
+  gameDecs: ReviewDecision[]
+  analyzedMap: Map<string, ReviewDecision>
   players: string[]
 }) {
   if (gameDecs.length === 0) {
@@ -433,13 +360,16 @@ function HandDetail({ gameDecs, analyzedMap, players }: {
 
 // ── Blunder card ──────────────────────────────────────────────────────────────
 
-function BlunderCard({ d, dec, rank, gameNumber, onJumpToGame }: {
-  d: AnalyzedDecision; dec?: DecisionPoint; rank: number
+function BlunderCard({ d, freshBoard, rank, gameNumber, onJumpToGame }: {
+  d: ReviewDecision; freshBoard?: PartialBoard; rank: number
   gameNumber?: number; onJumpToGame?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const isOptimal = d.evLost < 0.05
-  const board = dec?.infoState.board ?? d.infoState.board
+  // Prefer the freshly-parsed board (decisionsById) over d.board, since d may
+  // still carry the cache's empty placeholder board pre-enrichment (see the
+  // cache-restore effect above).
+  const board = freshBoard ?? d.board
 
   return (
     <div className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
@@ -475,7 +405,7 @@ function BlunderCard({ d, dec, rank, gameNumber, onJumpToGame }: {
       <div className="px-3 pb-3 space-y-1">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-gray-500 w-10 shrink-0">Hand:</span>
-          <span className="flex gap-0.5">{d.infoState.hand.map((c, i) => <CardChip key={i} c={c} />)}</span>
+          <span className="flex gap-0.5">{d.hand.map((c, i) => <CardChip key={i} c={c} />)}</span>
         </div>
         <div className="flex items-start gap-2 text-xs">
           <span className="text-gray-500 w-10 shrink-0">Played:</span>
@@ -597,13 +527,13 @@ function StatCard({ label, value, sub, color }: {
 function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, setSelectedGame }: {
   summaries: GameSummary[]
   players: string[]
-  analyzed: AnalyzedDecision[]
-  decisions: DecisionPoint[]
+  analyzed: ReviewDecision[]
+  decisions: ReviewDecision[]   // shell entries (board/hand, placeholder EV) for not-yet-analyzed rows
   selectedGame: string | null
   setSelectedGame: (gameId: string | null) => void
 }) {
   const decisionsByGame = useMemo(() => {
-    const map = new Map<string, DecisionPoint[]>()
+    const map = new Map<string, ReviewDecision[]>()
     for (const d of decisions) {
       const arr = map.get(d.gameId) ?? []
       arr.push(d)
@@ -613,7 +543,7 @@ function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, s
   }, [decisions])
 
   const analyzedMap = useMemo(() => {
-    const map = new Map<string, AnalyzedDecision>()
+    const map = new Map<string, ReviewDecision>()
     for (const d of analyzed) map.set(d.id, d)
     return map
   }, [analyzed])
@@ -728,7 +658,7 @@ function SessionTabInner() {
   const [error, setError] = useState('')
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
-  const [analyzed, setAnalyzed] = useState<AnalyzedDecision[]>([])
+  const [analyzed, setAnalyzed] = useState<ReviewDecision[]>([])
   const [noModel, setNoModel] = useState(false)
   const [analysisMode, setAnalysisMode] = useState<BotPolicy>('nn')
   const [sims, setSims] = useState(DEFAULT_SIMS_FOR.nn)
@@ -737,6 +667,17 @@ function SessionTabInner() {
   const [bonusAnalyzing, setBonusAnalyzing] = useState(false)
   const [bonusAnalyzeProgress, setBonusAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
   const [bonusAnalyzed, setBonusAnalyzed] = useState<Map<string, BonusAnalysisResult>>(new Map())
+  // A saved analysis, reopened from Firestore — fully replaces the live-
+  // parsed values below (no re-upload, no InfoState, no recompute) while set.
+  const [savedView, setSavedView] = useState<{
+    meta: SavedAnalysisMeta
+    decisions: ReviewDecision[]
+    bonusDecisions: PersistedBonusDecision[]
+  } | null>(null)
+  const [showSavedList, setShowSavedList] = useState(false)
+  const [showStepper, setShowStepper] = useState(false)
+  const [saveState, setSaveState] = useState<'idle' | 'naming' | 'saving' | 'saved' | 'error'>('idle')
+  const [saveName, setSaveName] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const gameLogRef = useRef<HTMLDivElement>(null)
   const jumpToGame = useCallback((gameId: string) => {
@@ -747,7 +688,7 @@ function SessionTabInner() {
   const handleFile = useCallback((file: File) => {
     setError(''); setAnalyzed([]); setNoModel(false)
     setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setSelectedGame(null)
-    setBonusAnalyzed(new Map()); setBonusAnalyzeProgress(null)
+    setBonusAnalyzed(new Map()); setBonusAnalyzeProgress(null); setSavedView(null)
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -765,6 +706,19 @@ function SessionTabInner() {
       }
     }
     reader.readAsText(file)
+  }, [])
+
+  const loadSaved = useCallback(async (analysisId: string) => {
+    const loaded = await loadSessionAnalysis(analysisId)
+    if (!loaded) return
+    setSavedView(loaded)
+    setAnalyzed(loaded.decisions)
+    setBonusAnalyzed(new Map(loaded.bonusDecisions.map(bd => [bd.id, {
+      id: bd.id, bestBoard: bd.bestBoard, bestRoyalties: bd.bestRoyalties,
+      actualRoyalties: bd.actualRoyalties, actualFoul: bd.actualFoul, evLost: bd.evLost,
+    }])))
+    setSelectedGame(null)
+    setShowSavedList(false)
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -786,11 +740,49 @@ function SessionTabInner() {
       return { ...empty, parseError: e instanceof Error ? e.message : String(e) }
     }
   }, [rawData, activeGroups])
-  const { decisions, bonusDecisions, summaries, allPlayers, parseError } = parseResult
+  const {
+    decisions: liveDecisions, bonusDecisions: liveBonusDecisions,
+    summaries: liveSummaries, allPlayers: liveAllPlayers, parseError: liveParseError,
+  } = parseResult
+
+  // Effective values used throughout the rest of this component — prefer a
+  // reopened saved analysis over the live-parsed upload when one is open.
+  // savedView.decisions/bonusDecisions dropped the raw InfoState (see
+  // sessionAnalysisTypes.ts), so `decisions`/`bonusDecisions` below stay
+  // empty in saved mode; that's fine, they're only used for live-mode-only
+  // paths (worker requests, board-enrichment fallback) that don't apply once
+  // everything is already fully analyzed.
+  const summaries = savedView ? savedView.meta.summaries : liveSummaries
+  const allPlayers = savedView ? savedView.meta.playerNames : liveAllPlayers
+  const decisions = savedView ? [] : liveDecisions
+  const bonusDecisions: BonusDecisionPoint[] = savedView
+    ? savedView.bonusDecisions.map(bd => ({
+        id: bd.id, gameId: bd.gameId, gameTime: bd.gameTime, username: bd.username, uid: bd.uid,
+        numDiscard: bd.numDiscard, cards: bd.cards, actualBoard: bd.actualBoard,
+      }))
+    : liveBonusDecisions
+  const parseError = savedView ? '' : liveParseError
 
   const groups = useMemo(() => rawData ? detectPlayerGroups(rawData.games) : [], [rawData])
 
   const decisionsById = useMemo(() => new Map(decisions.map(d => [d.id, d])), [decisions])
+
+  // Shell ReviewDecisions for rows not yet analyzed (board/hand only; the EV
+  // fields are placeholders never displayed — HandDecisionRow/BlunderCard only
+  // read them via the separate `analyzed`/analyzedMap lookup once available).
+  const decisionShells: ReviewDecision[] = useMemo(() => decisions.map(d => {
+    const { infoState, ...rest } = d
+    return {
+      ...rest,
+      board: infoState.board,
+      hand: infoState.hand,
+      bestPlacement: d.actualPlacement,
+      playedEV: 0,
+      bestEV: 0,
+      evLost: 0,
+      topCandidates: [],
+    }
+  }), [decisions])
 
   // Restore from cache, enriching boards from freshly-parsed decisions
   useEffect(() => {
@@ -801,7 +793,7 @@ function SessionTabInner() {
     const enriched = cached.map(a => {
       const src = decisionsById.get(a.id)
       if (!src) return a
-      return { ...a, infoState: { ...a.infoState, board: src.infoState.board } }
+      return { ...a, board: src.infoState.board }
     })
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAnalyzed(enriched)
@@ -811,7 +803,7 @@ function SessionTabInner() {
   // Win/bust calculations use s.playerNames (the actual players in each game)
   // so that multi-group selections (e.g. A vs B + A vs B vs C) work correctly.
   const stats = useMemo(() => {
-    if (!activeGroups || allPlayers.length === 0 || summaries.length === 0) return null
+    if ((!activeGroups && !savedView) || allPlayers.length === 0 || summaries.length === 0) return null
 
     const wins: Record<string, number> = {}
     const soloBusts: Record<string, number> = {}
@@ -844,7 +836,7 @@ function SessionTabInner() {
 
     const final = summaries.at(-1)!
     return { wins, ties, soloBusts, bustCost, allBustHands, allBustCount, finalRuns: final.runs }
-  }, [activeGroups, allPlayers, summaries])
+  }, [activeGroups, allPlayers, summaries, savedView])
 
   const runAnalysis = useCallback(async () => {
     if (decisions.length === 0) return
@@ -905,6 +897,35 @@ function SessionTabInner() {
     }
   }, [bonusDecisions])
 
+  const suggestedSaveName = useCallback(() => {
+    const dateStr = summaries.length > 0 ? new Date(summaries[0]!.gameTime).toLocaleDateString() : ''
+    return `${allPlayers.join(' vs ')} — ${dateStr} (${summaries.length} games)`
+  }, [summaries, allPlayers])
+
+  const confirmSave = useCallback(async (name: string) => {
+    setSaveState('saving')
+    const persistedBonus: PersistedBonusDecision[] = bonusDecisions.flatMap(bd => {
+      const r = bonusAnalyzed.get(bd.id)
+      if (!r) return []
+      return [{
+        id: bd.id, gameId: bd.gameId, gameTime: bd.gameTime, username: bd.username, uid: bd.uid,
+        numDiscard: bd.numDiscard, cards: bd.cards, actualBoard: bd.actualBoard,
+        bestBoard: r.bestBoard, bestRoyalties: r.bestRoyalties,
+        actualRoyalties: r.actualRoyalties, actualFoul: r.actualFoul, evLost: r.evLost,
+      }]
+    })
+    const id = await saveSessionAnalysis({
+      name: name.trim() || suggestedSaveName(),
+      summaries, decisions: analyzed, bonusDecisions: persistedBonus,
+      playerNames: allPlayers,
+      analysisMode: savedView ? savedView.meta.analysisMode : analysisMode,
+      sims: savedView ? savedView.meta.sims : sims,
+      rootTopK: savedView ? savedView.meta.rootTopK : rootTopK,
+    })
+    setSaveState(id ? 'saved' : 'error')
+    if (id) setTimeout(() => setSaveState('idle'), 3000)
+  }, [summaries, analyzed, bonusDecisions, bonusAnalyzed, allPlayers, analysisMode, sims, rootTopK, savedView, suggestedSaveName])
+
   // Game log row number (1-based, matching the Game Log table's # column) so
   // mistakes can be cross-referenced to the full board state for all players.
   const gameNumberByGameId = useMemo(() => {
@@ -914,25 +935,25 @@ function SessionTabInner() {
   }, [summaries])
 
   const blundersByPlayer = useMemo(() => {
-    if (!activeGroups || allPlayers.length === 0 || analyzed.length === 0) return new Map<string, AnalyzedDecision[]>()
-    const map = new Map<string, AnalyzedDecision[]>()
+    if ((!activeGroups && !savedView) || allPlayers.length === 0 || analyzed.length === 0) return new Map<string, ReviewDecision[]>()
+    const map = new Map<string, ReviewDecision[]>()
     for (const p of allPlayers) {
       map.set(p, analyzed.filter(d => d.username === p).sort((a, b) => b.evLost - a.evLost))
     }
     return map
-  }, [analyzed, allPlayers, activeGroups])
+  }, [analyzed, allPlayers, activeGroups, savedView])
 
   const evTotalsByPlayer = useMemo(() => {
-    if (!activeGroups || allPlayers.length === 0 || analyzed.length === 0) return null
+    if ((!activeGroups && !savedView) || allPlayers.length === 0 || analyzed.length === 0) return null
     const map: Record<string, number> = {}
     for (const d of analyzed) {
       map[d.username] = (map[d.username] ?? 0) + d.evLost
     }
     return map
-  }, [analyzed, activeGroups, allPlayers])
+  }, [analyzed, activeGroups, allPlayers, savedView])
 
   const bonusByPlayer = useMemo(() => {
-    if (!activeGroups || allPlayers.length === 0) return new Map<string, BonusDecisionPoint[]>()
+    if ((!activeGroups && !savedView) || allPlayers.length === 0) return new Map<string, BonusDecisionPoint[]>()
     const map = new Map<string, BonusDecisionPoint[]>()
     for (const p of allPlayers) {
       const list = bonusDecisions.filter(d => d.username === p)
@@ -940,11 +961,11 @@ function SessionTabInner() {
       map.set(p, list)
     }
     return map
-  }, [bonusDecisions, allPlayers, activeGroups, bonusAnalyzed])
+  }, [bonusDecisions, allPlayers, activeGroups, bonusAnalyzed, savedView])
 
   // ── No file ───────────────────────────────────────────────────────────────
 
-  if (!rawData) {
+  if (!rawData && !savedView) {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-4">
         <input ref={fileRef} type="file" accept=".json" className="hidden"
@@ -957,13 +978,22 @@ function SessionTabInner() {
           <p className="text-gray-600 text-sm">or click to select file</p>
         </div>
         {error && <p className="text-red-400 text-sm">{error}</p>}
+        <button onClick={() => setShowSavedList(true)} className="text-indigo-400 hover:text-indigo-300 hover:underline text-xs">
+          or open a saved analysis →
+        </button>
+        {showSavedList && (
+          <SavedAnalysesList
+            onOpen={loadSaved}
+            onClose={() => setShowSavedList(false)}
+          />
+        )}
       </div>
     )
   }
 
   // ── Group selector ────────────────────────────────────────────────────────
 
-  if (!activeGroups) {
+  if (!activeGroups && !savedView) {
     const allSelected = groups.length > 0 && groups.every(g => pickerKeys.has(g.players.slice().sort().join('|')))
     const toggleGroup = (key: string) => {
       setPickerKeys(prev => {
@@ -1059,12 +1089,54 @@ function SessionTabInner() {
               {new Date(summaries[0]!.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}–
               {new Date(summaries.at(-1)!.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ·{' '}
               {summaries.length} hands
+              {savedView && <span className="ml-2 text-indigo-400">· saved: {savedView.meta.name}</span>}
             </p>
           )}
         </div>
-        <button onClick={() => setActiveGroups(null)} className="text-gray-600 hover:text-gray-400 text-xs">
-          ← Change
-        </button>
+        <div className="flex items-center gap-3">
+          {analyzed.length > 0 && (
+            <button onClick={() => setShowStepper(true)} className="text-emerald-400 hover:text-emerald-300 text-xs font-medium">
+              Review decisions →
+            </button>
+          )}
+          {analyzed.length > 0 && saveState === 'idle' && (
+            <button onClick={() => { setSaveName(suggestedSaveName()); setSaveState('naming') }} className="text-indigo-400 hover:text-indigo-300 text-xs">
+              Save analysis
+            </button>
+          )}
+          {saveState === 'naming' && (
+            <div className="flex items-center gap-1.5">
+              <input
+                autoFocus
+                value={saveName}
+                onChange={e => setSaveName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') confirmSave(saveName); if (e.key === 'Escape') setSaveState('idle') }}
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white w-56"
+              />
+              <button onClick={() => confirmSave(saveName)} className="px-2 py-1 rounded text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                Save
+              </button>
+              <button onClick={() => setSaveState('idle')} className="text-gray-500 hover:text-gray-300 text-xs">Cancel</button>
+            </div>
+          )}
+          {saveState === 'saving' && <span className="text-gray-500 text-xs">Saving…</span>}
+          {saveState === 'saved' && <span className="text-emerald-400 text-xs">Saved ✓</span>}
+          {saveState === 'error' && (
+            <span className="flex items-center gap-1.5 text-xs">
+              <span className="text-red-400">Save failed</span>
+              <button onClick={() => confirmSave(saveName)} className="text-indigo-400 hover:text-indigo-300">Retry</button>
+            </span>
+          )}
+          {savedView ? (
+            <button onClick={() => { setSavedView(null); setAnalyzed([]); setBonusAnalyzed(new Map()); setShowSavedList(true) }} className="text-gray-600 hover:text-gray-400 text-xs">
+              ← Saved Analyses
+            </button>
+          ) : (
+            <button onClick={() => setActiveGroups(null)} className="text-gray-600 hover:text-gray-400 text-xs">
+              ← Change
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Summary stats — one card per player */}
@@ -1128,6 +1200,12 @@ function SessionTabInner() {
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-gray-300 text-sm font-medium">EV Analysis</h3>
+          {savedView ? (
+            <span className="text-[10px] text-gray-500">
+              Ground truth: {savedView.meta.analysisMode} @ {savedView.meta.sims} sims
+              {savedView.meta.analysisMode === 'nn' && ` (top-${savedView.meta.rootTopK})`}
+            </span>
+          ) : (
           <div className="flex items-center gap-2">
             {/* Analysis mode selector */}
             <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
@@ -1196,9 +1274,10 @@ function SessionTabInner() {
               <span className="text-xs text-gray-400">Loading model…</span>
             )}
           </div>
+          )}
         </div>
 
-        {noModel && (
+        {!savedView && noModel && (
           <div className="flex items-center justify-between bg-amber-900/20 rounded px-3 py-2">
             <p className="text-amber-400 text-xs">Model unavailable at /models/policy.bin — training may still be in progress.</p>
             <button onClick={runAnalysis} className="ml-3 shrink-0 px-2 py-1 text-xs rounded bg-amber-800/40 hover:bg-amber-700/40 text-amber-300 transition-colors">
@@ -1235,7 +1314,7 @@ function SessionTabInner() {
                     <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — top mistakes</p>
                     {normalList.slice(0, 5).map((d, i) => (
                       <BlunderCard
-                        key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1}
+                        key={d.id} d={d} freshBoard={decisionsById.get(d.id)?.infoState.board} rank={i + 1}
                         gameNumber={gameNumberByGameId.get(d.gameId)}
                         onJumpToGame={() => jumpToGame(d.gameId)}
                       />
@@ -1246,7 +1325,7 @@ function SessionTabInner() {
                       <p className="text-purple-400 text-xs font-medium uppercase tracking-wider">{p} — side-game mistakes</p>
                       {sideList.slice(0, 5).map((d, i) => (
                         <BlunderCard
-                          key={d.id} d={d} dec={decisionsById.get(d.id)} rank={i + 1}
+                          key={d.id} d={d} freshBoard={decisionsById.get(d.id)?.infoState.board} rank={i + 1}
                           gameNumber={gameNumberByGameId.get(d.gameId)}
                           onJumpToGame={() => jumpToGame(d.gameId)}
                         />
@@ -1319,10 +1398,14 @@ function SessionTabInner() {
             <span className="text-gray-600 text-xs">· click a row to see play-by-play</span>
           </div>
           <GameLogTable
-            summaries={summaries} players={players} analyzed={analyzed} decisions={decisions}
+            summaries={summaries} players={players} analyzed={analyzed} decisions={savedView ? analyzed : decisionShells}
             selectedGame={selectedGame} setSelectedGame={setSelectedGame}
           />
         </div>
+      )}
+
+      {showStepper && (
+        <DecisionStepper decisions={analyzed} players={players} onClose={() => setShowStepper(false)} />
       )}
     </div>
   )
