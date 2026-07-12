@@ -24,26 +24,33 @@ import type { NNModel } from './wasmModel'
 export const ROYALTY_MCTS_SIMS = 1000
 
 // Terminal evaluation: royalties + bonus game EV if not bust, -6 if bust.
-export function computeRoyaltyScore(board: Board): number {
+// `inBonusRound` must be true when this board is the result of a decision
+// made INSIDE an already-triggered bonus round's side game — re-triggering
+// is disabled (docs/01_RULES_AND_SCORING.md section 8), so a new qualifying
+// top there grants no further bonus value.
+export function computeRoyaltyScore(board: Board, inBonusRound = false): number {
   if (isFoul(board)) return -6
-  return royalties(board) + bonusGameValue(board)
+  return royalties(board) + (inBonusRound ? 0 : bonusGameValue(board))
 }
 
 // Heuristic score for a partial board: sum royalties from complete rows only.
-// Includes bonus game value when top is complete and qualifying.
-function partialRoyaltyHint(board: PartialBoard): number {
+// Includes bonus game value when top is complete and qualifying (unless
+// already inside a side game — see computeRoyaltyScore).
+function partialRoyaltyHint(board: PartialBoard, inBonusRound: boolean): number {
   let score = 0
   if (board.top.length === 3) {
     const rank = evaluate3(board.top)
     if (rank.category === HandCategory.Trips) {
       score += 10 + (rank.tiebreakers[0]! - 2)
-      score += BONUS_EV_AA_TRIPS
+      if (!inBonusRound) score += BONUS_EV_AA_TRIPS
     } else if (rank.category === HandCategory.OnePair) {
       const pr = rank.tiebreakers[0]!
       if (pr >= 6) score += pr - 5
-      if (pr === 14) score += BONUS_EV_AA_TRIPS
-      else if (pr === 13) score += BONUS_EV_KK
-      else if (pr === 12) score += BONUS_EV_QQ
+      if (!inBonusRound) {
+        if (pr === 14) score += BONUS_EV_AA_TRIPS
+        else if (pr === 13) score += BONUS_EV_KK
+        else if (pr === 12) score += BONUS_EV_QQ
+      }
     }
   }
   if (board.middle.length === 5) {
@@ -79,6 +86,7 @@ function royaltyRollout(
   fromStreet: number,
   shuffledDeck: Card[],
   rng: RNG,
+  inBonusRound: boolean,
 ): number {
   let di = 0
   let b = board
@@ -93,14 +101,14 @@ function royaltyRollout(
     let bestCandidates: typeof candidates = []
     for (const p of candidates) {
       const next = applyPlacement(b, p)
-      const score = partialRoyaltyHint(next)
+      const score = partialRoyaltyHint(next, inBonusRound)
       if (score > bestScore) { bestScore = score; bestCandidates = [p] }
       else if (score === bestScore) bestCandidates.push(p)
     }
     b = applyPlacement(b, bestCandidates[Math.floor(rng() * bestCandidates.length)]!)
   }
 
-  return computeRoyaltyScore(b as Board)
+  return computeRoyaltyScore(b as Board, inBonusRound)
 }
 
 // UCB1 MCTS over all legal placements (no ROOT_TOP_K pruning).
@@ -124,7 +132,7 @@ export function royaltyMctsScoredPlacements(
   if (state.street === 4) {
     return candidates.map((placement, i) => ({
       placement,
-      ev: computeRoyaltyScore(boardsAfter[i]! as Board),
+      ev: computeRoyaltyScore(boardsAfter[i]! as Board, state.inBonusRound),
       variance: 0,
       n: 1,
     })).sort((a, b) => b.ev - a.ev)
@@ -146,7 +154,7 @@ export function royaltyMctsScoredPlacements(
     }
 
     const shuffled = fisherYates(liveDeck, rng)
-    const val = royaltyRollout(boardsAfter[arm]!, state.street, shuffled, rng)
+    const val = royaltyRollout(boardsAfter[arm]!, state.street, shuffled, rng, !!state.inBonusRound)
     visits[arm]++
     totals[arm] += val
   }

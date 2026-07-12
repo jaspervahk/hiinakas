@@ -79,6 +79,9 @@ function buildInfoState(state: GameState): InfoState | null {
     street: state.sideStreet,
     revealedOpponentBoards: oppBoards,
     discards,
+    // Re-triggering is disabled: reaching a new qualifying top inside this
+    // side game grants no further bonus-round value.
+    inBonusRound: true,
   }
 }
 

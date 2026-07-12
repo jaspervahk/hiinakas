@@ -35,6 +35,12 @@ export interface InfoState {
   readonly street: number                 // 0-4
   readonly revealedOpponentBoards: readonly PartialBoard[] // opponents' placed (revealed) cards only
   readonly discards?: readonly Card[]     // actor's own discards from previous streets (not opponents')
+  // True when this decision is itself part of an already-triggered bonus
+  // round's side game. Re-triggering is disabled (allowBonusRecursion=false,
+  // docs/01_RULES_AND_SCORING.md section 8), so reaching a new QQ/KK/AA-or-
+  // trips top INSIDE a side game grants no further bonus-round value —
+  // rollout() must not add bonusGameValue() in that case.
+  readonly inBonusRound?: boolean
 }
 
 // ── Scored placement (result of MC evaluation) ────────────────────────────
@@ -143,7 +149,10 @@ function rollout(
   // simulated opponent boards lets bonusGameValue sum one term per real
   // opponent (correct for both 2p and 3p) and value a co-qualifying
   // opponent's own bonus board correctly instead of assuming a generic one.
-  return (nets[0] ?? 0) + (includeBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[]) : 0)
+  // Suppressed entirely when this decision is already inside a side game —
+  // re-triggering is disabled, so a new qualifying top here grants nothing.
+  const addBonusEV = includeBonusEV && !state.inBonusRound
+  return (nets[0] ?? 0) + (addBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[]) : 0)
 }
 
 // ── EV computation for a single placement ─────────────────────────────────

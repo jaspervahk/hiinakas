@@ -200,6 +200,9 @@ function parseMovesToDecisions(
         street: turn,
         revealedOpponentBoards: oppBoards,
         discards: [...priorDiscards],
+        // Re-triggering is disabled: a bonus_play (side-game) decision that
+        // reaches a new qualifying top grants no further bonus-round value.
+        inBonusRound: segment === 'bonus_play',
       },
       actualPlacement,
     })

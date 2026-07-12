@@ -7,6 +7,7 @@ import {
   getBotMove,
   computeEV,
   isFoul,
+  bonusTrigger,
   scoreTable,
   Deck,
 } from '../index'
@@ -258,5 +259,47 @@ describe('EV ordering sanity', () => {
       // Trips-in-bottom should have strictly higher EV (trips in top causes foul risk)
       expect(evBottom.ev).toBeGreaterThan(evTop.ev)
     }
+  })
+})
+
+// ── Bonus EV suppressed inside an already-triggered bonus round ────────────
+// Re-triggering is disabled (docs/01_RULES_AND_SCORING.md section 8): reaching
+// a new qualifying top INSIDE a side game (bonus_play) grants no further
+// bonus-round value, unlike reaching one during the normal round.
+
+describe('inBonusRound suppresses bonus EV', () => {
+  it('adds bonus EV in normal play but not when already inside a bonus round', () => {
+    // Top is locked as a QQ pair; middle is trips (beats top); this street's
+    // placement completes bottom into a full house (beats middle) — no foul.
+    const state: Omit<InfoState, 'inBonusRound'> = {
+      board: {
+        top: [{ rank: 12, suit: 's' }, { rank: 12, suit: 'h' }, { rank: 4, suit: 'd' }],
+        middle: [{ rank: 3, suit: 'c' }, { rank: 3, suit: 'd' }, { rank: 3, suit: 'h' }, { rank: 8, suit: 's' }, { rank: 9, suit: 'd' }],
+        bottom: [{ rank: 2, suit: 'c' }, { rank: 2, suit: 'd' }, { rank: 7, suit: 's' }],
+      },
+      hand: [{ rank: 7, suit: 'c' }, { rank: 7, suit: 'd' }, { rank: 9, suit: 'h' }],
+      street: 4,
+      revealedOpponentBoards: [{
+        top: [{ rank: 9, suit: 's' }, { rank: 4, suit: 'c' }, { rank: 3, suit: 's' }],
+        middle: [{ rank: 8, suit: 'c' }, { rank: 8, suit: 'd' }, { rank: 2, suit: 's' }, { rank: 5, suit: 'h' }, { rank: 10, suit: 's' }],
+        bottom: [{ rank: 6, suit: 'h' }, { rank: 10, suit: 'd' }, { rank: 4, suit: 'h' }],
+      }],
+    }
+
+    const candidates = legalPlacements(state.board, state.hand, state.street)
+    const placement = candidates.find(p =>
+      p.bottomAdd.some(c => c.rank === 7 && c.suit === 'c') &&
+      p.bottomAdd.some(c => c.rank === 7 && c.suit === 'd')
+    )!
+    const finalBoard: Board = { ...state.board, bottom: [...state.board.bottom, ...placement.bottomAdd] }
+    expect(isFoul(finalBoard)).toBe(false)
+    expect(bonusTrigger(finalBoard)).toBe('QQ')
+
+    const normalEV = computeEV({ ...state, inBonusRound: false }, placement, 2000, mulberry32(7))
+    const sideEV   = computeEV({ ...state, inBonusRound: true },  placement, 2000, mulberry32(7))
+
+    // Normal play should be worth meaningfully more (the future bonus round's
+    // EV); inside a side game that upside doesn't exist.
+    expect(normalEV.ev - sideEV.ev).toBeGreaterThan(10)
   })
 })
