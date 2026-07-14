@@ -227,19 +227,37 @@ function sessionCacheKey(decisions: DecisionPoint[], mode: BotPolicy, sims: numb
   return `session_ev_${CACHE_VERSION}:${mode}:${sims}:${rootTopK}:${decisions[0]!.gameId}:${decisions[decisions.length - 1]!.gameId}:${decisions.length}`
 }
 
-function saveToCache(key: string, analyzed: ReviewDecision[]): void {
+// Returns false on failure (e.g. quota exceeded) so the caller can warn the
+// user — this used to silently swallow the error, which meant a large
+// session's cache write could fail with zero indication, leaving no local
+// safety net if the later Firestore save also failed for an unrelated reason.
+function saveToCache(key: string, analyzed: ReviewDecision[]): boolean {
+  const slim: CachedDecision[] = analyzed.map(d => ({
+    id: d.id, gameId: d.gameId, gameTime: d.gameTime,
+    username: d.username, uid: d.uid,
+    segment: d.segment, street: d.street,
+    hand: [...d.hand],
+    actualPlacement: d.actualPlacement, bestPlacement: d.bestPlacement,
+    playedEV: d.playedEV, bestEV: d.bestEV, evLost: d.evLost,
+    topCandidates: d.topCandidates,
+  }))
+  const json = JSON.stringify(slim)
   try {
-    const slim: CachedDecision[] = analyzed.map(d => ({
-      id: d.id, gameId: d.gameId, gameTime: d.gameTime,
-      username: d.username, uid: d.uid,
-      segment: d.segment, street: d.street,
-      hand: [...d.hand],
-      actualPlacement: d.actualPlacement, bestPlacement: d.bestPlacement,
-      playedEV: d.playedEV, bestEV: d.bestEV, evLost: d.evLost,
-      topCandidates: d.topCandidates,
-    }))
-    localStorage.setItem(key, JSON.stringify(slim))
-  } catch { /* quota exceeded */ }
+    localStorage.setItem(key, json)
+    return true
+  } catch {
+    // Quota exceeded — clear other stale session_ev_ entries (older
+    // sessions/superseded cache-key formats) to make room, then retry once.
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('session_ev_') && k !== key) localStorage.removeItem(k)
+      }
+      localStorage.setItem(key, json)
+      return true
+    } catch {
+      return false
+    }
+  }
 }
 
 function loadFromCache(key: string): ReviewDecision[] | null {
@@ -678,6 +696,10 @@ function SessionTabInner() {
   const [showStepper, setShowStepper] = useState(false)
   const [saveState, setSaveState] = useState<'idle' | 'naming' | 'saving' | 'saved' | 'error'>('idle')
   const [saveName, setSaveName] = useState('')
+  // True if the local recompute-avoidance cache failed to write (e.g. quota
+  // exceeded) — means there's no local safety net, so Save-to-Firestore is
+  // the only way to avoid losing this analysis if you navigate away.
+  const [cacheWarning, setCacheWarning] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const gameLogRef = useRef<HTMLDivElement>(null)
   const jumpToGame = useCallback((gameId: string) => {
@@ -688,7 +710,7 @@ function SessionTabInner() {
   const handleFile = useCallback((file: File) => {
     setError(''); setAnalyzed([]); setNoModel(false)
     setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setSelectedGame(null)
-    setBonusAnalyzed(new Map()); setBonusAnalyzeProgress(null); setSavedView(null)
+    setBonusAnalyzed(new Map()); setBonusAnalyzeProgress(null); setSavedView(null); setCacheWarning(false)
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -784,7 +806,11 @@ function SessionTabInner() {
     }
   }), [decisions])
 
-  // Restore from cache, enriching boards from freshly-parsed decisions
+  // Restore from cache, enriching boards from freshly-parsed decisions.
+  // Depends on analysisMode/sims/rootTopK too (not just decisions) — a prior
+  // version only re-checked once when decisions first populated, so changing
+  // the mode/sims picker afterward (to match what a previous run actually
+  // used) never re-triggered a fresh cache lookup with the corrected key.
   useEffect(() => {
     if (decisions.length === 0 || analyzed.length > 0) return
     const key = sessionCacheKey(decisions, analysisMode, sims, rootTopK)
@@ -797,7 +823,7 @@ function SessionTabInner() {
     })
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAnalyzed(enriched)
-  }, [decisions]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [decisions, analysisMode, sims, rootTopK]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Per-player stats from summaries.
   // Win/bust calculations use s.playerNames (the actual players in each game)
@@ -840,7 +866,7 @@ function SessionTabInner() {
 
   const runAnalysis = useCallback(async () => {
     if (decisions.length === 0) return
-    setAnalyzing(true); setNoModel(false); setAnalyzeProgress(null); setAnalyzed([])
+    setAnalyzing(true); setNoModel(false); setAnalyzeProgress(null); setAnalyzed([]); setCacheWarning(false)
     try {
       const positions = decisions.map(d => ({ id: d.id, state: d.infoState }))
       const partialMap = new Map<string, import('../engine/mc').ScoredPlacement[]>()
@@ -872,7 +898,10 @@ function SessionTabInner() {
       const built = buildAnalyzed(decisions, sourceMap)
       setAnalyzed(built)
       const key = sessionCacheKey(decisions, analysisMode, sims, rootTopK)
-      if (key && results.length > 0) saveToCache(key, built)
+      if (key && results.length > 0) {
+        const cached = saveToCache(key, built)
+        setCacheWarning(!cached)
+      }
     } finally {
       setAnalyzing(false); setAnalyzeProgress(null)
     }
@@ -1090,6 +1119,11 @@ function SessionTabInner() {
               {new Date(summaries.at(-1)!.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ·{' '}
               {summaries.length} hands
               {savedView && <span className="ml-2 text-indigo-400">· saved: {savedView.meta.name}</span>}
+            </p>
+          )}
+          {cacheWarning && !savedView && (
+            <p className="text-amber-400 text-xs mt-1">
+              ⚠ Local backup failed (session too large for browser storage) — use "Save analysis" below now to avoid losing this if you navigate away.
             </p>
           )}
         </div>
