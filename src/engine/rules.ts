@@ -155,3 +155,21 @@ export function bonusGameValue(actorBoard: Board, opponentBoards: readonly Board
   }
   return total
 }
+
+// Average royalties from optimal bonus-board play per qualifier tier (no
+// netting against any opponent — unlike BONUS_NET, which nets two full
+// pairwise sides against each other). Computed via bestBonusBoard, 300-3000
+// trials/tier depending on cost (foul rate ~0% for all three tiers).
+//
+// Used to value an ACTOR's OWN board (in a side game, not a bonus board)
+// against an opponent whose bonus-round board is invisible (info-set
+// hygiene: side-game players never see bonus-qualifying players' boards —
+// docs/01_RULES_AND_SCORING.md section 8) but who IS still scored against
+// at showdown. Since the actor can't simulate the opponent's exact hidden
+// board, this average stands in for the opponent's expected royalties in
+// that pairwise comparison — see mc.ts's rollout() and royaltyMcts.ts.
+export const AVG_BONUS_ROYALTY: Record<BonusQualifier, number> = {
+  QQ: 8.95,
+  KK: 12.36,
+  AA_OR_TRIPS: 16.75,
+}

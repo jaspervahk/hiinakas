@@ -73,6 +73,9 @@ function buildInfoState(state: GameState): InfoState | null {
     .map((q, i) => q ? null : state.botSideBoards[i]!)
     .filter((b): b is PartialBoard => b !== null)
   const discards = deriveDiscards(state.sidePreDealt[0]!, state.humanSideBoard, state.sideStreet)
+  // Bonus-qualifying bots are invisible here (excluded from oppBoards above)
+  // but are still scored against this side game at showdown.
+  const invisibleBonusOpponents = state.botBonusQualifiers.filter(q => q !== null)
   return {
     board: state.humanSideBoard,
     hand: sideHand,
@@ -82,6 +85,7 @@ function buildInfoState(state: GameState): InfoState | null {
     // Re-triggering is disabled: reaching a new qualifying top inside this
     // side game grants no further bonus-round value.
     inBonusRound: true,
+    invisibleBonusOpponents,
   }
 }
 

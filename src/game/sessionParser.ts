@@ -3,9 +3,10 @@
 // board) is parsed into BonusDecisionPoints and analysed separately from the
 // street-based DecisionPoints, since it has no streets or opponents.
 
-import type { Card, Rank, Suit, PartialBoard, Board } from '../engine/types'
+import type { Card, Rank, Suit, PartialBoard, Board, BonusQualifier } from '../engine/types'
 import type { InfoState } from '../engine/mc'
 import type { Placement } from '../engine/placement'
+import { bonusTrigger } from '../engine/rules'
 
 // ── Pokker6 raw types ────────────────────────────────────────────────────────
 
@@ -172,6 +173,7 @@ function parseMovesToDecisions(
   segment: 'normal_play' | 'bonus_play',
   moves: P6Move[],
   getOppBoards: (turn: number) => PartialBoard[],
+  invisibleBonusOpponents: readonly BonusQualifier[] = [],
 ): DecisionPoint[] {
   const sorted = [...moves].sort((a, b) => (a.turn ?? 0) - (b.turn ?? 0))
   const decisions: DecisionPoint[] = []
@@ -203,6 +205,9 @@ function parseMovesToDecisions(
         // Re-triggering is disabled: a bonus_play (side-game) decision that
         // reaches a new qualifying top grants no further bonus-round value.
         inBonusRound: segment === 'bonus_play',
+        // Bonus-qualifying opponents' boards are invisible during play but
+        // still scored against this decision's final board at showdown.
+        invisibleBonusOpponents,
       },
       actualPlacement,
     })
@@ -333,6 +338,7 @@ export function parseSessionGames(
 
       const isBonus = bonusEligibleUids.has(data.uid)
       let getOppBoards: (t: number) => PartialBoard[]
+      let invisibleBonusOpponents: BonusQualifier[] = []
 
       if (isBonus) {
         getOppBoards = () => []
@@ -348,6 +354,18 @@ export function parseSessionGames(
           if (oppSide.length > 0) oppSideMoves.push(oppSide)
         }
         getOppBoards = (t) => oppSideMoves.map(oMoves => boardBeforeTurn(oMoves, t))
+
+        // Bonus-eligible opponents play invisibly (info-set hygiene) but are
+        // still scored against this side game at showdown — their qualifying
+        // tier is knowable from their (public) completed normal-round board.
+        for (const [oppName, oppData] of playerData) {
+          if (oppName === pname) continue
+          if (!bonusEligibleUids.has(oppData.uid)) continue
+          const oppNormalMoves = normalMoves.get(oppName) ?? []
+          const oppFinalBoard = boardBeforeTurn(oppNormalMoves, 5) as Board
+          const tier = bonusTrigger(oppFinalBoard)
+          if (tier) invisibleBonusOpponents.push(tier)
+        }
       }
 
       decisions.push(
@@ -355,6 +373,7 @@ export function parseSessionGames(
           game.gameId, game.createdAt, pname, data.uid, 'bonus_play',
           bonusPlay,
           getOppBoards,
+          invisibleBonusOpponents,
         )
       )
     }

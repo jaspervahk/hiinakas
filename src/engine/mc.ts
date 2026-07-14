@@ -1,7 +1,7 @@
-import type { Card, PartialBoard } from './types'
+import type { Card, PartialBoard, BonusQualifier } from './types'
 import { FULL_DECK } from './deck'
 import { scoreTable } from './scoring'
-import { bonusGameValue } from './rules'
+import { bonusGameValue, isFoul, royalties, AVG_BONUS_ROYALTY } from './rules'
 import type { Board } from './types'
 import { legalPlacements, applyPlacement } from './placement'
 import type { Placement } from './placement'
@@ -41,6 +41,14 @@ export interface InfoState {
   // trips top INSIDE a side game grants no further bonus-round value —
   // rollout() must not add bonusGameValue() in that case.
   readonly inBonusRound?: boolean
+  // Qualifier tiers of opponents who ARE scored against this decision's
+  // final board at showdown (docs/01_RULES_AND_SCORING.md section 8: every
+  // active player's board is scored pairwise, bonus-round or side-game)
+  // but whose boards are invisible during play (info-set hygiene: side-game
+  // players never see bonus-qualifying players' boards). Since these
+  // opponents can't be simulated, rollout() values each one using
+  // AVG_BONUS_ROYALTY as a stand-in for their expected royalties.
+  readonly invisibleBonusOpponents?: readonly BonusQualifier[]
 }
 
 // ── Scored placement (result of MC evaluation) ────────────────────────────
@@ -152,7 +160,28 @@ function rollout(
   // Suppressed entirely when this decision is already inside a side game —
   // re-triggering is disabled, so a new qualifying top here grants nothing.
   const addBonusEV = includeBonusEV && !state.inBonusRound
-  return (nets[0] ?? 0) + (addBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[]) : 0)
+  let total = (nets[0] ?? 0) + (addBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[]) : 0)
+
+  // Invisible bonus-round opponents (side-game info-set hygiene means their
+  // boards can't be simulated) still score against the actor at showdown.
+  // Approximates scorePair's formula with the opponent side standing in via
+  // AVG_BONUS_ROYALTY (foul rate ~0% for optimal bonus play, so bFoul is
+  // treated as always false) and rowScore approximated as 0 (no simulated
+  // opponent board to compare rows against) — without this, a side-game
+  // decision with zero VISIBLE opponents would score exactly 0 for every
+  // candidate (scoreTable's pairwise loop never runs for a 1-board table),
+  // silently dropping the actor's own royalties from the EV entirely.
+  if (state.invisibleBonusOpponents) {
+    const actorFouled = isFoul(actorBrd as Board)
+    const actorRoy = actorFouled ? 0 : royalties(actorBrd as Board)
+    for (const tier of state.invisibleBonusOpponents) {
+      total += actorFouled
+        ? -6 - AVG_BONUS_ROYALTY[tier]
+        : actorRoy - AVG_BONUS_ROYALTY[tier]
+    }
+  }
+
+  return total
 }
 
 // ── EV computation for a single placement ─────────────────────────────────

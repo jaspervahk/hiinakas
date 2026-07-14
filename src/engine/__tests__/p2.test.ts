@@ -303,3 +303,36 @@ describe('inBonusRound suppresses bonus EV', () => {
     expect(normalEV.ev - sideEV.ev).toBeGreaterThan(10)
   })
 })
+
+// ── Side-game EV with zero visible opponents ────────────────────────────────
+// When a side-game player is the only non-qualifier at their table, there is
+// no visible opponent to run scoreTable's pairwise comparison against, so it
+// returned exactly 0 for every candidate — silently dropping the actor's own
+// royalties from the EV even though real scoring still compares them against
+// the invisible bonus-round qualifier(s). invisibleBonusOpponents fixes this.
+
+describe('invisibleBonusOpponents values own royalties with zero visible opponents', () => {
+  it('differentiates candidates by royalty instead of returning a flat 0', () => {
+    const state: Omit<InfoState, 'inBonusRound' | 'invisibleBonusOpponents'> = {
+      board: { top: [], middle: [], bottom: [] },
+      hand: [
+        { rank: 6, suit: 'h' }, { rank: 12, suit: 's' }, { rank: 7, suit: 'd' },
+        { rank: 13, suit: 'c' }, { rank: 3, suit: 's' },
+      ],
+      street: 0,
+      revealedOpponentBoards: [],
+    }
+    const candidates = legalPlacements(state.board, state.hand, state.street).slice(0, 5)
+
+    const withoutFix = candidates.map(p =>
+      computeEV({ ...state, inBonusRound: true }, p, 300, mulberry32(3)).ev
+    )
+    expect(new Set(withoutFix.map(v => v.toFixed(2))).size).toBe(1)
+    expect(withoutFix[0]).toBe(0)
+
+    const withFix = candidates.map(p =>
+      computeEV({ ...state, inBonusRound: true, invisibleBonusOpponents: ['QQ'] }, p, 300, mulberry32(3)).ev
+    )
+    expect(new Set(withFix.map(v => v.toFixed(2))).size).toBeGreaterThan(1)
+  })
+})
