@@ -7,10 +7,13 @@
 // browses, and deletes.
 //
 // A saved analysis is chunked across multiple documents to stay well under
-// Firestore's 1 MiB per-document limit (~4,000 decisions/session would
-// otherwise produce a single ~16-22MB document): one small metadata doc plus
-// several decisionChunks/bonusChunks docs, each holding DECISIONS_PER_CHUNK
-// entries (~385KB/chunk, ~37% of the limit).
+// both Firestore's 1 MiB per-document limit and its ~10MB single-request
+// (batch commit) limit — one small metadata doc plus several decisionChunks/
+// bonusChunks docs, each holding DECISIONS_PER_CHUNK entries, several of
+// which are grouped per writeBatch (CHUNKS_PER_BATCH). Sized with a large
+// safety margin after a real multi-hundred-hand session hit "Request payload
+// size exceeds the limit: 11534336 bytes" with the original, too-optimistic
+// sizing (see the comment on DECISIONS_PER_CHUNK below).
 //
 // Write ordering avoids needing a true multi-doc transaction: all chunk docs
 // are written first, the metadata doc last. listSavedAnalyses() only reads
@@ -27,10 +30,23 @@ import type { GameSummary } from '../game/sessionParser'
 import type { ReviewDecision, PersistedBonusDecision, SavedAnalysisMeta } from '../game/sessionAnalysisTypes'
 import type { BotPolicy } from '../worker/client'
 
-export const DECISIONS_PER_CHUNK = 175
-// Batched writes cap at 500 ops; keep well under that (and any single-batch
-// byte-size comfort zone) by splitting chunk writes into groups this size.
-const CHUNKS_PER_BATCH = 12
+// Original sizing assumed ~2.2KB/decision (JSON-text mental model), but
+// Firestore's actual wire format carries substantially more per-field
+// overhead than compact JSON — real chunks measured ~960KB at
+// DECISIONS_PER_CHUNK=175, i.e. ~5.5KB/decision, and a 12-chunk batch (was
+// CHUNKS_PER_BATCH) hit a real "Request payload size exceeds the limit:
+// 11534336 bytes" error for a large multi-hundred-hand session. Re-sized
+// with a large safety margin (~4-5x under the observed real numbers) rather
+// than re-deriving an exact byte count, since real per-decision size varies
+// with candidate-list contents.
+export const DECISIONS_PER_CHUNK = 40
+// Keep batch payloads far below both the 500-op cap and the observed
+// ~11MB single-request ceiling.
+const CHUNKS_PER_BATCH = 4
+// Trim topCandidates further at save time (display only ever needs a
+// handful) — independent of the in-memory ReviewDecision shape used
+// elsewhere, which keeps its own trim-to-8 from buildAnalyzed.
+const SAVED_TOP_CANDIDATES = 5
 
 function uid(): string | null {
   return auth.currentUser?.uid ?? null
@@ -61,7 +77,11 @@ export async function saveSessionAnalysis(input: SaveInput): Promise<string | nu
     const analysisId = crypto.randomUUID()
     const analysisRef = doc(db, 'users', u, 'savedAnalyses', analysisId)
 
-    const decisionChunks = chunkArray(input.decisions, DECISIONS_PER_CHUNK)
+    const trimmedDecisions: ReviewDecision[] = input.decisions.map(d => ({
+      ...d,
+      topCandidates: d.topCandidates.slice(0, SAVED_TOP_CANDIDATES),
+    }))
+    const decisionChunks = chunkArray(trimmedDecisions, DECISIONS_PER_CHUNK)
     const bonusChunks = chunkArray(input.bonusDecisions, DECISIONS_PER_CHUNK)
 
     const decisionChunkDocs = decisionChunks.map((decisions, chunkIndex) => ({
