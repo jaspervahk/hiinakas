@@ -11,6 +11,7 @@ import {
   parseSessionGames,
   detectPlayerGroups,
   matchesActual,
+  computeSessionStats,
   type P6Export,
   type DecisionPoint,
   type BonusDecisionPoint,
@@ -830,38 +831,7 @@ function SessionTabInner() {
   // so that multi-group selections (e.g. A vs B + A vs B vs C) work correctly.
   const stats = useMemo(() => {
     if ((!activeGroups && !savedView) || allPlayers.length === 0 || summaries.length === 0) return null
-
-    const wins: Record<string, number> = {}
-    const soloBusts: Record<string, number> = {}
-    const bustCost: Record<string, number> = {}
-    const allBustCount: Record<string, number> = {}
-    for (const n of allPlayers) { wins[n] = 0; soloBusts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0 }
-    let ties = 0; let allBustHands = 0
-
-    for (const s of summaries) {
-      const gamePlayers = s.playerNames.length > 0 ? s.playerNames : allPlayers
-      const scores = gamePlayers.map(p => s.points[p] ?? 0)
-      const maxScore = Math.max(...scores)
-      const winners = gamePlayers.filter(p => (s.points[p] ?? 0) === maxScore)
-      if (winners.length === 1) wins[winners[0]!] = (wins[winners[0]!] ?? 0) + 1
-      else ties++
-
-      const bustCount = gamePlayers.filter(p => s.busts[p]).length
-      if (bustCount === gamePlayers.length) {
-        allBustHands++
-        for (const p of gamePlayers) allBustCount[p] = (allBustCount[p] ?? 0) + 1
-      } else {
-        for (const p of gamePlayers) {
-          if (s.busts[p]) {
-            soloBusts[p] = (soloBusts[p] ?? 0) + 1
-            bustCost[p] = (bustCost[p] ?? 0) + (s.points[p] ?? 0)
-          }
-        }
-      }
-    }
-
-    const final = summaries.at(-1)!
-    return { wins, ties, soloBusts, bustCost, allBustHands, allBustCount, finalRuns: final.runs }
+    return computeSessionStats(summaries, allPlayers)
   }, [activeGroups, allPlayers, summaries, savedView])
 
   const runAnalysis = useCallback(async () => {
@@ -1112,15 +1082,22 @@ function SessionTabInner() {
               </span>
             ))}
           </h2>
-          {summaries.length > 0 && (
-            <p className="text-gray-500 text-xs mt-0.5">
-              {new Date(summaries[0]!.gameTime).toLocaleDateString()} ·{' '}
-              {new Date(summaries[0]!.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}–
-              {new Date(summaries.at(-1)!.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ·{' '}
-              {summaries.length} hands
-              {savedView && <span className="ml-2 text-indigo-400">· saved: {savedView.meta.name}</span>}
-            </p>
-          )}
+          {summaries.length > 0 && (() => {
+            const start = new Date(summaries[0]!.gameTime)
+            const end = new Date(summaries.at(-1)!.gameTime)
+            const fmtDate = (d: Date) => d.toLocaleDateString()
+            const fmtTime = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            const sameDay = start.toDateString() === end.toDateString()
+            const range = sameDay
+              ? `${fmtDate(start)} · ${fmtTime(start)}–${fmtTime(end)}`
+              : `${fmtDate(start)} ${fmtTime(start)} – ${fmtDate(end)} ${fmtTime(end)}`
+            return (
+              <p className="text-gray-500 text-xs mt-0.5">
+                {range} · {summaries.length} hands
+                {savedView && <span className="ml-2 text-indigo-400">· saved: {savedView.meta.name}</span>}
+              </p>
+            )
+          })()}
           {cacheWarning && !savedView && (
             <p className="text-amber-400 text-xs mt-1">
               ⚠ Local backup failed (session too large for browser storage) — use "Save analysis" below now to avoid losing this if you navigate away.
@@ -1182,7 +1159,7 @@ function SessionTabInner() {
               <StatCard key={p}
                 label={`${p} total`}
                 value={`${run > 0 ? '+' : ''}${run}`}
-                sub={`${stats.wins[p] ?? 0}W · ${stats.ties} ties · ${stats.soloBusts[p] ?? 0} busts`}
+                sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.soloBusts[p] ?? 0} busts`}
                 color={run >= 0 ? pc(pi).text : 'text-red-400'} />
             )
           })}
@@ -1190,7 +1167,7 @@ function SessionTabInner() {
             <StatCard
               label="record"
               value={`${stats.wins[players[0]!] ?? 0}W / ${stats.wins[players[1]!] ?? 0}L`}
-              sub={stats.ties > 0 ? `${stats.ties} ties` : undefined}
+              sub={(stats.ties[players[0]!] ?? 0) > 0 ? `${stats.ties[players[0]!]} ties` : undefined}
               color={pc(0).text} />
           )}
         </div>
