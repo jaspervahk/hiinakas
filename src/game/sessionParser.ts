@@ -323,12 +323,28 @@ export function parseSessionGames(
     // Bonus / side-game — analyse bonus_play decisions for any player.
     //
     // Information sets (both groups share one fresh deck, but visibility differs):
-    //   - Bonus players (uid in bonusEligibleUids): play in complete isolation —
-    //     revealedOpponentBoards = [] throughout. They see nobody.
-    //   - Side-game players (uid not in bonusEligibleUids): see each other's
-    //     partial boards per turn, exactly as in the normal game. They never see
-    //     bonus players' boards.
-    const bonusEligibleUids = new Set(cp.bonusEligibleUids ?? [])
+    //   - Bonus players (their own moves use segment 'bonus_submit'): play a
+    //     one-shot board in complete isolation — analysed separately below,
+    //     never through this street-based loop.
+    //   - Side-game players (their own moves use segment 'bonus_play'): see
+    //     each other's partial boards per turn, exactly as in the normal game.
+    //     They never see bonus players' boards directly, but a bonus player's
+    //     known final tier still scores against them at showdown.
+    //
+    // Role is derived directly from each move's own segment tag — NOT from
+    // cp.bonusEligibleUids. That field's exact semantics turned out to be
+    // unreliable here: it silently included at least some side-game players'
+    // own uids too (or is simply incomplete for some hands), which took the
+    // isolated "sees nobody" branch below for a *confirmed* side-game player
+    // (already known to have real bonus_play moves at this point), zeroing
+    // out both revealedOpponentBoards and invisibleBonusOpponents — the
+    // symptom was every side-game candidate showing an identical, flat EV
+    // (no comparison term of any kind survived). Segment tags are ground
+    // truth (already used to build normalMoves/bonusPlay above) and can't
+    // suffer from this ambiguity.
+    const bonusSubmitUids = new Set(
+      moves.filter(m => m.segment === 'bonus_submit' && m.top && m.middle && m.bottom).map(m => m.uid),
+    )
 
     for (const [pname, data] of playerData) {
       const bonusPlay = moves.filter(
@@ -336,36 +352,29 @@ export function parseSessionGames(
       )
       if (bonusPlay.length === 0) continue
 
-      const isBonus = bonusEligibleUids.has(data.uid)
-      let getOppBoards: (t: number) => PartialBoard[]
-      let invisibleBonusOpponents: BonusQualifier[] = []
+      // Collect other side-game players' moves (exclude isolated bonus players).
+      const oppSideMoves: P6Move[][] = []
+      for (const [oppName, oppData] of playerData) {
+        if (oppName === pname) continue
+        if (bonusSubmitUids.has(oppData.uid)) continue
+        const oppSide = moves.filter(
+          m => m.uid === oppData.uid && m.segment === 'bonus_play' && m.placements,
+        )
+        if (oppSide.length > 0) oppSideMoves.push(oppSide)
+      }
+      const getOppBoards = (t: number) => oppSideMoves.map(oMoves => boardBeforeTurn(oMoves, t))
 
-      if (isBonus) {
-        getOppBoards = () => []
-      } else {
-        // Collect other side-game players' moves (exclude bonus players).
-        const oppSideMoves: P6Move[][] = []
-        for (const [oppName, oppData] of playerData) {
-          if (oppName === pname) continue
-          if (bonusEligibleUids.has(oppData.uid)) continue
-          const oppSide = moves.filter(
-            m => m.uid === oppData.uid && m.segment === 'bonus_play' && m.placements,
-          )
-          if (oppSide.length > 0) oppSideMoves.push(oppSide)
-        }
-        getOppBoards = (t) => oppSideMoves.map(oMoves => boardBeforeTurn(oMoves, t))
-
-        // Bonus-eligible opponents play invisibly (info-set hygiene) but are
-        // still scored against this side game at showdown — their qualifying
-        // tier is knowable from their (public) completed normal-round board.
-        for (const [oppName, oppData] of playerData) {
-          if (oppName === pname) continue
-          if (!bonusEligibleUids.has(oppData.uid)) continue
-          const oppNormalMoves = normalMoves.get(oppName) ?? []
-          const oppFinalBoard = boardBeforeTurn(oppNormalMoves, 5) as Board
-          const tier = bonusTrigger(oppFinalBoard)
-          if (tier) invisibleBonusOpponents.push(tier)
-        }
+      // Bonus-eligible opponents play invisibly (info-set hygiene) but are
+      // still scored against this side game at showdown — their qualifying
+      // tier is knowable from their (public) completed normal-round board.
+      const invisibleBonusOpponents: BonusQualifier[] = []
+      for (const [oppName, oppData] of playerData) {
+        if (oppName === pname) continue
+        if (!bonusSubmitUids.has(oppData.uid)) continue
+        const oppNormalMoves = normalMoves.get(oppName) ?? []
+        const oppFinalBoard = boardBeforeTurn(oppNormalMoves, 5) as Board
+        const tier = bonusTrigger(oppFinalBoard)
+        if (tier) invisibleBonusOpponents.push(tier)
       }
 
       decisions.push(
