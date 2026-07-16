@@ -22,6 +22,7 @@ import { loadSessionAnalysis, saveSessionAnalysis } from '../firestore/sessionAn
 import { SavedAnalysesList } from '../components/SavedAnalysesList'
 import { CardChip, PlacementSummary, CandidateList } from '../components/CandidateList'
 import { DecisionStepper } from '../components/DecisionStepper'
+import { ReplaySession } from '../components/ReplaySession'
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy, BonusAnalysisResult } from '../worker/client'
 
@@ -695,6 +696,7 @@ function SessionTabInner() {
   } | null>(null)
   const [showSavedList, setShowSavedList] = useState(false)
   const [showStepper, setShowStepper] = useState(false)
+  const [replayTarget, setReplayTarget] = useState<string | null>(null)
   const [saveState, setSaveState] = useState<'idle' | 'naming' | 'saving' | 'saved' | 'error'>('idle')
   const [saveName, setSaveName] = useState('')
   // True if the local recompute-avoidance cache failed to write (e.g. quota
@@ -736,10 +738,13 @@ function SessionTabInner() {
     if (!loaded) return
     setSavedView(loaded)
     setAnalyzed(loaded.decisions)
-    setBonusAnalyzed(new Map(loaded.bonusDecisions.map(bd => [bd.id, {
-      id: bd.id, bestBoard: bd.bestBoard, bestRoyalties: bd.bestRoyalties,
-      actualRoyalties: bd.actualRoyalties, actualFoul: bd.actualFoul, evLost: bd.evLost,
-    }])))
+    setBonusAnalyzed(new Map(loaded.bonusDecisions.flatMap(bd => {
+      if (bd.bestBoard === undefined) return []  // never EV-analyzed before saving
+      return [[bd.id, {
+        id: bd.id, bestBoard: bd.bestBoard, bestRoyalties: bd.bestRoyalties!,
+        actualRoyalties: bd.actualRoyalties!, actualFoul: bd.actualFoul!, evLost: bd.evLost!,
+      }] as const]
+    })))
     setSelectedGame(null)
     setShowSavedList(false)
   }, [])
@@ -903,15 +908,21 @@ function SessionTabInner() {
 
   const confirmSave = useCallback(async (name: string) => {
     setSaveState('saving')
-    const persistedBonus: PersistedBonusDecision[] = bonusDecisions.flatMap(bd => {
+    // Always persist the base fields (cards/actualBoard) regardless of whether
+    // bonus analysis was run — the Save button is only gated on the main EV
+    // analysis, so a session can be saved having never run "Analyze bonus" at
+    // all. Dropping unanalyzed entries here used to silently lose every
+    // bonus-round board for every player in that case.
+    const persistedBonus: PersistedBonusDecision[] = bonusDecisions.map(bd => {
       const r = bonusAnalyzed.get(bd.id)
-      if (!r) return []
-      return [{
+      return {
         id: bd.id, gameId: bd.gameId, gameTime: bd.gameTime, username: bd.username, uid: bd.uid,
         numDiscard: bd.numDiscard, cards: bd.cards, actualBoard: bd.actualBoard,
-        bestBoard: r.bestBoard, bestRoyalties: r.bestRoyalties,
-        actualRoyalties: r.actualRoyalties, actualFoul: r.actualFoul, evLost: r.evLost,
-      }]
+        ...(r ? {
+          bestBoard: r.bestBoard, bestRoyalties: r.bestRoyalties,
+          actualRoyalties: r.actualRoyalties, actualFoul: r.actualFoul, evLost: r.evLost,
+        } : {}),
+      }
     })
     const id = await saveSessionAnalysis({
       name: name.trim() || suggestedSaveName(),
@@ -1304,7 +1315,15 @@ function SessionTabInner() {
               const decCount = blundersByPlayer.get(p)?.length ?? 0
               return (
                 <div key={p} className="bg-gray-900 rounded-lg p-3">
-                  <p className={`text-[10px] uppercase tracking-wider ${pc(pi).text}`}>{p} EV lost</p>
+                  <div className="flex items-center justify-between">
+                    <p className={`text-[10px] uppercase tracking-wider ${pc(pi).text}`}>{p} EV lost</p>
+                    <button
+                      onClick={() => setReplayTarget(p)}
+                      className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                    >
+                      Replay hands →
+                    </button>
+                  </div>
                   <p className="text-xl font-bold text-red-400">-{lost.toFixed(1)}</p>
                   <p className="text-xs text-gray-600">avg {(lost / (decCount || 1)).toFixed(2)}/decision</p>
                 </div>
@@ -1417,6 +1436,16 @@ function SessionTabInner() {
 
       {showStepper && (
         <DecisionStepper decisions={analyzed} players={players} onClose={() => setShowStepper(false)} />
+      )}
+
+      {replayTarget && (
+        <ReplaySession
+          username={replayTarget}
+          summaries={summaries}
+          streetDecisions={savedView ? analyzed : decisionShells}
+          bonusBoardDecisions={bonusDecisions}
+          onClose={() => setReplayTarget(null)}
+        />
       )}
     </div>
   )

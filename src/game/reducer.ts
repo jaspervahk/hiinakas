@@ -5,7 +5,7 @@ import {
   scoreTable,
 } from '../engine/index'
 import type { Card, PartialBoard, Board, Placement } from '../engine/index'
-import type { GameState, PendingRows, StreetLog, AppSettings } from './types'
+import type { GameState, PendingRows, StreetLog, AppSettings, ReplayConfig } from './types'
 import { emptyPending, emptyBoard } from './types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -73,6 +73,7 @@ function removeCard(arr: Card[], card: Card): Card[] {
 
 export type Action =
   | { type: 'START_GAME'; playerCount: 2 | 3 }
+  | { type: 'START_REPLAY'; playerCount: 2 | 3; preDealt: Card[][][]; replay: ReplayConfig }
   | { type: 'SELECT_CARD'; card: Card }
   | { type: 'ASSIGN_TO_ROW'; row: 'top' | 'middle' | 'bottom' }
   | { type: 'REMOVE_PENDING'; row: 'top' | 'middle' | 'bottom'; index: number }
@@ -121,6 +122,7 @@ export function makeInitialState(): GameState {
       coachEnabled: true, playerCount: 2, botPolicy: 'nn', coachMode: 'nn',
       botSims: 500, botRootTopK: 35, coachSims: 500, coachRootTopK: 35,
     },
+    replay: null,
   }
 }
 
@@ -153,6 +155,29 @@ export function gameReducer(state: GameState, action: Action): GameState {
         pending: emptyPending(),
         selectedCard: null,
         currentStreetLogs: [],
+      }
+    }
+
+    case 'START_REPLAY': {
+      const { playerCount, preDealt, replay } = action
+      const botCount = playerCount - 1
+      const base = makeInitialState()
+      return {
+        ...base,
+        appSettings: { ...state.appSettings, playerCount },
+        phase: 'placing',
+        context: 'normal',
+        playerCount,
+        seed: replay.fallbackSeed,
+        preDealt,
+        street: 0,
+        humanBoard: emptyBoard(),
+        botBoards: Array.from({ length: botCount }, emptyBoard),
+        humanHand: preDealt[0]![0]!,
+        pending: emptyPending(),
+        selectedCard: null,
+        currentStreetLogs: [],
+        replay,
       }
     }
 
@@ -364,9 +389,18 @@ function advance(state: GameState): GameState {
 
 // ── Start bonus round ─────────────────────────────────────────────────────────
 
+// Fold a frozen sequence of historical placements onto an empty board — used
+// to reconstruct a replayed opponent's exact final side-game board without
+// re-running any policy/heuristic.
+function foldPlacements(placements: readonly Placement[]): PartialBoard {
+  let board = emptyBoard()
+  for (const p of placements) board = applyPlacement(board, p)
+  return board
+}
+
 function startBonus(state: GameState): GameState {
-  const { humanBoard, botBoards, normalScores, seed } = state
-  const bonusSeed = seed + 1
+  const { humanBoard, botBoards, normalScores, seed, replay } = state
+  const bonusSeed = replay ? replay.fallbackSeed : seed + 1
 
   const humanQ = bonusTrigger(humanBoard as Board)
   const botQs = botBoards.map(b => bonusTrigger(b as Board))
@@ -386,14 +420,33 @@ function startBonus(state: GameState): GameState {
 
   const bonusDeck = new Deck(bonusSeed)
 
+  // The human's own bonus content: reuse the historical deal only if this
+  // hand's replayed tier still matches history (their new play might have
+  // reached a different tier, or none at all — in that case there's no
+  // historical data to replay, so fall through to a fresh, deterministic deal
+  // exactly like live play, just seeded from the replay's own fallback seed).
+  const humanReplayMatches = replay?.humanBonusReplay != null && replay.humanBonusReplay.tier === humanQ
+  const humanBonusCards =
+    humanReplayMatches && replay!.humanBonusReplay!.tier !== null ? replay!.humanBonusReplay!.cards
+    : humanQ ? bonusDeck.deal(bonusDealCount(humanQ))
+    : []
+
   // Deal bonus cards for qualifiers; deal side game for non-qualifiers
-  const humanBonusCards = humanQ ? bonusDeck.deal(bonusDealCount(humanQ)) : []
   const botBonusCards = botQs.map(q => q ? bonusDeck.deal(bonusDealCount(q)) : [])
 
-  // Bot qualifier boards (one-shot) computed immediately
-  const botBonusBoards: PartialBoard[] = botQs.map((q, i) =>
+  // Bot qualifier boards (one-shot): use the frozen historical board when
+  // replaying (opponents always replay verbatim, never recomputed); fall
+  // back to the computed one-shot solver otherwise, or if replay data for
+  // this specific opponent happens to be missing.
+  const computedBotBonusBoards: PartialBoard[] = botQs.map((q, i) =>
     q ? botOneShotBonus(botBonusCards[i]!) : emptyBoard()
   )
+  const botBonusBoards: PartialBoard[] = replay
+    ? computedBotBonusBoards.map((b, i) => {
+        const outcome = replay.opponentBonusOutcomes[i]
+        return outcome && outcome.qualifies ? outcome.board : b
+      })
+    : computedBotBonusBoards
 
   // Side game: non-qualifying players
   // Deal side game cards from a separate section of the bonus deck
@@ -407,8 +460,9 @@ function startBonus(state: GameState): GameState {
 
   const sidePreDealt: Card[][][] = []
   if (humanInSide) {
-    const humanSide: Card[][] = []
-    for (const cnt of sideDealtCounts) humanSide.push(sideDeck.deal(cnt))
+    const humanSide: Card[][] =
+      humanReplayMatches && replay!.humanBonusReplay!.tier === null ? replay!.humanBonusReplay!.sideHands
+      : sideDealtCounts.map(cnt => sideDeck.deal(cnt))
     sidePreDealt.push(humanSide)
   }
   for (let i = 0; i < botQs.length; i++) {
@@ -441,6 +495,16 @@ function startBonus(state: GameState): GameState {
   const interleavedBoards = botSideGamesInterleaved(sideBotDealt)
   for (let k = 0; k < sideBotIndices.length; k++) {
     botSideBoards[sideBotIndices[k]!] = interleavedBoards[k]!
+  }
+
+  // Replay: replace each side-gaming opponent's computed board with their
+  // frozen historical placements folded in order, when available.
+  if (replay) {
+    for (let i = 0; i < botQs.length; i++) {
+      if (!botInSide[i]) continue
+      const outcome = replay.opponentBonusOutcomes[i]
+      if (outcome && !outcome.qualifies) botSideBoards[i] = foldPlacements(outcome.placements)
+    }
   }
 
   if (humanInSide) {

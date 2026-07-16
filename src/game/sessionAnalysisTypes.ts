@@ -38,11 +38,15 @@ export interface PersistedBonusDecision {
   numDiscard: number
   cards: Card[]
   actualBoard: Board
-  bestBoard: Board
-  bestRoyalties: number
-  actualRoyalties: number
-  actualFoul: boolean
-  evLost: number
+  // EV fields are optional: only present if bonus analysis was run for this
+  // decision before saving. Base fields (cards/actualBoard) are always saved
+  // regardless, so replay and other non-EV consumers never lose data just
+  // because the user skipped the separate "Analyze bonus" step.
+  bestBoard?: Board
+  bestRoyalties?: number
+  actualRoyalties?: number
+  actualFoul?: boolean
+  evLost?: number
 }
 
 export interface SavedAnalysisMeta {

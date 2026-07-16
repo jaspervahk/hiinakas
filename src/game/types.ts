@@ -1,4 +1,4 @@
-import type { Card, PartialBoard, BonusQualifier, ScoredPlacement } from '../engine/index'
+import type { Card, PartialBoard, Board, BonusQualifier, Placement, ScoredPlacement } from '../engine/index'
 
 export type GamePhase =
   | 'setup'
@@ -72,6 +72,29 @@ export interface GameState {
   // ── P4 additions ─────────────────────────────────────────────────────────
   currentStreetLogs: StreetLog[]   // accumulates during a hand
   appSettings: AppSettings
+
+  // ── Replay (Session Analysis "replay hands" feature) ──────────────────────
+  // null for ordinary live play. When set, every other seat replays frozen
+  // historical placements verbatim (never recomputed) while the human seat
+  // plays fresh — same reducer/engine, just a different source for deals and
+  // opponent moves.
+  replay: ReplayConfig | null
+}
+
+export interface ReplayConfig {
+  opponentNormalPlacements: Placement[][]   // [botIdx][street 0-4]
+  opponentBonusOutcomes: (
+    | { qualifies: true; board: Board }               // historically triggered bonus: one-shot board
+    | { qualifies: false; placements: Placement[] }    // historically played side game: [sideStreet 0-4]
+    | null                                             // neither (no bonus round reached this bot at all)
+  )[]
+  humanBonusReplay:
+    | { tier: BonusQualifier; cards: Card[] }   // human historically qualified: one-shot bonus cards
+    | { tier: null; sideHands: Card[][] }       // human historically played side game: [sideStreet 0-4]
+    | null                                       // bonus never triggered for the human that hand
+  historicalTotal: number   // GameSummary.points[targetUsername] — comparison baseline
+  fallbackSeed: number      // deterministic (hash of gameId); used only if the human's new
+                            // play reaches a bonus outcome that diverges from history
 }
 
 export interface StreetLog {
