@@ -23,6 +23,8 @@ import { SavedAnalysesList } from '../components/SavedAnalysesList'
 import { CardChip, PlacementSummary, CandidateList } from '../components/CandidateList'
 import { DecisionStepper } from '../components/DecisionStepper'
 import { ReplaySession } from '../components/ReplaySession'
+import { ChallengeHuubOverlay } from '../components/ChallengeHuubOverlay'
+import { SentChallengesList } from '../components/SentChallengesList'
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy, BonusAnalysisResult } from '../worker/client'
 
@@ -697,6 +699,8 @@ function SessionTabInner() {
   const [showSavedList, setShowSavedList] = useState(false)
   const [showStepper, setShowStepper] = useState(false)
   const [replayTarget, setReplayTarget] = useState<string | null>(null)
+  const [huubChallengeTarget, setHuubChallengeTarget] = useState<string | null>(null)
+  const [showSentChallenges, setShowSentChallenges] = useState(false)
   const [saveState, setSaveState] = useState<'idle' | 'naming' | 'saving' | 'saved' | 'error'>('idle')
   const [saveName, setSaveName] = useState('')
   // True if the local recompute-avoidance cache failed to write (e.g. quota
@@ -1116,6 +1120,9 @@ function SessionTabInner() {
           )}
         </div>
         <div className="flex items-center gap-3">
+          <button onClick={() => setShowSentChallenges(true)} className="text-gray-500 hover:text-gray-300 text-xs">
+            Sent Huub challenges →
+          </button>
           {analyzed.length > 0 && (
             <button onClick={() => setShowStepper(true)} className="text-emerald-400 hover:text-emerald-300 text-xs font-medium">
               Review decisions →
@@ -1317,12 +1324,20 @@ function SessionTabInner() {
                 <div key={p} className="bg-gray-900 rounded-lg p-3">
                   <div className="flex items-center justify-between">
                     <p className={`text-[10px] uppercase tracking-wider ${pc(pi).text}`}>{p} EV lost</p>
-                    <button
-                      onClick={() => setReplayTarget(p)}
-                      className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
-                    >
-                      Replay hands →
-                    </button>
+                    <span className="flex items-center gap-2">
+                      <button
+                        onClick={() => setReplayTarget(p)}
+                        className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                      >
+                        Replay hands →
+                      </button>
+                      <button
+                        onClick={() => setHuubChallengeTarget(p)}
+                        className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+                      >
+                        Challenge a Huub player →
+                      </button>
+                    </span>
                   </div>
                   <p className="text-xl font-bold text-red-400">-{lost.toFixed(1)}</p>
                   <p className="text-xs text-gray-600">avg {(lost / (decCount || 1)).toFixed(2)}/decision</p>
@@ -1446,6 +1461,20 @@ function SessionTabInner() {
           bonusBoardDecisions={bonusDecisions}
           onClose={() => setReplayTarget(null)}
         />
+      )}
+
+      {huubChallengeTarget && (
+        <ChallengeHuubOverlay
+          username={huubChallengeTarget}
+          summaries={summaries}
+          streetDecisions={savedView ? analyzed : decisionShells}
+          bonusBoardDecisions={bonusDecisions}
+          onClose={() => setHuubChallengeTarget(null)}
+        />
+      )}
+
+      {showSentChallenges && (
+        <SentChallengesList onClose={() => setShowSentChallenges(false)} />
       )}
     </div>
   )
