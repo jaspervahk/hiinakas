@@ -532,12 +532,15 @@ function BonusCard({ d, result, rank, gameNumber, onJumpToGame }: {
 
 // ── Summary stat card ─────────────────────────────────────────────────────────
 
-function StatCard({ label, value, sub, color }: {
-  label: string; value: string | number; sub?: string; color?: string
+function StatCard({ label, value, sub, color, action }: {
+  label: string; value: string | number; sub?: string; color?: string; action?: ReactNode
 }) {
   return (
     <div className="bg-gray-900 rounded-lg p-3 flex flex-col gap-0.5">
-      <span className="text-gray-500 text-[10px] uppercase tracking-wider">{label}</span>
+      <div className="flex items-center justify-between">
+        <span className="text-gray-500 text-[10px] uppercase tracking-wider">{label}</span>
+        {action}
+      </div>
       <span className={`text-lg font-bold ${color ?? 'text-gray-100'}`}>{value}</span>
       {sub && <span className="text-gray-500 text-xs">{sub}</span>}
     </div>
@@ -1178,7 +1181,15 @@ function SessionTabInner() {
                 label={`${p} total`}
                 value={`${run > 0 ? '+' : ''}${run}`}
                 sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.soloBusts[p] ?? 0} busts`}
-                color={run >= 0 ? pc(pi).text : 'text-red-400'} />
+                color={run >= 0 ? pc(pi).text : 'text-red-400'}
+                action={
+                  <button
+                    onClick={() => setHuubChallengeTarget(p)}
+                    className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+                  >
+                    Challenge →
+                  </button>
+                } />
             )
           })}
           {players.length === 2 && (
@@ -1324,20 +1335,12 @@ function SessionTabInner() {
                 <div key={p} className="bg-gray-900 rounded-lg p-3">
                   <div className="flex items-center justify-between">
                     <p className={`text-[10px] uppercase tracking-wider ${pc(pi).text}`}>{p} EV lost</p>
-                    <span className="flex items-center gap-2">
-                      <button
-                        onClick={() => setReplayTarget(p)}
-                        className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
-                      >
-                        Replay hands →
-                      </button>
-                      <button
-                        onClick={() => setHuubChallengeTarget(p)}
-                        className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
-                      >
-                        Challenge a Huub player →
-                      </button>
-                    </span>
+                    <button
+                      onClick={() => setReplayTarget(p)}
+                      className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                    >
+                      Replay hands →
+                    </button>
                   </div>
                   <p className="text-xl font-bold text-red-400">-{lost.toFixed(1)}</p>
                   <p className="text-xs text-gray-600">avg {(lost / (decCount || 1)).toFixed(2)}/decision</p>
