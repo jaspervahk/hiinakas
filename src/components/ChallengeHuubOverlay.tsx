@@ -38,7 +38,7 @@ export function ChallengeHuubOverlay({
     try {
       const hands = queue.map(gameId => {
         const handData = buildHandReplayData(gameId, username, streetDecisions, bonusBoardDecisions, summaries)
-        return buildChallengeHandInput(gameId, username, summaries, handData)
+        return buildChallengeHandInput(gameId, username, summaries, handData, streetDecisions, bonusBoardDecisions)
       })
       await createHuubChallenge(targetUsername.trim(), sessionName.trim(), hands)
       setState('sent')

@@ -6,7 +6,7 @@
 // so it works identically whether the session is freshly uploaded or reopened
 // from a saved analysis.
 
-import type { Card } from '../engine/index'
+import type { Card, Board } from '../engine/index'
 import type { Placement } from '../engine/index'
 import type { ReviewDecision } from './sessionAnalysisTypes'
 import type { BonusDecisionPoint, GameSummary } from './sessionParser'
@@ -17,6 +17,60 @@ export interface HandReplayData {
   playerCount: 2 | 3
   preDealt: Card[][][]   // [0] = target player's 5 normal-street hands; other seats unused (bots never deal, only replay placements)
   replay: ReplayConfig
+}
+
+// The target's own actual historical placements — NOT used by the replay
+// feature itself (the whole point of a replay is a genuinely new decision
+// with the same cards), but needed by the Huub-challenge detail viewer to
+// show "what I actually did originally" alongside the challenged player's
+// real result. Same qualifies:true/false shape already used for opponents.
+export interface TargetOwnHistory {
+  normalPlacements: Placement[]   // [street 0-4], the target's own actual choices
+  bonusOutcome:
+    | { qualifies: true; board: Board }
+    | { qualifies: false; placements: Placement[] }
+    | null
+}
+
+export function buildTargetOwnHistory(
+  gameId: string,
+  targetUsername: string,
+  streetDecisions: ReviewDecision[],
+  bonusBoardDecisions: BonusDecisionPoint[],
+): TargetOwnHistory {
+  const gameStreetDecisions = streetDecisions.filter(d => d.gameId === gameId)
+  const gameBonusBoards = bonusBoardDecisions.filter(d => d.gameId === gameId)
+  const sortedByStreet = (decs: ReviewDecision[]) => [...decs].sort((a, b) => a.street - b.street)
+
+  const targetNormal = sortedByStreet(
+    gameStreetDecisions.filter(d => d.username === targetUsername && d.segment === 'normal_play'),
+  )
+  if (targetNormal.length !== 5) {
+    throw new Error(
+      `Expected 5 normal-round streets for ${targetUsername} in game ${gameId}, found ${targetNormal.length}`,
+    )
+  }
+  const normalPlacements = targetNormal.map(d => d.actualPlacement)
+
+  const targetBonusBoard = gameBonusBoards.find(d => d.username === targetUsername)
+  let bonusOutcome: TargetOwnHistory['bonusOutcome'] = null
+  if (targetBonusBoard) {
+    bonusOutcome = { qualifies: true, board: targetBonusBoard.actualBoard }
+  } else {
+    const sideDecs = sortedByStreet(
+      gameStreetDecisions.filter(d => d.username === targetUsername && d.segment === 'bonus_play'),
+    )
+    if (sideDecs.length > 0) {
+      if (sideDecs.length !== 5) {
+        throw new Error(
+          `Expected 5 side-game streets for ${targetUsername} in game ${gameId}, found ${sideDecs.length}`,
+        )
+      }
+      bonusOutcome = { qualifies: false, placements: sideDecs.map(d => d.actualPlacement) }
+    }
+  }
+
+  return { normalPlacements, bonusOutcome }
 }
 
 const DISCARD_TO_TIER: Record<number, BonusQualifier> = { 0: 'QQ', 1: 'KK', 2: 'AA_OR_TRIPS' }

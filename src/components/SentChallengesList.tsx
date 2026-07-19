@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { listSentChallenges, getHuubChallengeStatus, cancelHuubChallenge } from '../firestore/huubBridge'
 import type { SentChallenge, HuubChallengeStatus } from '../firestore/huubBridge'
+import { ChallengeHandsDetail } from './ChallengeHandsDetail'
 
 type StatusEntry = HuubChallengeStatus | 'loading' | 'error'
 
@@ -16,6 +17,7 @@ export function SentChallengesList({ onClose }: { onClose: () => void }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<{ id: string; message: string } | null>(null)
+  const [detailChallenge, setDetailChallenge] = useState<SentChallenge | null>(null)
 
   useEffect(() => { void listSentChallenges().then(setChallenges) }, [])
 
@@ -104,18 +106,28 @@ export function SentChallengesList({ onClose }: { onClose: () => void }) {
                 <p className="text-red-400 text-[10px] px-3 pb-2">{deleteError.message}</p>
               )}
               {isOpen && (
-                <div className="border-t border-gray-800 px-3 py-2 text-xs">
+                <div className="border-t border-gray-800 px-3 py-2 text-xs space-y-2">
                   {status === 'loading' && <p className="text-gray-500">Checking…</p>}
                   {status === 'error' && <p className="text-red-400">Couldn&rsquo;t reach Huub.</p>}
                   {status && typeof status === 'object' && (
                     <ChallengeStatusDetail status={status} />
                   )}
+                  <button
+                    onClick={() => setDetailChallenge(c)}
+                    className="text-indigo-400 hover:text-indigo-300 text-[10px]"
+                  >
+                    View all hands & boards →
+                  </button>
                 </div>
               )}
             </div>
           )
         })}
       </div>
+
+      {detailChallenge && (
+        <ChallengeHandsDetail challenge={detailChallenge} onClose={() => setDetailChallenge(null)} />
+      )}
     </div>
   )
 }

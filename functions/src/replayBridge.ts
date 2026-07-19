@@ -20,6 +20,7 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {getFirestore, FieldValue} from "firebase-admin/firestore";
 import {GoogleAuth} from "google-auth-library";
+import {wrapRows} from "./utils/firestoreArrayCodec";
 
 const REGION = "europe-west1";
 const HIINAKAS_BRIDGE_SERVICE_ACCOUNT = "hiinakas-bridge@hiinakas-355.iam.gserviceaccount.com";
@@ -93,6 +94,11 @@ interface ClientHandInput {
     | {tier: HBonusQualifier; cards: HCard[]}
     | {tier: null; sideHands: HCard[][]}
     | null;
+  // The target's own actual historical choices — not sent to Huub at all
+  // (only used for Hiinakas's own local sent-challenge detail viewer), see
+  // encodeHandForStorage.
+  targetNormalPlacements: HPlacement[]; // [street 0-4]
+  targetBonusOutcome: HOpponentBonusOutcome | HOpponentSideOutcome | null;
 }
 
 interface CreateChallengeRequest {
@@ -144,6 +150,40 @@ function translateHumanBonusReplay(h: ClientHandInput["humanBonusReplay"]) {
     return {tier: null, sideHands: h.sideHands.map((street) => street.map(toHuubCard))};
   }
   return {tier: TIER_MAP[h.tier], cards: h.cards.map(toHuubCard)};
+}
+
+// ── Local persistence (Hiinakas's own record of what was sent) ────────────
+// Keeps the full historical hand data (both the target's dealt hands and the
+// scripted opponents' placements/bonus outcomes) durably in Hiinakas's own
+// Firestore, independent of Huub and independent of whether the original
+// session is still loaded in the browser — lets a sent challenge be opened
+// and inspected hand-by-hand later. Same nested-array Firestore restriction
+// as the wire format to Huub, so the same wrap/unwrap treatment applies.
+
+function encodeHandForStorage(hand: ClientHandInput): FirebaseFirestore.DocumentData {
+  return {
+    gameId: hand.gameId,
+    playerCount: hand.playerCount,
+    historicalTotal: hand.historicalTotal,
+    opponentNames: hand.opponentNames,
+    targetNormalHands: wrapRows(hand.targetNormalHands),
+    // [opponent][street] — one Placement object per street already (not a
+    // per-card list like Huub's CpPlacement), so only the opponent-indexed
+    // outer array is directly nested; each opponent's own Placement[] is a
+    // plain array of objects and needs no wrapping.
+    opponentNormalPlacements: wrapRows(hand.opponentNormalPlacements),
+    opponentBonusOutcomes: hand.opponentBonusOutcomes,
+    humanBonusReplay: hand.humanBonusReplay ?
+      (hand.humanBonusReplay.tier === null ?
+        {tier: null, sideHands: wrapRows(hand.humanBonusReplay.sideHands)} :
+        hand.humanBonusReplay) :
+      null,
+    // Plain array of Placement objects (no per-opponent outer dimension),
+    // and the same qualifies:true/false shape as opponentBonusOutcomes[i] —
+    // neither needs wrapping.
+    targetNormalPlacements: hand.targetNormalPlacements,
+    targetBonusOutcome: hand.targetBonusOutcome,
+  };
 }
 
 function translateHand(hand: ClientHandInput) {
@@ -204,6 +244,22 @@ export const createHuubReplayChallenge = onCall(
       createdAt: FieldValue.serverTimestamp(),
       sourceGameIds: hands.map((h) => h.gameId),
     });
+
+    // Batches of 20 (well under Firestore's 500-op cap, same safety margin
+    // used for Huub's own replayHands writes) — durable local record of the
+    // full historical hand data, independent of Huub and of whether the
+    // original session is still loaded, so a sent challenge can be opened
+    // and inspected hand-by-hand later.
+    for (let i = 0; i < hands.length; i += 20) {
+      const batch = db.batch();
+      const chunk = hands.slice(i, i + 20);
+      chunk.forEach((hand, j) => {
+        const index = i + j;
+        const handRef = localRef.collection("hands").doc(String(index));
+        batch.set(handRef, {...encodeHandForStorage(hand), index});
+      });
+      await batch.commit();
+    }
 
     return {id: localRef.id, huubChallengeId: huubResponse.challengeId};
   }

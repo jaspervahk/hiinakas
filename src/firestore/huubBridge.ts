@@ -2,6 +2,7 @@ import { httpsCallable } from 'firebase/functions'
 import { collection, getDocs, orderBy, query, Timestamp } from 'firebase/firestore'
 import { db, functions, auth } from '../firebase'
 import type { ChallengeHandInput } from '../game/huubBridge'
+import { decodePersistedHand, type PersistedHand } from '../game/huubChallengeDetail'
 
 export interface SentChallenge {
   id: string
@@ -12,12 +13,19 @@ export interface SentChallenge {
   sourceGameIds: string[]
 }
 
+export interface HuubCard { rank: string; suit: string }
+export interface HuubBoard { top: HuubCard[]; middle: HuubCard[]; bottom: HuubCard[] }
+
 export interface HuubReplayHandStatus {
   index: number
   historicalTotal: number
   resultGameId: string | null
   resultCumulativePoints: number | null
   resultCompletedAt: number | null
+  /** The challenged player's actual final board for this hand, in Huub's own
+   *  card shape (translate via game/huubBoardCodec.ts for display). Null
+   *  until the hand completes. */
+  yourBoard: HuubBoard | null
 }
 
 export interface HuubChallengeStatus {
@@ -55,6 +63,18 @@ export async function getHuubChallengeStatus(huubChallengeId: string): Promise<H
 export async function cancelHuubChallenge(id: string): Promise<void> {
   const fn = httpsCallable<{ id: string }, { success: boolean }>(functions, 'cancelHuubReplayChallenge')
   await fn({ id })
+}
+
+export async function getPersistedHands(challengeDocId: string): Promise<PersistedHand[]> {
+  try {
+    const col = collection(db, 'replayChallenges', challengeDocId, 'hands')
+    const q = query(col, orderBy('index', 'asc'))
+    const snap = await getDocs(q)
+    return snap.docs.map(d => decodePersistedHand(d.data()))
+  } catch (e) {
+    console.error('getPersistedHands failed', e)
+    return []
+  }
 }
 
 export async function listSentChallenges(): Promise<SentChallenge[]> {
