@@ -4,7 +4,7 @@
 // getHuubReplayChallengeStatus.
 
 import { useEffect, useState } from 'react'
-import { listSentChallenges, getHuubChallengeStatus } from '../firestore/huubBridge'
+import { listSentChallenges, getHuubChallengeStatus, cancelHuubChallenge } from '../firestore/huubBridge'
 import type { SentChallenge, HuubChallengeStatus } from '../firestore/huubBridge'
 
 type StatusEntry = HuubChallengeStatus | 'loading' | 'error'
@@ -13,6 +13,9 @@ export function SentChallengesList({ onClose }: { onClose: () => void }) {
   const [challenges, setChallenges] = useState<SentChallenge[] | null>(null)
   const [openId, setOpenId] = useState<string | null>(null)
   const [statusById, setStatusById] = useState<Map<string, StatusEntry>>(new Map())
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<{ id: string; message: string } | null>(null)
 
   useEffect(() => { void listSentChallenges().then(setChallenges) }, [])
 
@@ -29,6 +32,20 @@ export function SentChallengesList({ onClose }: { onClose: () => void }) {
     }
   }
 
+  const confirmDelete = async (c: SentChallenge) => {
+    setDeletingId(c.id)
+    setDeleteError(null)
+    try {
+      await cancelHuubChallenge(c.id)
+      setChallenges(prev => (prev ?? []).filter(x => x.id !== c.id))
+      setConfirmDeleteId(null)
+    } catch (e) {
+      setDeleteError({ id: c.id, message: e instanceof Error ? e.message : 'Failed to delete' })
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
       <div className="bg-gray-900 rounded-2xl p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto space-y-3 border border-gray-800">
@@ -41,17 +58,51 @@ export function SentChallengesList({ onClose }: { onClose: () => void }) {
         {challenges?.map(c => {
           const status = statusById.get(c.id)
           const isOpen = openId === c.id
+          const isConfirming = confirmDeleteId === c.id
           return (
             <div key={c.id} className="bg-gray-950 rounded-lg border border-gray-800">
-              <button onClick={() => void toggle(c)} className="w-full flex items-center justify-between px-3 py-2 text-left">
-                <div>
-                  <p className="text-gray-200 text-xs font-medium">{c.sessionName || c.huubUsername}</p>
+              <div className="w-full flex items-center justify-between px-3 py-2">
+                <button onClick={() => void toggle(c)} className="flex-1 text-left min-w-0">
+                  <p className="text-gray-200 text-xs font-medium truncate">{c.sessionName || c.huubUsername}</p>
                   <p className="text-gray-600 text-[10px]">
                     to {c.huubUsername} · {c.sourceGameIds.length} hands · {new Date(c.createdAt).toLocaleDateString()}
                   </p>
-                </div>
-                <span className="text-gray-600 text-[10px]">{isOpen ? '▲' : '▼'}</span>
-              </button>
+                </button>
+                {isConfirming ? (
+                  <span className="flex items-center gap-1.5 shrink-0 ml-2">
+                    <span className="text-red-400 text-[10px]">Delete?</span>
+                    <button
+                      onClick={() => void confirmDelete(c)}
+                      disabled={deletingId === c.id}
+                      className="text-[10px] text-red-400 hover:text-red-300 font-medium"
+                    >
+                      {deletingId === c.id ? '…' : 'Yes'}
+                    </button>
+                    <button
+                      onClick={() => setConfirmDeleteId(null)}
+                      className="text-[10px] text-gray-500 hover:text-gray-300"
+                    >
+                      No
+                    </button>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2 shrink-0 ml-2">
+                    <button
+                      onClick={() => { setConfirmDeleteId(c.id); setDeleteError(null) }}
+                      className="text-[10px] text-gray-600 hover:text-red-400 transition-colors"
+                      title="Cancel and delete this challenge"
+                    >
+                      Delete
+                    </button>
+                    <button onClick={() => void toggle(c)} className="text-gray-600 text-[10px]">
+                      {isOpen ? '▲' : '▼'}
+                    </button>
+                  </span>
+                )}
+              </div>
+              {deleteError?.id === c.id && (
+                <p className="text-red-400 text-[10px] px-3 pb-2">{deleteError.message}</p>
+              )}
               {isOpen && (
                 <div className="border-t border-gray-800 px-3 py-2 text-xs">
                   {status === 'loading' && <p className="text-gray-500">Checking…</p>}
@@ -80,6 +131,7 @@ function ChallengeStatusDetail({ status }: { status: HuubChallengeStatus }) {
         {status.status === 'pending_join' && 'Waiting for them to join…'}
         {status.status === 'in_progress' && `In progress — hand ${status.currentIndex + 1} of ${status.totalHands}`}
         {status.status === 'finished' && 'Finished'}
+        {status.status === 'cancelled' && 'Cancelled'}
       </p>
       <table className="w-full text-[11px]">
         <thead>

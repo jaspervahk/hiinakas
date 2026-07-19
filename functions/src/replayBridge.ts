@@ -33,6 +33,7 @@ const ALLOWED_UID = "7d3zgIRy43OClSXUDhnsLmhDNwg2";
 
 const HUUB_CREATE_URL = "https://createreplaychallenge-jpbf5hygua-ew.a.run.app";
 const HUUB_STATUS_URL = "https://getreplaychallengestatus-jpbf5hygua-ew.a.run.app";
+const HUUB_CANCEL_URL = "https://cancelreplaychallenge-jpbf5hygua-ew.a.run.app";
 
 const db = getFirestore();
 const googleAuth = new GoogleAuth();
@@ -223,5 +224,38 @@ export const getHuubReplayChallengeStatus = onCall(
     }
 
     return callHuub(HUUB_STATUS_URL, {challengeId: body.huubChallengeId});
+  }
+);
+
+interface CancelRequest {
+  id: string; // the local replayChallenges/{id} doc id, not Huub's challengeId
+}
+
+// Cancels a challenge sent by mistake — works whether the invited player
+// hasn't joined yet or is already mid-hand (see Huub's cancelReplayChallenge
+// for exactly what that does on their side). Deletes the local bookkeeping
+// doc so it disappears from "Sent Huub challenges" — there's nothing left to
+// pull status for once cancelled.
+export const cancelHuubReplayChallenge = onCall(
+  {region: REGION, serviceAccount: HIINAKAS_BRIDGE_SERVICE_ACCOUNT},
+  async (request) => {
+    requireAllowedUid(request.auth?.uid);
+
+    const body = request.data as Partial<CancelRequest>;
+    if (typeof body.id !== "string" || !body.id) {
+      throw new HttpsError("invalid-argument", "id required");
+    }
+
+    const localRef = db.collection("replayChallenges").doc(body.id);
+    const localSnap = await localRef.get();
+    if (!localSnap.exists) {
+      throw new HttpsError("not-found", "Challenge not found");
+    }
+    const huubChallengeId = localSnap.data()!.huubChallengeId as string;
+
+    await callHuub(HUUB_CANCEL_URL, {challengeId: huubChallengeId});
+    await localRef.delete();
+
+    return {success: true};
   }
 );

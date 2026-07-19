@@ -21,7 +21,7 @@ export interface HuubReplayHandStatus {
 }
 
 export interface HuubChallengeStatus {
-  status: 'pending_join' | 'in_progress' | 'finished'
+  status: 'pending_join' | 'in_progress' | 'finished' | 'cancelled'
   currentIndex: number
   totalHands: number
   currentGameId: string | null
@@ -50,6 +50,11 @@ export async function getHuubChallengeStatus(huubChallengeId: string): Promise<H
   )
   const res = await fn({ huubChallengeId })
   return res.data
+}
+
+export async function cancelHuubChallenge(id: string): Promise<void> {
+  const fn = httpsCallable<{ id: string }, { success: boolean }>(functions, 'cancelHuubReplayChallenge')
+  await fn({ id })
 }
 
 export async function listSentChallenges(): Promise<SentChallenge[]> {
