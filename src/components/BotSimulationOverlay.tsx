@@ -40,6 +40,7 @@ interface HandResult {
   botBoard: Board
   botBonusBoard: Board | null
   opponentNames: string[]
+  opponentBoards: Board[]
   opponentBonusBoards: (Board | null)[]
 }
 
@@ -102,6 +103,7 @@ export function BotSimulationOverlay({
           botBoard: sim.board,
           botBonusBoard: sim.bonusBoard,
           opponentNames: hand.opponentNames,
+          opponentBoards: sim.opponentBoards,
           opponentBonusBoards: sim.opponentBonusBoards,
         }
         setResults(prev => [...prev, handResult])
@@ -214,6 +216,9 @@ export function BotSimulationOverlay({
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <BoardDisplay board={h.myBoard} label={`${username}'s actual board`} color="text-indigo-400" />
                           <BoardDisplay board={h.botBoard} label="Bot's board" color="text-teal-400" />
+                          {h.opponentBoards.map((b, oi) => (
+                            <BoardDisplay key={oi} board={b} label={`${h.opponentNames[oi]}'s board`} color="text-amber-400" />
+                          ))}
                         </div>
                         {(h.myBonusBoard || h.botBonusBoard) && (
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

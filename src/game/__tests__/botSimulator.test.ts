@@ -79,6 +79,10 @@ describe('simulateHandWithBot', () => {
     expect(result.bonusBoard).toBeNull()   // neither side qualified -> straight to bonus_scoring
     expect(result.totalScores).toHaveLength(2)
     expect(result.totalScores.reduce((a, b) => a + b, 0)).toBe(0)
+
+    expect(result.opponentBoards).toHaveLength(1)
+    const oppBoard = result.opponentBoards[0]!
+    expect(oppBoard.top.length + oppBoard.middle.length + oppBoard.bottom.length).toBe(13)
   })
 
   it('drives a triggered bonus one-shot board and keeps scoring zero-sum', async () => {

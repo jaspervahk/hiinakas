@@ -32,11 +32,13 @@ export interface BotSimResult {
   board: Board            // target's final normal-round board
   bonusBoard: Board | null   // target's one-shot or side-game board, if any bonus round happened
   // One entry per opponent (same order as HandReplayData.opponentNames) — their
-  // one-shot or side-game board for this hand, if they played one, else null.
-  // Deterministic regardless of who's driving the target's seat: an opponent's
-  // own board never changes (always the frozen historical placements), and
-  // their bonus/side content is either the frozen historical outcome or a
-  // fresh deal seeded from replay.fallbackSeed — same either way every run.
+  // final normal-round board. Identical every run regardless of who's driving
+  // the target's seat, since opponents always replay the same frozen
+  // historical placements verbatim.
+  opponentBoards: Board[]
+  // One entry per opponent — their one-shot or side-game board for this hand,
+  // if they played one, else null. Also deterministic across runs: either the
+  // frozen historical outcome or a fresh deal seeded from replay.fallbackSeed.
   opponentBonusBoards: (Board | null)[]
 }
 
@@ -136,6 +138,7 @@ export async function simulateHandWithBot(
     totalScores: state.totalScores,
     board: state.humanBoard as Board,
     bonusBoard,
+    opponentBoards: state.botBoards as Board[],
     opponentBonusBoards,
   }
 }
