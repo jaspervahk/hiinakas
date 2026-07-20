@@ -5,15 +5,23 @@
 // feature and the Huub-challenge bridge both build (replayBuilder.ts) — this
 // overlay only adds the batch loop and the policy/sims picker (mirrored from
 // SessionTab's EV Analysis controls).
+//
+// Hands are appended to `results` as each one finishes simulating (not just
+// once the whole run is done), so the completed-so-far list is always
+// browsable — expanding a row shows every board that hand produced: the
+// bot's own final board, the target's real historical board, and any
+// bonus/side-game board anyone at the table played that hand.
 
 import { useCallback, useMemo, useState } from 'react'
-import { buildHandReplayData, buildReplayQueue } from '../game/replayBuilder'
+import { buildHandReplayData, buildReplayQueue, buildTargetOwnHistory, targetOwnFinalBoards } from '../game/replayBuilder'
 import { simulateHandWithBot } from '../game/botSimulator'
 import { botWorkerClient } from '../worker/client'
 import type { BotPolicy } from '../worker/client'
 import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR, MAX_SIMS_FOR } from '../worker/botPolicyDefaults'
+import type { Board } from '../engine/index'
 import type { ReviewDecision } from '../game/sessionAnalysisTypes'
 import type { BonusDecisionPoint, GameSummary } from '../game/sessionParser'
+import { CardChip } from './CandidateList'
 
 interface BotSimulationOverlayProps {
   username: string
@@ -27,10 +35,32 @@ interface HandResult {
   gameId: string
   historicalTotal: number
   botTotal: number
+  myBoard: Board
+  myBonusBoard: Board | null
+  botBoard: Board
+  botBonusBoard: Board | null
+  opponentNames: string[]
+  opponentBonusBoards: (Board | null)[]
 }
 
 function formatSigned(n: number): string {
   return `${n > 0 ? '+' : ''}${n}`
+}
+
+function BoardDisplay({ board, label, color }: { board: Board; label: string; color: string }) {
+  return (
+    <div className="space-y-1">
+      <p className={`text-[10px] uppercase tracking-wide font-medium ${color}`}>{label}</p>
+      {(['top', 'middle', 'bottom'] as const).map(row => (
+        <div key={row} className="flex items-center gap-1 flex-wrap">
+          <span className="text-gray-600 text-[9px] w-3 shrink-0">{row[0]!.toUpperCase()}</span>
+          <span className="flex gap-0.5 flex-wrap">
+            {board[row].map((c, i) => <CardChip key={i} c={c} />)}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export function BotSimulationOverlay({
@@ -44,29 +74,42 @@ export function BotSimulationOverlay({
   const [state, setState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [progress, setProgress] = useState(0)
   const [results, setResults] = useState<HandResult[]>([])
+  const [openIndex, setOpenIndex] = useState<number | null>(null)
   const [error, setError] = useState('')
 
   const setPolicyAndDefaults = (p: BotPolicy) => { setPolicy(p); setSims(DEFAULT_SIMS_FOR[p]) }
 
   const run = useCallback(async () => {
     if (queue.length === 0) return
-    setState('running'); setError(''); setResults([]); setProgress(0)
-    const out: HandResult[] = []
+    setState('running'); setError(''); setResults([]); setProgress(0); setOpenIndex(null)
     try {
       for (let i = 0; i < queue.length; i++) {
         const gameId = queue[i]!
         const hand = buildHandReplayData(gameId, username, streetDecisions, bonusBoardDecisions, summaries)
+        const ownHistory = buildTargetOwnHistory(gameId, username, streetDecisions, bonusBoardDecisions)
+        const own = targetOwnFinalBoards(ownHistory)
         const seed = (i * 0x9e3779b9) | 0
         const sim = await simulateHandWithBot(
           hand, policy, sims, policy === 'nn' ? rootTopK : undefined, seed,
           (...args) => botWorkerClient.getBotMove(...args),
         )
-        out.push({ gameId, historicalTotal: hand.replay.historicalTotal, botTotal: sim.totalScores[0] ?? 0 })
+        const handResult: HandResult = {
+          gameId,
+          historicalTotal: hand.replay.historicalTotal,
+          botTotal: sim.totalScores[0] ?? 0,
+          myBoard: own.board,
+          myBonusBoard: own.bonusBoard,
+          botBoard: sim.board,
+          botBonusBoard: sim.bonusBoard,
+          opponentNames: hand.opponentNames,
+          opponentBonusBoards: sim.opponentBonusBoards,
+        }
+        setResults(prev => [...prev, handResult])
         setProgress(i + 1)
       }
-      setResults(out)
       setState('done')
     } catch (e) {
+      // Keep whatever hands already completed visible — only the run itself failed.
       setError(e instanceof Error ? e.message : String(e))
       setState('error')
     }
@@ -78,7 +121,7 @@ export function BotSimulationOverlay({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-      <div className="bg-gray-900 rounded-2xl p-6 max-w-lg w-full max-h-[85vh] overflow-y-auto space-y-4 border border-gray-800">
+      <div className="bg-gray-900 rounded-2xl p-6 max-w-2xl w-full max-h-[85vh] overflow-y-auto space-y-4 border border-gray-800">
         <div className="flex items-center justify-between">
           <h2 className="text-gray-100 font-semibold text-sm">Simulate with a bot</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-xs">Close</button>
@@ -138,36 +181,59 @@ export function BotSimulationOverlay({
         )}
 
         {state === 'running' && (
-          <p className="text-gray-400 text-xs">Simulating hand {progress} of {queue.length}…</p>
+          <p className="text-gray-400 text-xs">Simulating hand {progress} of {queue.length}… ({results.length} ready to view below)</p>
         )}
         {error && <p className="text-red-400 text-xs">{error}</p>}
 
-        {state === 'done' && (
+        {results.length > 0 && (
           <div className="space-y-2">
             <p className={`text-sm font-medium ${diff > 0 ? 'text-emerald-400' : diff < 0 ? 'text-red-400' : 'text-gray-400'}`}>
               Actual {formatSigned(actualTotal)} vs bot {formatSigned(botTotal)}
               {diff !== 0 && ` (${formatSigned(diff)})`}
+              {state === 'running' && <span className="text-gray-600 font-normal"> so far</span>}
             </p>
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="text-gray-600">
-                  <th className="text-left font-normal">Hand</th>
-                  <th className="text-right font-normal">Actual</th>
-                  <th className="text-right font-normal">Bot</th>
-                </tr>
-              </thead>
-              <tbody>
-                {results.map((h, i) => (
-                  <tr key={h.gameId} className="border-t border-gray-900">
-                    <td className="py-0.5 text-gray-500">{i + 1}</td>
-                    <td className="py-0.5 text-right font-mono text-gray-400">{formatSigned(h.historicalTotal)}</td>
-                    <td className={`py-0.5 text-right font-mono ${h.botTotal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {formatSigned(h.botTotal)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="space-y-1.5">
+              {results.map((h, i) => {
+                const isOpen = openIndex === i
+                const hasBonus = h.myBonusBoard || h.botBonusBoard || h.opponentBonusBoards.some(b => b !== null)
+                return (
+                  <div key={h.gameId} className="bg-gray-950 rounded-lg border border-gray-800">
+                    <button
+                      onClick={() => setOpenIndex(isOpen ? null : i)}
+                      className="w-full flex items-center justify-between px-3 py-1.5 text-left"
+                    >
+                      <span className="text-gray-300 text-xs">Hand {i + 1}{hasBonus && <span className="ml-1.5 text-purple-400 text-[9px]">bonus</span>}</span>
+                      <span className="text-[10px] font-mono">
+                        <span className="text-gray-400">actual {formatSigned(h.historicalTotal)}</span>
+                        <span className={`ml-2 ${h.botTotal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>bot {formatSigned(h.botTotal)}</span>
+                      </span>
+                      <span className="text-gray-600 text-[10px]">{isOpen ? '▲' : '▼'}</span>
+                    </button>
+                    {isOpen && (
+                      <div className="border-t border-gray-800 px-3 py-3 space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <BoardDisplay board={h.myBoard} label={`${username}'s actual board`} color="text-indigo-400" />
+                          <BoardDisplay board={h.botBoard} label="Bot's board" color="text-teal-400" />
+                        </div>
+                        {(h.myBonusBoard || h.botBonusBoard) && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {h.myBonusBoard && <BoardDisplay board={h.myBonusBoard} label={`${username}'s bonus board`} color="text-indigo-400" />}
+                            {h.botBonusBoard && <BoardDisplay board={h.botBonusBoard} label="Bot's bonus board" color="text-teal-400" />}
+                          </div>
+                        )}
+                        {h.opponentBonusBoards.some(b => b !== null) && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {h.opponentBonusBoards.map((b, oi) => b && (
+                              <BoardDisplay key={oi} board={b} label={`${h.opponentNames[oi]}'s bonus board`} color="text-amber-400" />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
 

@@ -6,8 +6,9 @@
 // so it works identically whether the session is freshly uploaded or reopened
 // from a saved analysis.
 
-import type { Card, Board } from '../engine/index'
+import type { Card, Board, PartialBoard } from '../engine/index'
 import type { Placement } from '../engine/index'
+import { applyPlacement } from '../engine/index'
 import type { ReviewDecision } from './sessionAnalysisTypes'
 import type { BonusDecisionPoint, GameSummary } from './sessionParser'
 import type { ReplayConfig } from './types'
@@ -17,6 +18,7 @@ export interface HandReplayData {
   playerCount: 2 | 3
   preDealt: Card[][][]   // [0] = target player's 5 normal-street hands; other seats unused (bots never deal, only replay placements)
   replay: ReplayConfig
+  opponentNames: string[]   // same order as replay.opponentNormalPlacements/opponentBonusOutcomes
 }
 
 // The target's own actual historical placements — NOT used by the replay
@@ -71,6 +73,30 @@ export function buildTargetOwnHistory(
   }
 
   return { normalPlacements, bonusOutcome }
+}
+
+// Folds a target's own actual historical placements into the boards they
+// really ended up with — used to show "what I actually did" alongside a bot
+// simulation's result. Mirrors the same fold used for a replayed opponent's
+// frozen board (reducer.ts's foldPlacements), just exposed here for the
+// target's own history instead.
+function foldPlacements(placements: readonly Placement[]): Board {
+  let board: PartialBoard = { top: [], middle: [], bottom: [] }
+  for (const p of placements) board = applyPlacement(board, p)
+  return board as Board
+}
+
+export function targetOwnFinalBoards(history: TargetOwnHistory): { board: Board; bonusBoard: Board | null } {
+  const board = foldPlacements(history.normalPlacements)
+
+  let bonusBoard: Board | null = null
+  if (history.bonusOutcome) {
+    bonusBoard = history.bonusOutcome.qualifies
+      ? history.bonusOutcome.board
+      : foldPlacements(history.bonusOutcome.placements)
+  }
+
+  return { board, bonusBoard }
 }
 
 const DISCARD_TO_TIER: Record<number, BonusQualifier> = { 0: 'QQ', 1: 'KK', 2: 'AA_OR_TRIPS' }
@@ -184,5 +210,5 @@ export function buildHandReplayData(
     fallbackSeed: hashSeed(gameId),
   }
 
-  return { playerCount, preDealt, replay }
+  return { playerCount, preDealt, replay, opponentNames }
 }

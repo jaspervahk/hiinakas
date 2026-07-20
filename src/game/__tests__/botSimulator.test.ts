@@ -68,6 +68,7 @@ describe('simulateHandWithBot', () => {
         [],
       ],
       replay: baseReplay(weakOpponentPlacements()),
+      opponentNames: ['Opp'],
     }
 
     const result = await simulateHandWithBot(hand, 'heuristic', 1, undefined, 42, scriptedBot)
@@ -101,6 +102,7 @@ describe('simulateHandWithBot', () => {
       // falls into the live heuristic side-game solver, exactly like a real
       // divergent-bonus replay.
       replay: baseReplay(weakOpponentPlacements()),
+      opponentNames: ['Opp'],
     }
 
     const result = await simulateHandWithBot(hand, 'heuristic', 1, undefined, 42, scriptedBot)
@@ -111,6 +113,12 @@ describe('simulateHandWithBot', () => {
     expect(bonus.top.length + bonus.middle.length + bonus.bottom.length).toBe(13)
     expect(result.totalScores).toHaveLength(2)
     expect(result.totalScores.reduce((a, b) => a + b, 0)).toBe(0)
+
+    // Opponent didn't qualify -> live heuristic side-game solve, not null.
+    expect(result.opponentBonusBoards).toHaveLength(1)
+    const oppBonus = result.opponentBonusBoards[0]
+    expect(oppBonus).not.toBeNull()
+    expect((oppBonus as PartialBoard).top.length + (oppBonus as PartialBoard).middle.length + (oppBonus as PartialBoard).bottom.length).toBe(13)
   })
 
   it('throws if buildInfoState cannot construct a placing decision', async () => {
@@ -121,6 +129,7 @@ describe('simulateHandWithBot', () => {
       playerCount: 2,
       preDealt: [[[c(2, 's'), c(3, 's'), c(4, 's'), c(5, 's'), c(6, 's')], [c(7, 's'), c(8, 's'), c(9, 's')], [c(10, 's'), c(11, 's'), c(2, 'h')], [c(3, 'h'), c(4, 'h'), c(5, 'h')], [c(6, 'h'), c(7, 'h'), c(8, 'h')]], []],
       replay: baseReplay([]),
+      opponentNames: ['Opp'],
     }
     await expect(simulateHandWithBot(hand, 'heuristic', 1, undefined, 1, scriptedBot)).rejects.toThrow()
   })

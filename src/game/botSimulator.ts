@@ -31,6 +31,13 @@ export interface BotSimResult {
   totalScores: number[]   // [target, ...opponents] — same order as HandReplayData's preDealt/replay
   board: Board            // target's final normal-round board
   bonusBoard: Board | null   // target's one-shot or side-game board, if any bonus round happened
+  // One entry per opponent (same order as HandReplayData.opponentNames) — their
+  // one-shot or side-game board for this hand, if they played one, else null.
+  // Deterministic regardless of who's driving the target's seat: an opponent's
+  // own board never changes (always the frozen historical placements), and
+  // their bonus/side content is either the frozen historical outcome or a
+  // fresh deal seeded from replay.fallbackSeed — same either way every run.
+  opponentBonusBoards: (Board | null)[]
 }
 
 const DISCARD_FOR_TIER = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 } as const
@@ -115,9 +122,20 @@ export async function simulateHandWithBot(
     : boardHasCards(state.humanSideBoard) ? (state.humanSideBoard as Board)
     : null
 
+  const opponentBonusBoards = state.botBonusQualifiers.map((q, i) => {
+    if (q !== null) return state.botBonusBoards[i] as Board
+    // botSideBoards/botBonusBoards are only populated per-opponent-index once
+    // startBonus() actually runs the bonus/side branch — the "nobody
+    // qualified anywhere" skip path (reducer.ts's early SKIP_BONUS-equivalent
+    // return) leaves them at their initial empty [] from makeInitialState().
+    const side = state.botSideBoards[i]
+    return side && boardHasCards(side) ? (side as Board) : null
+  })
+
   return {
     totalScores: state.totalScores,
     board: state.humanBoard as Board,
     bonusBoard,
+    opponentBonusBoards,
   }
 }
