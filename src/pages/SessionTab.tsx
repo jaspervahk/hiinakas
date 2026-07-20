@@ -25,26 +25,10 @@ import { DecisionStepper } from '../components/DecisionStepper'
 import { ReplaySession } from '../components/ReplaySession'
 import { ChallengeHuubOverlay } from '../components/ChallengeHuubOverlay'
 import { SentChallengesList } from '../components/SentChallengesList'
+import { BotSimulationOverlay } from '../components/BotSimulationOverlay'
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy, BonusAnalysisResult } from '../worker/client'
-
-const DEFAULT_ROOT_TOP_K = 35
-
-// Heuristic MC brute-forces a full rollout per candidate with no NN/tree-search
-// guidance, so it needs a far smaller sims budget than the MCTS-based modes to
-// stay usable over a whole session (mirrors the same tradeoff in Arena/coach).
-const DEFAULT_SIMS_FOR: Record<BotPolicy, number> = {
-  nn: 500,
-  royalty: 1000,
-  'royalty-nn': 1000,
-  heuristic: 20,
-}
-const MAX_SIMS_FOR: Record<BotPolicy, number> = {
-  nn: 10_000,
-  royalty: 10_000,
-  'royalty-nn': 10_000,
-  heuristic: 500,
-}
+import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR, MAX_SIMS_FOR } from '../worker/botPolicyDefaults'
 
 // ── Error boundary ────────────────────────────────────────────────────────────
 
@@ -703,6 +687,7 @@ function SessionTabInner() {
   const [showStepper, setShowStepper] = useState(false)
   const [replayTarget, setReplayTarget] = useState<string | null>(null)
   const [huubChallengeTarget, setHuubChallengeTarget] = useState<string | null>(null)
+  const [botSimTarget, setBotSimTarget] = useState<string | null>(null)
   const [showSentChallenges, setShowSentChallenges] = useState(false)
   const [saveState, setSaveState] = useState<'idle' | 'naming' | 'saving' | 'saved' | 'error'>('idle')
   const [saveName, setSaveName] = useState('')
@@ -1183,12 +1168,20 @@ function SessionTabInner() {
                 sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.soloBusts[p] ?? 0} busts`}
                 color={run >= 0 ? pc(pi).text : 'text-red-400'}
                 action={
-                  <button
-                    onClick={() => setHuubChallengeTarget(p)}
-                    className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
-                  >
-                    Challenge →
-                  </button>
+                  <span className="flex items-center gap-2">
+                    <button
+                      onClick={() => setBotSimTarget(p)}
+                      className="text-[10px] text-teal-400 hover:text-teal-300 transition-colors"
+                    >
+                      Simulate →
+                    </button>
+                    <button
+                      onClick={() => setHuubChallengeTarget(p)}
+                      className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      Challenge →
+                    </button>
+                  </span>
                 } />
             )
           })}
@@ -1463,6 +1456,16 @@ function SessionTabInner() {
           streetDecisions={savedView ? analyzed : decisionShells}
           bonusBoardDecisions={bonusDecisions}
           onClose={() => setReplayTarget(null)}
+        />
+      )}
+
+      {botSimTarget && (
+        <BotSimulationOverlay
+          username={botSimTarget}
+          summaries={summaries}
+          streetDecisions={savedView ? analyzed : decisionShells}
+          bonusBoardDecisions={bonusDecisions}
+          onClose={() => setBotSimTarget(null)}
         />
       )}
 

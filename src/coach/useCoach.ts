@@ -47,7 +47,10 @@ function deriveDiscards(dealtPerStreet: Card[][], board: PartialBoard, upToStree
   return discards
 }
 
-function buildInfoState(state: GameState): InfoState | null {
+// Exported for reuse by botSimulator.ts, which drives the reducer headlessly
+// with a bot policy standing in for the human — this is the same information
+// set a real human/coach would see, just fed to getBotMove instead.
+export function buildInfoState(state: GameState): InfoState | null {
   if (state.phase !== 'placing') return null
 
   if (state.context === 'normal') {

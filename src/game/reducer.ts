@@ -234,7 +234,10 @@ export function gameReducer(state: GameState, action: Action): GameState {
     }
 
     case 'APPLY_COACH_PLACEMENT': {
-      if (state.phase !== 'placing') return state
+      // Also allowed during bonus_oneshot (botSimulator.ts drives a one-shot
+      // bonus board through this same action) — the reconstruction below
+      // works unchanged since it only depends on humanHand/pending, not phase.
+      if (state.phase !== 'placing' && state.phase !== 'bonus_oneshot') return state
       const { placement } = action
       // Reconstruct full hand (hand + all currently pending cards).
       const fullHand = [
