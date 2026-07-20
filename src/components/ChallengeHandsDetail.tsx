@@ -64,7 +64,12 @@ export function ChallengeHandsDetail({ challenge, onClose }: { challenge: SentCh
         </div>
         {loading && <p className="text-gray-500 text-xs">Loading…</p>}
         {error && <p className="text-red-400 text-xs">{error}</p>}
-        {!loading && hands?.length === 0 && <p className="text-gray-500 text-xs">No hand data found for this challenge.</p>}
+        {!loading && hands?.length === 0 && (
+          <p className="text-gray-500 text-xs">
+            No hand data saved for this challenge — it was likely sent before this detail view existed.
+            Only challenges sent after that keep a full record.
+          </p>
+        )}
         {hands?.map((hand) => {
           const huub = huubHands.find(h => h.index === hand.index)
           const isOpen = openIndex === hand.index

@@ -90,6 +90,12 @@ export function SentChallengesList({ onClose }: { onClose: () => void }) {
                 ) : (
                   <span className="flex items-center gap-2 shrink-0 ml-2">
                     <button
+                      onClick={() => setDetailChallenge(c)}
+                      className="text-indigo-400 hover:text-indigo-300 text-[10px] font-medium"
+                    >
+                      Hands & boards →
+                    </button>
+                    <button
                       onClick={() => { setConfirmDeleteId(c.id); setDeleteError(null) }}
                       className="text-[10px] text-gray-600 hover:text-red-400 transition-colors"
                       title="Cancel and delete this challenge"
@@ -112,12 +118,6 @@ export function SentChallengesList({ onClose }: { onClose: () => void }) {
                   {status && typeof status === 'object' && (
                     <ChallengeStatusDetail status={status} />
                   )}
-                  <button
-                    onClick={() => setDetailChallenge(c)}
-                    className="text-indigo-400 hover:text-indigo-300 text-[10px]"
-                  >
-                    View all hands & boards →
-                  </button>
                 </div>
               )}
             </div>
