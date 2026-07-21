@@ -26,6 +26,7 @@ import { ReplaySession } from '../components/ReplaySession'
 import { ChallengeHuubOverlay } from '../components/ChallengeHuubOverlay'
 import { SentChallengesList } from '../components/SentChallengesList'
 import { BotSimulationOverlay } from '../components/BotSimulationOverlay'
+import { LuckAnalysisSection } from '../components/LuckAnalysisSection'
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy, BonusAnalysisResult } from '../worker/client'
 import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR, MAX_SIMS_FOR } from '../worker/botPolicyDefaults'
@@ -1429,6 +1430,16 @@ function SessionTabInner() {
             })}
           </div>
         </div>
+      )}
+
+      {/* Luck analysis */}
+      {summaries.length > 0 && (
+        <LuckAnalysisSection
+          players={players}
+          summaries={summaries}
+          streetDecisions={savedView ? analyzed : decisionShells}
+          bonusBoardDecisions={bonusDecisions}
+        />
       )}
 
       {/* Game log */}

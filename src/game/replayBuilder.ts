@@ -80,10 +80,19 @@ export function buildTargetOwnHistory(
 // simulation's result. Mirrors the same fold used for a replayed opponent's
 // frozen board (reducer.ts's foldPlacements), just exposed here for the
 // target's own history instead.
-function foldPlacements(placements: readonly Placement[]): Board {
+export function foldPlacements(placements: readonly Placement[]): Board {
   let board: PartialBoard = { top: [], middle: [], bottom: [] }
   for (const p of placements) board = applyPlacement(board, p)
   return board as Board
+}
+
+// Resolves one opponent's frozen bonus-round outcome (as stored in
+// ReplayConfig.opponentBonusOutcomes) into the actual board they ended up
+// with — a one-shot bonus board is already a Board; a side-game outcome is
+// folded from its per-street placements the same way as any other board.
+export function resolveBonusOutcomeBoard(outcome: ReplayConfig['opponentBonusOutcomes'][number]): Board | null {
+  if (!outcome) return null
+  return outcome.qualifies ? outcome.board : foldPlacements(outcome.placements)
 }
 
 export function targetOwnFinalBoards(history: TargetOwnHistory): { board: Board; bonusBoard: Board | null } {
