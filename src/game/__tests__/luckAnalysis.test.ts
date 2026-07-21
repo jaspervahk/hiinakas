@@ -105,6 +105,30 @@ describe('computeHandLuck', () => {
     expect(calls).toEqual([8, 8, 8, 8, 8])   // 1 actual + 7 samples, once per normal street
   })
 
+  it('excludes every already-dealt card (own AND opponent\'s) from the resampling pool', async () => {
+    // B's street-0 board is [2c,3c,4c,5c,6c] — already dealt/placed by the
+    // time street 1 happens, so a hypothetical redeal for A's street-1 hand
+    // can never legally include any of them; this indicator must average to
+    // exactly 0. (Street 0 itself is dealt simultaneously to everyone, so
+    // there's nothing "already dealt" to exclude yet at that point — this
+    // check needs a street after the opponent has actually placed something.)
+    const bClubs = new Set(['2c', '3c', '4c', '5c', '6c'])
+    const indicatorStub: AnalyzePositionsFn = async (positions) =>
+      positions.map(p => ({
+        id: p.id,
+        candidates: [{ ev: p.state.hand.some(card => bClubs.has(`${card.rank}${card.suit}`)) ? 1 : 0 }],
+      }))
+
+    const decisions = [...aNormalDecisions('g1'), ...bNormalDecisions('g1')]
+    const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'] })]
+
+    const result = await computeHandLuck('g1', 'A', decisions, [], summaries, {
+      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 300, seed: 11, analyzePositions: indicatorStub,
+    })
+
+    expect(result.streets[1]!.baselineEV).toBe(0)
+  })
+
   it('computes bonus one-shot luck when the target qualifies, scored against the opponent\'s side-game board', async () => {
     const decisions = [...aNormalDecisions('g1'), ...bNormalDecisions('g1')]
     const bonusSpades: Card[] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map(r => c(r, 's'))

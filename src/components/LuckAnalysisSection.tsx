@@ -26,8 +26,11 @@ interface LuckAnalysisSectionProps {
 interface PlayerLuck {
   username: string
   totalLuck: number
-  normalByStreet: number[]   // length 5, summed across all hands
-  bonusTotal: number         // bonus_oneshot + side-game luck combined
+  // length 5, summed across all hands — side-game streets are folded in here
+  // too (same street-by-street structure as the normal round, just triggered
+  // by someone else's bonus), so "street 2 luck" means both together.
+  byStreet: number[]
+  bonusOneShotTotal: number   // only the one-shot bonus board — a single, non-street decision
   handsProcessed: number
   handsTotal: number
 }
@@ -60,7 +63,7 @@ export function LuckAnalysisSection({ players, summaries, streetDecisions, bonus
       for (const username of players) {
         const queue = buildReplayQueue(summaries, username)
         const player: PlayerLuck = {
-          username, totalLuck: 0, normalByStreet: [0, 0, 0, 0, 0], bonusTotal: 0,
+          username, totalLuck: 0, byStreet: [0, 0, 0, 0, 0], bonusOneShotTotal: 0,
           handsProcessed: 0, handsTotal: queue.length,
         }
         setResults(prev => [...prev, player])
@@ -75,10 +78,10 @@ export function LuckAnalysisSection({ players, summaries, streetDecisions, bonus
           player.totalLuck += handLuck.totalLuck
           player.handsProcessed++
           for (const s of handLuck.streets) {
-            if (s.segment === 'normal') player.normalByStreet[s.street]! += s.luck
-            else player.bonusTotal += s.luck
+            if (s.segment === 'normal' || s.segment === 'side') player.byStreet[s.street]! += s.luck
+            else player.bonusOneShotTotal += s.luck
           }
-          setResults(prev => prev.map(p => (p.username === username ? { ...player, normalByStreet: [...player.normalByStreet] } : p)))
+          setResults(prev => prev.map(p => (p.username === username ? { ...player, byStreet: [...player.byStreet] } : p)))
         }
       }
       setState('done')
@@ -188,7 +191,7 @@ export function LuckAnalysisSection({ players, summaries, streetDecisions, bonus
               </p>
               <table className="w-full text-[11px]">
                 <tbody>
-                  {r.normalByStreet.map((luck, street) => (
+                  {r.byStreet.map((luck, street) => (
                     <tr key={street} className="border-t border-gray-800">
                       <td className="py-0.5 text-gray-500">Street {street}</td>
                       <td className={`py-0.5 text-right font-mono ${luck >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -196,11 +199,11 @@ export function LuckAnalysisSection({ players, summaries, streetDecisions, bonus
                       </td>
                     </tr>
                   ))}
-                  {r.bonusTotal !== 0 && (
+                  {r.bonusOneShotTotal !== 0 && (
                     <tr className="border-t border-gray-800">
-                      <td className="py-0.5 text-purple-400">Bonus/side</td>
-                      <td className={`py-0.5 text-right font-mono ${r.bonusTotal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {formatSigned(r.bonusTotal)}
+                      <td className="py-0.5 text-purple-400">Bonus</td>
+                      <td className={`py-0.5 text-right font-mono ${r.bonusOneShotTotal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {formatSigned(r.bonusOneShotTotal)}
                       </td>
                     </tr>
                   )}

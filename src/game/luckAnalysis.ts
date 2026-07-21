@@ -2,8 +2,19 @@
 // luck = (best EV achievable given the cards you actually got) minus (best
 // EV averaged over many hypothetical alternate hands sampled from the same
 // remaining deck, holding the board and opponents' boards fixed at that same
-// point in time). This isolates variance in the deal from decision quality —
+// point in time). The remaining-deck pool excludes every card already dealt
+// to anyone (the target's own board/discards AND the opponent's) — a
+// hypothetical redeal can only legally consist of cards nobody has already
+// been dealt. This isolates variance in the deal from decision quality —
 // the latter is already covered by the existing EV coach's evLost metric.
+//
+// Note: the underlying rollout (engine/mc.ts) never uses an opponent's real
+// *future* cards for any street — it always simulates their continuation
+// with random cards + a heuristic/NN policy, identically for the actual and
+// every sampled position. So an opponent's real draw on this same street (or
+// any later one) was never part of this computation; only their board as of
+// *before* this street (a fixed, already-known fact) is used, as the scoring
+// reference both terms are compared against.
 //
 // Reuses the same InfoState shape and the same analyzePositions worker RPC
 // the EV coach already uses (just batching "actual" + N sampled hands into
