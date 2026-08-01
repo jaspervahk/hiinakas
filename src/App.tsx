@@ -6,8 +6,9 @@ import { workerClient, botWorkerClient, arenaWorkerClient, ROYALTY_MODEL_URL } f
 const StatsPage = lazy(() => import('./pages/StatsPage'))
 const AnalyzerPage = lazy(() => import('./pages/AnalyzerPage'))
 const ArenaPage = lazy(() => import('./pages/ArenaPage'))
+const BotChallengesPage = lazy(() => import('./pages/BotChallengesPage'))
 
-export type AppPage = 'game' | 'stats' | 'analyzer' | 'arena'
+export type AppPage = 'game' | 'stats' | 'analyzer' | 'arena' | 'botChallenges'
 
 function PageLoader() {
   return (
@@ -52,6 +53,11 @@ export default function App() {
       {page === 'arena' && (
         <Suspense fallback={<PageLoader />}>
           <ArenaPage onNavigate={setPage} />
+        </Suspense>
+      )}
+      {page === 'botChallenges' && (
+        <Suspense fallback={<PageLoader />}>
+          <BotChallengesPage onNavigate={setPage} />
         </Suspense>
       )}
     </AuthGate>

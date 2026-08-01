@@ -7,5 +7,8 @@ service cloud.firestore {
     match /replayChallenges/{id}/{document=**} {
       allow read: if request.auth != null && request.auth.uid == "7d3zgIRy43OClSXUDhnsLmhDNwg2";
     }
+    match /botChallenges/{id}/{document=**} {
+      allow read: if request.auth != null && request.auth.uid == "7d3zgIRy43OClSXUDhnsLmhDNwg2";
+    }
   }
 }

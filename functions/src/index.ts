@@ -9,3 +9,9 @@ export {
   getHuubReplayChallengeStatus,
   cancelHuubReplayChallenge,
 } from "./replayBridge";
+
+export {
+  createHuubBotChallenge,
+  getHuubBotChallengeStatus,
+  cancelHuubBotChallenge,
+} from "./botChallengeBridge";

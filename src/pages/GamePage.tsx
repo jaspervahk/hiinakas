@@ -198,6 +198,8 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
         <button onClick={() => onNavigate('analyzer')} className="text-gray-500 hover:text-gray-300 transition-colors">Analyzer</button>
         <span className="text-gray-700">·</span>
         <button onClick={() => onNavigate('arena')} className="text-gray-500 hover:text-gray-300 transition-colors">Arena</button>
+        <span className="text-gray-700">·</span>
+        <button onClick={() => onNavigate('botChallenges')} className="text-gray-500 hover:text-gray-300 transition-colors">Bot Challenges</button>
       </div>
     </div>
   )
