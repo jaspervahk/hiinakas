@@ -1,4 +1,5 @@
 import type { Card, HandRank, PartialBoard, Board } from './types'
+import { HandCategory } from './types'
 import { evaluate3, evaluate5, compareHandRank } from './evaluate'
 import { isFoul } from './rules'
 import { legalPlacements } from './placement'
@@ -15,22 +16,45 @@ function handRankScore(rank: HandRank): number {
   return score
 }
 
-// Score a partial row (any number of cards). Uses whatever cards are present.
-// evaluate3/evaluate5 work on subsets; for partial 5-card rows we call evaluate5
-// on the partial array (it treats missing cards as not yet dealt).
+// Score a partial row (any number of cards). A row only gets the full
+// category-based handRankScore (millions-scale — see handRankScore above)
+// once it's actually at its full target size (3 for top, 5 for middle/
+// bottom); evaluate3/evaluate5 assume a *complete* hand, and calling them on
+// a still-growing row (e.g. evaluate5 on 4 cards) previously let a
+// half-finished "pair" spike to the same scale as a genuinely completed
+// hand. That made any placement which happened to fill one row to 3+ cards
+// outscore a sane, balanced placement by ~6 orders of magnitude regardless
+// of actual strength — reproduced concretely: dealing 9,10,J,Q,Q on an
+// empty street-0 board made heuristicPlacement dump all 5 cards into one
+// row. Partial (not-yet-full) rows instead get a small, continuous score —
+// highest card plus a modest bonus for ranks already pairing up — that
+// stays comparable across row/card-count combinations until the row is
+// actually complete enough to judge for real. A row that reaches full size
+// with no actual combo (HighCard — no pair, straight, or better) hasn't
+// gained anything by being "complete": scoring it via the same small formula
+// (rather than handRankScore's tiebreaker encoding, which is large purely by
+// construction — see handRankScore above) avoids a second artifact where
+// filling a row with unrelated cards for no reason outscores a genuinely
+// sensible spread across all three rows, confirmed with a fully unconnected
+// hand (2,3,5,8,K) that otherwise still got dumped into a single row.
+function smallScore(cards: readonly Card[]): number {
+  const ranks = cards.map(c => c.rank)
+  const freq = new Map<number, number>()
+  for (const r of ranks) freq.set(r, (freq.get(r) ?? 0) + 1)
+  let bonus = 0
+  for (const count of freq.values()) {
+    if (count >= 2) bonus += (count - 1) * 8 // modest pair/trips-in-progress credit
+  }
+  return Math.max(...ranks) + bonus
+}
+
 function partialRowScore(cards: readonly Card[], isTop: boolean): number {
   if (cards.length === 0) return 0
-  if (isTop) return handRankScore(evaluate3(cards))
-  // For middle/bottom, treat partial hands by evaluating what's there.
-  // evaluate5 is designed for 5 cards; for <5 we use evaluate3-like logic
-  // (just rank the partial hand by what we have).
-  if (cards.length < 3) {
-    // Too few cards to evaluate meaningfully; use max rank as proxy
-    const maxRank = Math.max(...cards.map(c => c.rank))
-    return maxRank
-  }
-  if (cards.length === 3) return handRankScore(evaluate3(cards)) // 3-card partial for 5-card row
-  return handRankScore(evaluate5(cards)) // 4 or 5 cards
+  const fullSize = isTop ? 3 : 5
+  if (cards.length < fullSize) return smallScore(cards)
+  const rank = isTop ? evaluate3(cards) : evaluate5(cards)
+  if (rank.category === HandCategory.HighCard) return smallScore(cards)
+  return handRankScore(rank)
 }
 
 // Penalty: if full board is already determined to be fouled, large negative.

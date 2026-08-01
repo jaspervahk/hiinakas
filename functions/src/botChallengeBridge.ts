@@ -26,7 +26,7 @@ const HUUB_CANCEL_URL = "https://cancelbotchallenge-453674862477.europe-west1.ru
 // client-side bug or a stale UI build shouldn't be able to send an
 // unreasonable sims/hands count into a production app with real other users.
 const MIN_SIMS = 10;
-const MAX_SIMS = 150;
+const MAX_SIMS = 500;
 const DEFAULT_SIMS = 60;
 const MAX_TOTAL_HANDS = 50;
 

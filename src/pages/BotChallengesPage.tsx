@@ -17,7 +17,7 @@ interface BotChallengesPageProps {
 // Mirrors botChallengeServer.ts's own clamps exactly — kept in sync manually
 // since these live in a different repo; the server re-clamps regardless.
 const MIN_SIMS = 10
-const MAX_SIMS = 150
+const MAX_SIMS = 500
 const DEFAULT_SIMS = 60
 const MAX_TOTAL_HANDS = 50
 const DEFAULT_TOTAL_HANDS = 5

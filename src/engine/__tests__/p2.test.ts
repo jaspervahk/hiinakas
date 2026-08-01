@@ -115,6 +115,32 @@ describe('heuristicPlacement', () => {
     const p2 = heuristicPlacement(board, dealt, 0)
     expect(p1).toEqual(p2)
   })
+
+  // Regression: partialRowScore used to call evaluate3/evaluate5 on rows that
+  // hadn't actually reached their full size yet (e.g. evaluate5 on 4 cards),
+  // which spiked a half-finished row's score to the same millions-scale used
+  // for a genuinely complete hand. That made any street-0 placement which
+  // happened to fill one row outscore every sane, balanced alternative by
+  // ~6 orders of magnitude, regardless of whether the cards had any real
+  // synergy — e.g. a fully unconnected hand still got dumped entirely into
+  // one row instead of spread across the board.
+  it('spreads an unconnected street-0 hand across all three rows instead of dumping it into one', () => {
+    const board = emptyBoard()
+    const dealt = parseCards(['2c', '3d', '5h', '8s', 'Kc'])
+    const p = heuristicPlacement(board, dealt, 0)
+    const rowsUsed = [p.topAdd.length > 0, p.middleAdd.length > 0, p.bottomAdd.length > 0]
+      .filter(Boolean).length
+    expect(rowsUsed).toBeGreaterThan(1)
+  })
+
+  it('still keeps a real pair together rather than breaking it up for no reason', () => {
+    const board = emptyBoard()
+    const dealt = parseCards(['9c', 'Td', 'Jc', 'Qd', 'Qs'])
+    const p = heuristicPlacement(board, dealt, 0)
+    const queenCount = (row: readonly { rank: number }[]) => row.filter(c => c.rank === 12).length
+    const pairKeptTogether = queenCount(p.topAdd) === 2 || queenCount(p.middleAdd) === 2 || queenCount(p.bottomAdd) === 2
+    expect(pairKeptTogether).toBe(true)
+  })
 })
 
 // ── Bot-vs-bot simulation ─────────────────────────────────────────────────
