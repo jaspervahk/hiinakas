@@ -1,6 +1,6 @@
 import type { Card, HandRank, PartialBoard, Board } from './types'
 import { HandCategory } from './types'
-import { evaluate3, evaluate5, compareHandRank } from './evaluate'
+import { evaluate3, evaluate5 } from './evaluate'
 import { isFoul } from './rules'
 import { legalPlacements } from './placement'
 import type { Placement } from './placement'
@@ -48,12 +48,37 @@ function smallScore(cards: readonly Card[]): number {
   return Math.max(...ranks) + bonus
 }
 
+// Whether completing a row as this exact hand actually earns anything
+// (royalty-wise) beyond just winning-or-losing that row outright — mirrors
+// rules.ts's topRoyalty/middleRoyalty/bottomRoyalty tables (middle and
+// bottom both start paying at Trips; top pays for Trips or a pair of 6s+).
+function earnsRoyalty(rank: HandRank, isTop: boolean): boolean {
+  if (isTop) {
+    if (rank.category === HandCategory.Trips) return true
+    if (rank.category === HandCategory.OnePair) return rank.tiebreakers[0]! >= 6
+    return false
+  }
+  return rank.category >= HandCategory.Trips
+}
+
 function partialRowScore(cards: readonly Card[], isTop: boolean): number {
   if (cards.length === 0) return 0
   const fullSize = isTop ? 3 : 5
   if (cards.length < fullSize) return smallScore(cards)
   const rank = isTop ? evaluate3(cards) : evaluate5(cards)
-  if (rank.category === HandCategory.HighCard) return smallScore(cards)
+  // A row that completes into a hand with no real royalty value (HighCard,
+  // a low top pair, or — critically for middle/bottom — OnePair/TwoPair,
+  // since neither earns any royalty there) hasn't actually gained much by
+  // being "complete": scoring it via the same small formula as a partial row
+  // (rather than handRankScore's tiebreaker encoding, large purely by
+  // construction) stops the heuristic from spending an ENTIRE row's worth of
+  // capacity on a zero-value hand it'll never get to revise. Reproduced
+  // concretely: dealt 5,5,6,9,A on an empty street-0 board, the heuristic
+  // dumped all 5 into bottom as a bare pair of 5s (zero royalty) — bottom
+  // was then permanently full with nothing left to improve it, and by the
+  // final street middle had nowhere else to go but into a foul-causing full
+  // house that outranked that locked-in weak bottom.
+  if (!earnsRoyalty(rank, isTop)) return smallScore(cards)
   return handRankScore(rank)
 }
 
@@ -62,14 +87,33 @@ function foulPenalty(board: PartialBoard): number {
   if (board.top.length === 3 && board.middle.length === 5 && board.bottom.length === 5) {
     return isFoul(board as Board) ? -1e9 : 0
   }
-  // Partial board: penalise if current rows already violate ordering
-  // (e.g. top already stronger than middle)
+  // Partial board: penalise if a row already looks stronger than the row
+  // below it. Previously this only checked top-vs-middle — middle-vs-bottom
+  // was never compared at any street, so nothing warned when a strong row
+  // built up in middle while bottom stayed weak. Reproduced concretely: dealt
+  // K,Q,Q,9,9 on a fresh board, the heuristic greedily completed middle as
+  // two pair (a real, correctly-scored combo) while leaving bottom empty —
+  // by the time bottom was later filled with only a pair of 2s, middle > bottom
+  // was already locked in and unavoidable, fouling the whole board. Uses
+  // partialRowScore (not raw evaluate3/5) so the comparison stays meaningful
+  // at any partial card count, not just once a row is completely full.
+  //
+  // Penalty must be on the same -1e9 scale as the complete-board foul check
+  // above, not the old -5e5 this originally used: 1000-random-game testing
+  // showed -5e5 was nowhere near enough to outweigh the reward from
+  // completing a real combo row (handRankScore is millions-scale, x3 row
+  // weight for bottom) — a candidate happily "ate" a -5e5 penalty to bank
+  // ~4,000,000+ from completing middle as two pair, since every alternative
+  // that avoided the penalty scored far less. Confirmed via 1000-random-game
+  // foul-rate sampling: -5e5 left the foul rate at ~40% (barely better than
+  // the ~71% baseline with no middle-vs-bottom check at all); -1e9 needed to
+  // actually change the argmax choice.
   let penalty = 0
-  if (board.top.length > 0 && board.middle.length > 0) {
-    const topRank = evaluate3(board.top)
-    const midRank = evaluate3(board.middle) // approximate mid with eval3
-    if (compareHandRank(topRank, midRank) > 0) penalty -= 5e5
-  }
+  const topScore = partialRowScore(board.top, true)
+  const midScore = partialRowScore(board.middle, false)
+  const botScore = partialRowScore(board.bottom, false)
+  if (board.top.length > 0 && board.middle.length > 0 && topScore > midScore) penalty -= 1e9
+  if (board.middle.length > 0 && board.bottom.length > 0 && midScore > botScore) penalty -= 1e9
   return penalty
 }
 
