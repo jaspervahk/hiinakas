@@ -40,6 +40,14 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noMode
 
   const cancelRef = useRef<(() => void) | null>(null)
   const keyRef = useRef<string | null>(null)
+  // Tracks the best (highest) rollout count actually displayed for the
+  // current key. Every round's GET_EV request re-triggers the worker's own
+  // "instant depth-1 NN pass" first (n=0 for every candidate) before its
+  // real MCTS numbers land — without this guard, each new round would
+  // briefly flash the table back to n=0 / "computing…" before climbing back
+  // up, since that stale-looking (but real) intermediate progress event
+  // would otherwise overwrite the previous round's already-deeper results.
+  const bestRolloutsRef = useRef(0)
   const key = info ? infoStateKey(info) : null
 
   useEffect(() => {
@@ -59,11 +67,20 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noMode
     }
 
     keyRef.current = key
+    bestRolloutsRef.current = -1
     setIsComputing(true)
     setRolloutsDone(0)
 
     let stopped = false
     const localKey = key
+
+    const applyIfNotRegressing = (results: ScoredPlacement[]) => {
+      const n = results.reduce((m, r) => Math.max(m, r.n), 0)
+      if (n < bestRolloutsRef.current) return
+      bestRolloutsRef.current = n
+      setPlacements([...results].sort((a, b) => b.ev - a.ev))
+      setRolloutsDone(n)
+    }
 
     // Runs one MCTS round at `totalRollouts`, then immediately kicks off a
     // larger round — forever, until the position changes or this effect is
@@ -75,13 +92,11 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noMode
 
       const onProgress = (results: ScoredPlacement[]) => {
         if (keyRef.current !== localKey) return
-        setPlacements([...results].sort((a, b) => b.ev - a.ev))
-        setRolloutsDone(results.reduce((m, r) => Math.max(m, r.n), 0))
+        applyIfNotRegressing(results)
       }
       const onDone = (results: ScoredPlacement[]) => {
         if (keyRef.current !== localKey) return
-        setPlacements([...results].sort((a, b) => b.ev - a.ev))
-        setRolloutsDone(results.reduce((m, r) => Math.max(m, r.n), 0))
+        applyIfNotRegressing(results)
         runRound(Math.round(totalRollouts * SIMS_GROWTH_FACTOR))
       }
       const onError = () => { if (keyRef.current === localKey) setIsComputing(false) }
