@@ -51,7 +51,10 @@ interface PlacementTableProps {
   onSelectPlacement?: (placement: Placement) => void
 }
 
-function PlacementTable({ result, matchIndex, label, accentColor, relativeEV = false, onSelectPlacement }: PlacementTableProps) {
+// Exported so pages that always want a single, fixed policy (e.g.
+// LiveCoachPage — no mode-switcher, always the best policy) can render just
+// the ranked table without CoachPanel's mode-toggle chrome.
+export function PlacementTable({ result, matchIndex, label, accentColor, relativeEV = false, onSelectPlacement }: PlacementTableProps) {
   const { placements, isComputing, rolloutsDone } = result
   const top = placements.slice(0, 10)
   const bestEV = top[0]?.ev ?? 0

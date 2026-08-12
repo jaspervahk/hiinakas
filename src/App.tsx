@@ -7,8 +7,9 @@ const StatsPage = lazy(() => import('./pages/StatsPage'))
 const AnalyzerPage = lazy(() => import('./pages/AnalyzerPage'))
 const ArenaPage = lazy(() => import('./pages/ArenaPage'))
 const BotChallengesPage = lazy(() => import('./pages/BotChallengesPage'))
+const LiveCoachPage = lazy(() => import('./pages/LiveCoachPage'))
 
-export type AppPage = 'game' | 'stats' | 'analyzer' | 'arena' | 'botChallenges'
+export type AppPage = 'game' | 'stats' | 'analyzer' | 'arena' | 'botChallenges' | 'liveCoach'
 
 function PageLoader() {
   return (
@@ -58,6 +59,11 @@ export default function App() {
       {page === 'botChallenges' && (
         <Suspense fallback={<PageLoader />}>
           <BotChallengesPage onNavigate={setPage} />
+        </Suspense>
+      )}
+      {page === 'liveCoach' && (
+        <Suspense fallback={<PageLoader />}>
+          <LiveCoachPage onNavigate={setPage} />
         </Suspense>
       )}
     </AuthGate>
