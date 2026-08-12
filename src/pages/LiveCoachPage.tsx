@@ -6,7 +6,7 @@ import type { InfoState, PartialBoard } from '../engine/index'
 import { huubAuth, huubDb, huubGoogleProvider } from '../services/huubFirebase'
 import { fromHuubBoard, fromHuubCard } from '../game/huubChallengeDetail'
 import type { HuubBoard, HuubCard } from '../firestore/huubBridge'
-import { findLiveHuubGames, type LiveHuubGameCandidate } from '../game/liveHuubGame'
+import { useLiveHuubGames, type LiveHuubGameCandidate } from '../game/liveHuubGame'
 import { useLiveHuubCoach } from '../coach/useLiveHuubCoach'
 import { PlacementTable } from '../components/CoachPanel'
 import { CardView } from '../components/CardView'
@@ -60,7 +60,6 @@ function BoardRows({ board, label }: { board: PartialBoard; label: string }) {
 export default function LiveCoachPage({ onNavigate }: LiveCoachPageProps) {
   const [user, setUser] = useState<User | null>(huubAuth.currentUser)
   const [signingIn, setSigningIn] = useState(false)
-  const [candidates, setCandidates] = useState<LiveHuubGameCandidate[] | null>(null)
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
   const [game, setGame] = useState<HuubGameDoc | null>(null)
   const [playerHand, setPlayerHand] = useState<HuubPlayerHandDoc | null>(null)
@@ -76,18 +75,10 @@ export default function LiveCoachPage({ onNavigate }: LiveCoachPageProps) {
     }
   }
 
-  // Re-scan for live games periodically and whenever we sign in / lose the current one.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!user) { setCandidates(null); return }
-    let cancelled = false
-    const scan = () => {
-      void findLiveHuubGames(user.uid).then(found => { if (!cancelled) setCandidates(found) })
-    }
-    scan()
-    const interval = setInterval(scan, 20_000)
-    return () => { cancelled = true; clearInterval(interval) }
-  }, [user])
+  // Fully live (no polling): updates the moment a new game/challenge starts
+  // on users/{uid}, or the moment an already-active challenge advances to
+  // its next hand (that only touches the challenge doc, not users/{uid}).
+  const candidates = useLiveHuubGames(user?.uid ?? null)
 
   useEffect(() => {
     if (!candidates) return

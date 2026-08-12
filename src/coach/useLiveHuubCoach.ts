@@ -3,15 +3,26 @@
 // (buildInfoState(state: GameState)), but here the InfoState is already
 // built directly from live Huub data by the caller. This hook keeps the
 // same cancel-on-change/key-dedup pattern and the same CoachResult shape
-// (so the existing CoachPanel component can render it unmodified), but adds
-// the model-loading guarantee AnalyzerPage.tsx now has — useCoach itself
-// doesn't force-load the model, relying on the app-wide startup preload
-// instead, which is fine for a page you navigate to after the app's been
-// open a moment, but this page can be the very first thing you look at.
+// (so the existing CoachPanel/PlacementTable components can render it
+// unmodified), but adds the model-loading guarantee AnalyzerPage.tsx now
+// has, uses the same rootTopK candidate pool as Session Analysis
+// (botPolicyDefaults.ts — the shared canonical "best policy" parameters,
+// same ones the live in-game EV Coach panel uses), and — unlike every other
+// caller of streamMC, which asks for one fixed sims budget — never settles:
+// as long as this is still the live position (the user hasn't acted yet),
+// it keeps re-running MCTS with a growing sims budget and streaming
+// progressively refined results, stopping only when the position changes
+// (new street, submitted, or navigated away).
 import { useEffect, useRef, useState } from 'react'
 import type { Card, InfoState, ScoredPlacement } from '../engine/index'
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { CoachResult } from './useCoach'
+import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR } from '../worker/botPolicyDefaults'
+
+// Each round is a fresh MCTS search (the engine has no resumable/incremental
+// search to build on), so growing rounds redo earlier work — but arrive at
+// deeper, more accurate results each time, matching "unlimited sims."
+const SIMS_GROWTH_FACTOR = 1.5
 
 function infoStateKey(s: InfoState): string {
   const cardKey = (c: Card) => `${c.rank}${c.suit}`
@@ -21,7 +32,7 @@ function infoStateKey(s: InfoState): string {
   return `s${s.street}|${boardKey}|${rowKey(s.hand)}|${oppsKey}`
 }
 
-export function useLiveHuubCoach(info: InfoState | null, rollouts = 2000): CoachResult & { noModel: boolean } {
+export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noModel: boolean } {
   const [placements, setPlacements] = useState<ScoredPlacement[]>([])
   const [isComputing, setIsComputing] = useState(false)
   const [rolloutsDone, setRolloutsDone] = useState(0)
@@ -51,19 +62,17 @@ export function useLiveHuubCoach(info: InfoState | null, rollouts = 2000): Coach
     setIsComputing(true)
     setRolloutsDone(0)
 
-    let cancelled = false
+    let stopped = false
     const localKey = key
 
-    void (async () => {
-      const loaded = await workerClient.loadModel(MODEL_URLS.v2)
-      if (cancelled || keyRef.current !== localKey) return
-      if (!loaded) {
-        setNoModel(true)
-        setIsComputing(false)
-        return
-      }
-
+    // Runs one MCTS round at `totalRollouts`, then immediately kicks off a
+    // larger round — forever, until the position changes or this effect is
+    // torn down. isComputing intentionally never goes back to false while
+    // this loop is alive: there's always a next, deeper round in flight.
+    const runRound = (totalRollouts: number) => {
+      if (stopped || keyRef.current !== localKey) return
       const seed = Date.now() & 0xffffffff
+
       const onProgress = (results: ScoredPlacement[]) => {
         if (keyRef.current !== localKey) return
         setPlacements([...results].sort((a, b) => b.ev - a.ev))
@@ -73,28 +82,40 @@ export function useLiveHuubCoach(info: InfoState | null, rollouts = 2000): Coach
         if (keyRef.current !== localKey) return
         setPlacements([...results].sort((a, b) => b.ev - a.ev))
         setRolloutsDone(results.reduce((m, r) => Math.max(m, r.n), 0))
-        setIsComputing(false)
+        runRound(Math.round(totalRollouts * SIMS_GROWTH_FACTOR))
       }
       const onError = () => { if (keyRef.current === localKey) setIsComputing(false) }
 
       cancelRef.current = workerClient.streamMC(
         info,
-        { totalRollouts: rollouts, batchSize: 10 },
+        { totalRollouts, batchSize: 10 },
         seed,
         onProgress,
         onDone,
         'nn',
         onError,
+        DEFAULT_ROOT_TOP_K,
       )
+    }
+
+    void (async () => {
+      const loaded = await workerClient.loadModel(MODEL_URLS.v2)
+      if (stopped || keyRef.current !== localKey) return
+      if (!loaded) {
+        setNoModel(true)
+        setIsComputing(false)
+        return
+      }
+      runRound(DEFAULT_SIMS_FOR.nn)
     })()
 
     return () => {
-      cancelled = true
+      stopped = true
       cancelRef.current?.()
       cancelRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
-  return { placements, isComputing, rolloutsDone, totalRollouts: rollouts, matchIndex: null, noModel }
+  return { placements, isComputing, rolloutsDone, totalRollouts: rolloutsDone, matchIndex: null, noModel }
 }
