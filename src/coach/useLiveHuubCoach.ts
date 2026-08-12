@@ -14,21 +14,32 @@
 // rootTopK — the heuristic policy has no NN-based candidate narrowing to
 // configure, it evaluates every legal candidate.
 //
-// Unlike every other caller of streamMC, which asks for one fixed sims
-// budget, this never settles: as long as this is still the live position
-// (the user hasn't acted yet), it keeps re-running with a growing sims
-// budget and streaming progressively refined results, stopping only when
-// the position changes (new street, submitted, or navigated away).
+// Unlike every other caller of streamMC, this asks for one large sims
+// budget up front rather than a small fixed one, and relies on runMC
+// (engine/mc.ts) already being a proper incremental generator — it
+// accumulates rollout sums progressively across the *whole* requested
+// budget and yields a batch of results every `batchSize` sims, all within
+// one continuous computation. An earlier version of this hook instead
+// looped, re-requesting a bigger-but-fresh computation each time a round
+// finished — that matches how the NN/MCTS policy has to work (a single-shot
+// search with no incremental resume), but for the heuristic policy it was
+// actively harmful: every new round discarded all the sims already
+// accumulated and restarted counting from zero, so most of the "unlimited
+// sims" time was spent redoing already-finished work instead of making
+// forward progress. That was the actual cause of it feeling slow.
+//
+// LARGE_ROLLOUT_BUDGET is generous rather than literally infinite: the
+// worker's heuristic loop (engine.worker.ts) runs runMC's generator
+// synchronously to completion once started — cancelling client-side only
+// stops the UI from listening, it can't interrupt the worker mid-loop — so
+// an unbounded budget left running after the user acts would sit blocking
+// the next real position's analysis behind it.
 import { useEffect, useRef, useState } from 'react'
 import type { Card, InfoState, ScoredPlacement } from '../engine/index'
 import { workerClient } from '../worker/client'
 import type { CoachResult } from './useCoach'
-import { DEFAULT_SIMS_FOR } from '../worker/botPolicyDefaults'
 
-// Each round redoes the full brute-force search from scratch (no resumable/
-// incremental rollout to build on) — but at a growing sims budget, so later
-// rounds arrive at deeper, more accurate results, matching "unlimited sims."
-const SIMS_GROWTH_FACTOR = 1.5
+const LARGE_ROLLOUT_BUDGET = 2000
 
 function infoStateKey(s: InfoState): string {
   const cardKey = (c: Card) => `${c.rank}${c.suit}`
@@ -45,9 +56,6 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult {
 
   const cancelRef = useRef<(() => void) | null>(null)
   const keyRef = useRef<string | null>(null)
-  // Tracks the best (highest) rollout count actually displayed for the
-  // current key, so a later round's progress never regresses what's shown.
-  const bestRolloutsRef = useRef(0)
   const key = info ? infoStateKey(info) : null
 
   useEffect(() => {
@@ -66,55 +74,36 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult {
     }
 
     keyRef.current = key
-    bestRolloutsRef.current = -1
     setIsComputing(true)
     setRolloutsDone(0)
 
-    let stopped = false
     const localKey = key
+    const seed = Date.now() & 0xffffffff
 
-    const applyIfNotRegressing = (results: ScoredPlacement[]) => {
-      const n = results.reduce((m, r) => Math.max(m, r.n), 0)
-      if (n < bestRolloutsRef.current) return
-      bestRolloutsRef.current = n
+    const onProgress = (results: ScoredPlacement[]) => {
+      if (keyRef.current !== localKey) return
       setPlacements([...results].sort((a, b) => b.ev - a.ev))
-      setRolloutsDone(n)
+      setRolloutsDone(results.reduce((m, r) => Math.max(m, r.n), 0))
     }
-
-    // Runs one round at `totalRollouts`, then immediately kicks off a
-    // larger round — forever, until the position changes or this effect is
-    // torn down. isComputing intentionally never goes back to false while
-    // this loop is alive: there's always a next, deeper round in flight.
-    const runRound = (totalRollouts: number) => {
-      if (stopped || keyRef.current !== localKey) return
-      const seed = Date.now() & 0xffffffff
-
-      const onProgress = (results: ScoredPlacement[]) => {
-        if (keyRef.current !== localKey) return
-        applyIfNotRegressing(results)
-      }
-      const onDone = (results: ScoredPlacement[]) => {
-        if (keyRef.current !== localKey) return
-        applyIfNotRegressing(results)
-        runRound(Math.round(totalRollouts * SIMS_GROWTH_FACTOR))
-      }
-      const onError = () => { if (keyRef.current === localKey) setIsComputing(false) }
-
-      cancelRef.current = workerClient.streamMC(
-        info,
-        { totalRollouts, batchSize: 10 },
-        seed,
-        onProgress,
-        onDone,
-        'heuristic',
-        onError,
-      )
+    const onDone = (results: ScoredPlacement[]) => {
+      if (keyRef.current !== localKey) return
+      setPlacements([...results].sort((a, b) => b.ev - a.ev))
+      setRolloutsDone(results.reduce((m, r) => Math.max(m, r.n), 0))
+      setIsComputing(false)
     }
+    const onError = () => { if (keyRef.current === localKey) setIsComputing(false) }
 
-    runRound(DEFAULT_SIMS_FOR.heuristic)
+    cancelRef.current = workerClient.streamMC(
+      info,
+      { totalRollouts: LARGE_ROLLOUT_BUDGET, batchSize: 10 },
+      seed,
+      onProgress,
+      onDone,
+      'heuristic',
+      onError,
+    )
 
     return () => {
-      stopped = true
       cancelRef.current?.()
       cancelRef.current = null
     }
