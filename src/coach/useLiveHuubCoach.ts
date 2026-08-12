@@ -4,24 +4,30 @@
 // built directly from live Huub data by the caller. This hook keeps the
 // same cancel-on-change/key-dedup pattern and the same CoachResult shape
 // (so the existing CoachPanel/PlacementTable components can render it
-// unmodified), but adds the model-loading guarantee AnalyzerPage.tsx now
-// has, uses the same rootTopK candidate pool as Session Analysis
-// (botPolicyDefaults.ts — the shared canonical "best policy" parameters,
-// same ones the live in-game EV Coach panel uses), and — unlike every other
-// caller of streamMC, which asks for one fixed sims budget — never settles:
-// as long as this is still the live position (the user hasn't acted yet),
-// it keeps re-running MCTS with a growing sims budget and streaming
-// progressively refined results, stopping only when the position changes
-// (new street, submitted, or navigated away).
+// unmodified).
+//
+// Runs the literal 'heuristic' policy (brute-force MC rollout per
+// candidate, no NN model) — this is NOT the app's technical default ('nn'),
+// it's what the user actually runs Session Analysis with themselves (their
+// own selected mode there), which is what "the same [policy] Session
+// Analysis uses" turned out to mean. No model to load here, and no
+// rootTopK — the heuristic policy has no NN-based candidate narrowing to
+// configure, it evaluates every legal candidate.
+//
+// Unlike every other caller of streamMC, which asks for one fixed sims
+// budget, this never settles: as long as this is still the live position
+// (the user hasn't acted yet), it keeps re-running with a growing sims
+// budget and streaming progressively refined results, stopping only when
+// the position changes (new street, submitted, or navigated away).
 import { useEffect, useRef, useState } from 'react'
 import type { Card, InfoState, ScoredPlacement } from '../engine/index'
-import { workerClient, MODEL_URLS } from '../worker/client'
+import { workerClient } from '../worker/client'
 import type { CoachResult } from './useCoach'
-import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR } from '../worker/botPolicyDefaults'
+import { DEFAULT_SIMS_FOR } from '../worker/botPolicyDefaults'
 
-// Each round is a fresh MCTS search (the engine has no resumable/incremental
-// search to build on), so growing rounds redo earlier work — but arrive at
-// deeper, more accurate results each time, matching "unlimited sims."
+// Each round redoes the full brute-force search from scratch (no resumable/
+// incremental rollout to build on) — but at a growing sims budget, so later
+// rounds arrive at deeper, more accurate results, matching "unlimited sims."
 const SIMS_GROWTH_FACTOR = 1.5
 
 function infoStateKey(s: InfoState): string {
@@ -32,21 +38,15 @@ function infoStateKey(s: InfoState): string {
   return `s${s.street}|${boardKey}|${rowKey(s.hand)}|${oppsKey}`
 }
 
-export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noModel: boolean } {
+export function useLiveHuubCoach(info: InfoState | null): CoachResult {
   const [placements, setPlacements] = useState<ScoredPlacement[]>([])
   const [isComputing, setIsComputing] = useState(false)
   const [rolloutsDone, setRolloutsDone] = useState(0)
-  const [noModel, setNoModel] = useState(false)
 
   const cancelRef = useRef<(() => void) | null>(null)
   const keyRef = useRef<string | null>(null)
   // Tracks the best (highest) rollout count actually displayed for the
-  // current key. Every round's GET_EV request re-triggers the worker's own
-  // "instant depth-1 NN pass" first (n=0 for every candidate) before its
-  // real MCTS numbers land — without this guard, each new round would
-  // briefly flash the table back to n=0 / "computing…" before climbing back
-  // up, since that stale-looking (but real) intermediate progress event
-  // would otherwise overwrite the previous round's already-deeper results.
+  // current key, so a later round's progress never regresses what's shown.
   const bestRolloutsRef = useRef(0)
   const key = info ? infoStateKey(info) : null
 
@@ -55,11 +55,10 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noMode
       cancelRef.current()
       cancelRef.current = null
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setNoModel(false)
 
     if (!key || !info) {
       keyRef.current = null
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPlacements([])
       setIsComputing(false)
       setRolloutsDone(0)
@@ -82,7 +81,7 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noMode
       setRolloutsDone(n)
     }
 
-    // Runs one MCTS round at `totalRollouts`, then immediately kicks off a
+    // Runs one round at `totalRollouts`, then immediately kicks off a
     // larger round — forever, until the position changes or this effect is
     // torn down. isComputing intentionally never goes back to false while
     // this loop is alive: there's always a next, deeper round in flight.
@@ -107,22 +106,12 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noMode
         seed,
         onProgress,
         onDone,
-        'nn',
+        'heuristic',
         onError,
-        DEFAULT_ROOT_TOP_K,
       )
     }
 
-    void (async () => {
-      const loaded = await workerClient.loadModel(MODEL_URLS.v2)
-      if (stopped || keyRef.current !== localKey) return
-      if (!loaded) {
-        setNoModel(true)
-        setIsComputing(false)
-        return
-      }
-      runRound(DEFAULT_SIMS_FOR.nn)
-    })()
+    runRound(DEFAULT_SIMS_FOR.heuristic)
 
     return () => {
       stopped = true
@@ -132,5 +121,5 @@ export function useLiveHuubCoach(info: InfoState | null): CoachResult & { noMode
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
-  return { placements, isComputing, rolloutsDone, totalRollouts: rolloutsDone, matchIndex: null, noModel }
+  return { placements, isComputing, rolloutsDone, totalRollouts: rolloutsDone, matchIndex: null }
 }

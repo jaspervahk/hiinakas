@@ -199,16 +199,9 @@ export default function LiveCoachPage({ onNavigate }: LiveCoachPageProps) {
             ) : !info ? (
               <p className="text-sm text-gray-500">Waiting for your turn…</p>
             ) : (
-              <>
-                {result.noModel && (
-                  <div className="flex items-center justify-between bg-amber-900/20 rounded px-3 py-2">
-                    <p className="text-amber-400 text-xs">Model unavailable at /models/policy.bin — training may still be in progress.</p>
-                  </div>
-                )}
-                <div className="rounded-xl border border-gray-700/60 bg-gray-900/70 p-3">
-                  <PlacementTable result={result} matchIndex={null} label="NN + MCTS" accentColor="text-indigo-400" />
-                </div>
-              </>
+              <div className="rounded-xl border border-gray-700/60 bg-gray-900/70 p-3">
+                <PlacementTable result={result} matchIndex={null} label="Heuristic" accentColor="text-teal-400" />
+              </div>
             )}
           </>
         )}
