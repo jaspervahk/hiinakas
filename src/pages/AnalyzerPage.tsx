@@ -4,7 +4,7 @@ import type { Card, PartialBoard, ScoredPlacement, InfoState, Board, Placement }
 import { bestBonusBoard, royalties, isFoul } from '../engine/index'
 import { CardPicker } from '../components/CardPicker'
 import { BoardView } from '../components/BoardView'
-import { workerClient, royaltyWorkerClient } from '../worker/client'
+import { workerClient, royaltyWorkerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy } from '../worker/client'
 import { analyzerBridge } from '../game/analyzerBridge'
 import { SessionTab } from './SessionTab'
@@ -303,6 +303,11 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   }, [used, street, yourBoard, yourHand, oppBoards, oppIsBonus])
 
   const [analyzerPolicy, setAnalyzerPolicy] = useState<BotPolicy>('nn')
+  const [results, setResults] = useState<ScoredPlacement[]>([])
+  const [computing, setComputing] = useState(false)
+  const [doneRollouts, setDoneRollouts] = useState(0)
+  const [noModel, setNoModel] = useState(false)
+  const cancelRef = useRef<(() => void) | null>(null)
 
   function handlePolicyChange(p: BotPolicy) {
     if (cancelRef.current) { cancelRef.current(); cancelRef.current = null }
@@ -310,11 +315,8 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setResults([])
     setDoneRollouts(0)
     setComputing(false)
+    setNoModel(false)
   }
-  const [results, setResults] = useState<ScoredPlacement[]>([])
-  const [computing, setComputing] = useState(false)
-  const [doneRollouts, setDoneRollouts] = useState(0)
-  const cancelRef = useRef<(() => void) | null>(null)
 
   function applyPlacement(pl: Placement) {
     // When launched from a game, send the placement back and return
@@ -345,9 +347,21 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setComputing(false)
   }
 
-  function analyze() {
+  async function analyze() {
     if (yourHand.length === 0 || errors.length > 0) return
     if (cancelRef.current) cancelRef.current()
+    setNoModel(false)
+
+    // Guarantee the real NN-MCTS policy actually runs rather than silently
+    // falling back to brute-force heuristic MC inside the worker (which
+    // otherwise happens invisibly whenever the app-wide startup preload in
+    // App.tsx hasn't resolved yet, or failed) — same guarantee Session
+    // Analysis makes before it will score anything as 'nn' (SessionTab.tsx).
+    if (analyzerPolicy === 'nn') {
+      const loaded = await workerClient.loadModel(MODEL_URLS.v2)
+      if (!loaded) { setNoModel(true); return }
+    }
+
     const state: InfoState = {
       board: yourBoard,
       hand: yourHand,
@@ -583,9 +597,18 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
         </div>
       )}
 
+      {noModel && (
+        <div className="flex items-center justify-between bg-amber-900/20 rounded px-3 py-2">
+          <p className="text-amber-400 text-xs">Model unavailable at /models/policy.bin — training may still be in progress.</p>
+          <button onClick={() => void analyze()} className="ml-3 shrink-0 px-2 py-1 text-xs rounded bg-amber-800/40 hover:bg-amber-700/40 text-amber-300 transition-colors">
+            Retry
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-2 flex-wrap">
         <button
-          onClick={analyze}
+          onClick={() => void analyze()}
           disabled={!canAnalyze || computing}
           className={[
             'px-6 py-2 rounded-lg text-sm font-medium transition-colors',

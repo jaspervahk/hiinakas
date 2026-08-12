@@ -19,7 +19,7 @@ interface BotChallengesPageProps {
 const MIN_SIMS = 10
 const MAX_SIMS = 500
 const DEFAULT_SIMS = 60
-const MAX_TOTAL_HANDS = 50
+const MAX_TOTAL_HANDS = 200
 const DEFAULT_TOTAL_HANDS = 5
 
 function formatSigned(n: number): string {

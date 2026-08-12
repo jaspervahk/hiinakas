@@ -28,7 +28,7 @@ const HUUB_CANCEL_URL = "https://cancelbotchallenge-453674862477.europe-west1.ru
 const MIN_SIMS = 10;
 const MAX_SIMS = 500;
 const DEFAULT_SIMS = 60;
-const MAX_TOTAL_HANDS = 50;
+const MAX_TOTAL_HANDS = 200;
 
 const db = getFirestore();
 const googleAuth = new GoogleAuth();
