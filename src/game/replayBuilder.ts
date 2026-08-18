@@ -23,16 +23,10 @@ export interface HandReplayData {
 
 // Validates that one recorded street's placement actually has the right
 // card count for that street (5 placed / no discard on street 0, 2 placed /
-// 1 discard on streets 1-4) — the ONLY thing that structurally guarantees a
-// later replay board stays legal-placement-eligible. Without this, a
-// malformed recorded move (e.g. a truncated/duplicated raw export entry)
-// gets folded into a bot's simulated board silently via applyPlacement
-// (which just concatenates card arrays, no count check of its own), and the
-// resulting corruption isn't detected until an MC rollout several streets
-// later finds zero legal placements against the now-wrong board — a
-// confusing, hard-to-place "board/dealt mismatch" error pointing nowhere
-// near the actual bad data. Failing here instead gives an exact game/
-// player/street location for the real problem.
+// 1 discard on streets 1-4). This alone is NOT sufficient to guarantee a
+// later replay board stays legal-placement-eligible — see
+// assertValidPlacementSequence below for the cumulative check this is
+// missing on its own.
 function assertValidStreetPlacement(
   placement: Placement,
   street: number,
@@ -47,6 +41,66 @@ function assertValidStreetPlacement(
       + `(expected ${expectedPlaced}) with discard=${placement.discard ? 'present' : 'null'} `
       + `(expected ${expectsDiscard ? 'present' : 'null'}) — the underlying session data for this `
       + `hand looks corrupted or truncated.`,
+    )
+  }
+}
+
+// Validates a full historical 5-street placement sequence for one player (or
+// one side-game). Three checks, each catching a different real corruption
+// shape found in production raw session data:
+//
+// 1. Per-street shape (assertValidStreetPlacement) — catches an individual
+//    street with the wrong placed/discard count.
+// 2. Street indices are exactly {0,1,2,3,4}, no gaps/duplicates — callers
+//    consume this array purely positionally (botSimulator.ts's
+//    `streets[state.street]!`), so a raw-export row landing under the wrong
+//    street index would otherwise silently apply at the wrong point in the
+//    replay.
+// 3. Cumulative row capacity as placements fold in street by street (top ≤
+//    3, middle/bottom ≤ 5 after every street, ending at exactly 3/5/5).
+//    THIS is the gap that let a real corrupted hand through when only #1
+//    existed: a street whose row is wrong (e.g. two cards recorded under
+//    `top` instead of one under `top` and one under `middle`) can still
+//    pass its own isolated 2-placed/1-discard count while silently
+//    overflowing that row across the whole hand. applyPlacement (placement
+//    .ts) just concatenates arrays with no capacity check of its own, so an
+//    over-filled board is written straight into the replay with nothing
+//    catching it — until several streets later, an MC rollout tries to
+//    hypothetically replay that same opponent forward and legalPlacements
+//    finds zero remaining capacity, surfacing as a generic "No legal
+//    placements — board/dealt mismatch" deep inside the worker, nowhere
+//    near the actual bad street.
+function assertValidPlacementSequence(
+  decisions: readonly { street: number; actualPlacement: Placement }[],
+  context: string,
+): void {
+  const streets = [...decisions.map(d => d.street)].sort((a, b) => a - b)
+  if (streets.some((s, i) => s !== i)) {
+    throw new Error(
+      `Malformed recorded placement sequence for ${context}: street indices are `
+      + `[${decisions.map(d => d.street).join(', ')}], expected exactly 0-4 with no gaps or duplicates.`,
+    )
+  }
+
+  const sorted = [...decisions].sort((a, b) => a.street - b.street)
+  let board: PartialBoard = { top: [], middle: [], bottom: [] }
+  for (const d of sorted) {
+    assertValidStreetPlacement(d.actualPlacement, d.street, context)
+    board = applyPlacement(board, d.actualPlacement)
+    if (board.top.length > 3 || board.middle.length > 5 || board.bottom.length > 5) {
+      throw new Error(
+        `Malformed recorded placement for ${context}: after street ${d.street}, the board has `
+        + `${board.top.length} top / ${board.middle.length} middle / ${board.bottom.length} bottom `
+        + `card(s) — over the 3/5/5 row capacity. A row's recorded cards across this hand's streets `
+        + `add up to more than the board can legally hold, even though each individual street's own `
+        + `placement count looked correct — the underlying session data for this hand looks corrupted.`,
+      )
+    }
+  }
+  if (board.top.length !== 3 || board.middle.length !== 5 || board.bottom.length !== 5) {
+    throw new Error(
+      `Malformed recorded placement sequence for ${context}: final board is `
+      + `${board.top.length}/${board.middle.length}/${board.bottom.length} (top/middle/bottom), expected 3/5/5.`,
     )
   }
 }
@@ -82,7 +136,7 @@ export function buildTargetOwnHistory(
       `Expected 5 normal-round streets for ${targetUsername} in game ${gameId}, found ${targetNormal.length}`,
     )
   }
-  targetNormal.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${targetUsername} in game ${gameId}`))
+  assertValidPlacementSequence(targetNormal, `${targetUsername} in game ${gameId}`)
   const normalPlacements = targetNormal.map(d => d.actualPlacement)
 
   const targetBonusBoard = gameBonusBoards.find(d => d.username === targetUsername)
@@ -99,7 +153,7 @@ export function buildTargetOwnHistory(
           `Expected 5 side-game streets for ${targetUsername} in game ${gameId}, found ${sideDecs.length}`,
         )
       }
-      sideDecs.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${targetUsername}'s side game in game ${gameId}`))
+      assertValidPlacementSequence(sideDecs, `${targetUsername}'s side game in game ${gameId}`)
       bonusOutcome = { qualifies: false, placements: sideDecs.map(d => d.actualPlacement) }
     }
   }
@@ -198,7 +252,7 @@ export function buildHandReplayData(
     if (decs.length !== 5) {
       throw new Error(`Expected 5 normal-round streets for ${name} in game ${gameId}, found ${decs.length}`)
     }
-    decs.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${name} in game ${gameId}`))
+    assertValidPlacementSequence(decs, `${name} in game ${gameId}`)
     return decs.map(d => d.actualPlacement)
   })
 
@@ -215,7 +269,7 @@ export function buildHandReplayData(
     if (sideDecs.length !== 5) {
       throw new Error(`Expected 5 side-game streets for ${name} in game ${gameId}, found ${sideDecs.length}`)
     }
-    sideDecs.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${name}'s side game in game ${gameId}`))
+    assertValidPlacementSequence(sideDecs, `${name}'s side game in game ${gameId}`)
     return { qualifies: false, placements: sideDecs.map(d => d.actualPlacement) }
   })
 

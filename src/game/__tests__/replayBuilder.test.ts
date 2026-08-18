@@ -26,11 +26,19 @@ function dealtForStreet(street: number, seed: number): Card[] {
 }
 
 // A realistic placement for the given street from a dealt hand of the
-// matching size (see dealtForStreet): all 5 cards placed on street 0 (no
-// discard), first 2 placed + last discarded on streets 1-4.
+// matching size (see dealtForStreet), following a fixed valid distribution
+// across all 5 streets that ends at exactly 3 top / 5 middle / 5 bottom
+// without ever exceeding a row's capacity along the way: street 0 fills top
+// completely (3) plus 2 middle; streets 1-2 fill the rest of middle (2+1);
+// streets 2-4 fill bottom (1+2+2). Streets 1-4 always discard the 3rd dealt
+// card.
 function realisticPlacement(street: number, dealt: Card[]): Placement {
-  if (street === 0) return placement(dealt.slice(0, 2), dealt.slice(2, 4), [dealt[4]!])
-  return placement([dealt[0]!], [], [dealt[1]!], dealt[2]!)
+  switch (street) {
+    case 0: return placement([dealt[0]!, dealt[1]!, dealt[2]!], [dealt[3]!, dealt[4]!], [])
+    case 1: return placement([], [dealt[0]!, dealt[1]!], [], dealt[2]!)
+    case 2: return placement([], [dealt[0]!], [dealt[1]!], dealt[2]!)
+    default: return placement([], [], [dealt[0]!, dealt[1]!], dealt[2]!)
+  }
 }
 
 function streetDecision(overrides: Partial<ReviewDecision> & { gameId: string; username: string; street: number }): ReviewDecision {
@@ -110,6 +118,41 @@ describe('buildHandReplayData', () => {
 
     expect(() => buildHandReplayData('g1', 'A', decisions, [], summaries)).toThrow(
       /Malformed recorded placement for B in game g1: street 0/,
+    )
+  })
+
+  it('catches a row that overflows across streets even when every individual street\'s own count looks correct', () => {
+    // The bug actually found in production: a street 1 placement that puts
+    // both of its 2 placed cards on `top` instead of split across rows.
+    // Each individual street here still has the right total placed/discard
+    // shape (2 placed + 1 discard on streets 1-4) — only the CUMULATIVE
+    // row total across all 5 streets reveals the corruption (top ends up
+    // with more than 3 cards), which is exactly what the old
+    // assertValidStreetPlacement-only check couldn't catch.
+    const decisions = [...fiveNormalStreets('g1', 'A'), ...fiveNormalStreets('g1', 'B')]
+    const bStreet1 = decisions.find(d => d.username === 'B' && d.street === 1)!
+    const dealt = bStreet1.hand
+    bStreet1.actualPlacement = placement([dealt[0]!, dealt[1]!], [], [], dealt[2]!)
+
+    const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 5, B: -5 } })]
+
+    expect(() => buildHandReplayData('g1', 'A', decisions, [], summaries)).toThrow(
+      /Malformed recorded placement for B in game g1: after street 1.*row capacity/,
+    )
+  })
+
+  it('catches a recorded street sequence with a duplicated/missing street index', () => {
+    const decisions = [...fiveNormalStreets('g1', 'A'), ...fiveNormalStreets('g1', 'B')]
+    // B's street-3 decision is mislabeled as street 2 (duplicate), so street
+    // 3 never appears — a raw-export row landing under the wrong street
+    // index, which callers elsewhere consume purely positionally.
+    const bStreet3 = decisions.find(d => d.username === 'B' && d.street === 3)!
+    bStreet3.street = 2
+
+    const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 5, B: -5 } })]
+
+    expect(() => buildHandReplayData('g1', 'A', decisions, [], summaries)).toThrow(
+      /Malformed recorded placement sequence for B in game g1: street indices are/,
     )
   })
 
