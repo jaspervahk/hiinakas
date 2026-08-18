@@ -6,20 +6,46 @@ import type { Card, Board, Placement } from '../../engine/index'
 
 function c(rank: number, suit: 's' | 'h' | 'd' | 'c'): Card { return { rank: rank as Card['rank'], suit } }
 
-function placement(top: Card[], middle: Card[], bottom: Card[]): Placement {
-  return { topAdd: top, middleAdd: middle, bottomAdd: bottom, discard: null }
+function placement(top: Card[], middle: Card[], bottom: Card[], discard: Card | null = null): Placement {
+  return { topAdd: top, middleAdd: middle, bottomAdd: bottom, discard }
+}
+
+// Deterministic, collision-free-enough dealt hand for a given street: 5
+// cards on street 0, 3 cards (2 to place + 1 discard) on streets 1-4 — the
+// real per-street shape, so fixtures naturally satisfy
+// assertValidStreetPlacement instead of needing every test to hand-build a
+// realistic placement itself. `seed` keeps different players'/games' hands
+// from colliding within one test.
+function dealtForStreet(street: number, seed: number): Card[] {
+  const count = street === 0 ? 5 : 3
+  const suits: Card['suit'][] = ['s', 'h', 'd', 'c']
+  return Array.from({ length: count }, (_, i) => {
+    const n = seed * 17 + street * 5 + i
+    return c(2 + (n % 13), suits[n % 4]!)
+  })
+}
+
+// A realistic placement for the given street from a dealt hand of the
+// matching size (see dealtForStreet): all 5 cards placed on street 0 (no
+// discard), first 2 placed + last discarded on streets 1-4.
+function realisticPlacement(street: number, dealt: Card[]): Placement {
+  if (street === 0) return placement(dealt.slice(0, 2), dealt.slice(2, 4), [dealt[4]!])
+  return placement([dealt[0]!], [], [dealt[1]!], dealt[2]!)
 }
 
 function streetDecision(overrides: Partial<ReviewDecision> & { gameId: string; username: string; street: number }): ReviewDecision {
+  const seed = `${overrides.gameId}:${overrides.username}`.split('').reduce((h, ch) => h * 31 + ch.charCodeAt(0), 0)
+  const dealt = dealtForStreet(overrides.street, seed)
+  const defaultPlacement = realisticPlacement(overrides.street, dealt)
   return {
     id: `${overrides.gameId}:${overrides.username}:${overrides.segment ?? 'normal_play'}:${overrides.street}`,
     gameTime: '2026-01-01T00:00:00.000Z',
     uid: overrides.username,
     segment: 'normal_play',
     board: { top: [], middle: [], bottom: [] },
-    hand: [c(2, 's')],
-    actualPlacement: placement([], [c(2, 's')], []),
-    bestPlacement: placement([], [c(2, 's')], []),
+    hand: dealt,
+    actualPlacement: defaultPlacement,
+    bestPlacement: defaultPlacement,
     playedEV: 0,
     bestEV: 0,
     evLost: 0,
@@ -70,6 +96,21 @@ describe('buildHandReplayData', () => {
     expect(data.replay.opponentBonusOutcomes).toEqual([null])
     expect(data.replay.humanBonusReplay).toBeNull()
     expect(data.replay.historicalTotal).toBe(5)
+  })
+
+  it('throws a precise, located error for a malformed recorded placement instead of building corrupted replay data', () => {
+    const decisions = [...fiveNormalStreets('g1', 'A'), ...fiveNormalStreets('g1', 'B')]
+    // Corrupt B's street-0 placement to only place 1 card (real street 0
+    // must place all 5 dealt cards, no discard) — simulates a truncated/
+    // malformed raw session export entry.
+    const bStreet0 = decisions.find(d => d.username === 'B' && d.street === 0)!
+    bStreet0.actualPlacement = placement([], [c(2, 's')], [])
+
+    const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 5, B: -5 } })]
+
+    expect(() => buildHandReplayData('g1', 'A', decisions, [], summaries)).toThrow(
+      /Malformed recorded placement for B in game g1: street 0/,
+    )
   })
 
   it('captures an opponent who triggered the one-shot bonus board', () => {

@@ -21,6 +21,36 @@ export interface HandReplayData {
   opponentNames: string[]   // same order as replay.opponentNormalPlacements/opponentBonusOutcomes
 }
 
+// Validates that one recorded street's placement actually has the right
+// card count for that street (5 placed / no discard on street 0, 2 placed /
+// 1 discard on streets 1-4) — the ONLY thing that structurally guarantees a
+// later replay board stays legal-placement-eligible. Without this, a
+// malformed recorded move (e.g. a truncated/duplicated raw export entry)
+// gets folded into a bot's simulated board silently via applyPlacement
+// (which just concatenates card arrays, no count check of its own), and the
+// resulting corruption isn't detected until an MC rollout several streets
+// later finds zero legal placements against the now-wrong board — a
+// confusing, hard-to-place "board/dealt mismatch" error pointing nowhere
+// near the actual bad data. Failing here instead gives an exact game/
+// player/street location for the real problem.
+function assertValidStreetPlacement(
+  placement: Placement,
+  street: number,
+  context: string,
+): void {
+  const placed = placement.topAdd.length + placement.middleAdd.length + placement.bottomAdd.length
+  const expectedPlaced = street === 0 ? 5 : 2
+  const expectsDiscard = street !== 0
+  if (placed !== expectedPlaced || (placement.discard !== null) !== expectsDiscard) {
+    throw new Error(
+      `Malformed recorded placement for ${context}: street ${street} placed ${placed} card(s) `
+      + `(expected ${expectedPlaced}) with discard=${placement.discard ? 'present' : 'null'} `
+      + `(expected ${expectsDiscard ? 'present' : 'null'}) — the underlying session data for this `
+      + `hand looks corrupted or truncated.`,
+    )
+  }
+}
+
 // The target's own actual historical placements — NOT used by the replay
 // feature itself (the whole point of a replay is a genuinely new decision
 // with the same cards), but needed by the Huub-challenge detail viewer to
@@ -52,6 +82,7 @@ export function buildTargetOwnHistory(
       `Expected 5 normal-round streets for ${targetUsername} in game ${gameId}, found ${targetNormal.length}`,
     )
   }
+  targetNormal.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${targetUsername} in game ${gameId}`))
   const normalPlacements = targetNormal.map(d => d.actualPlacement)
 
   const targetBonusBoard = gameBonusBoards.find(d => d.username === targetUsername)
@@ -68,6 +99,7 @@ export function buildTargetOwnHistory(
           `Expected 5 side-game streets for ${targetUsername} in game ${gameId}, found ${sideDecs.length}`,
         )
       }
+      sideDecs.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${targetUsername}'s side game in game ${gameId}`))
       bonusOutcome = { qualifies: false, placements: sideDecs.map(d => d.actualPlacement) }
     }
   }
@@ -166,6 +198,7 @@ export function buildHandReplayData(
     if (decs.length !== 5) {
       throw new Error(`Expected 5 normal-round streets for ${name} in game ${gameId}, found ${decs.length}`)
     }
+    decs.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${name} in game ${gameId}`))
     return decs.map(d => d.actualPlacement)
   })
 
@@ -182,6 +215,7 @@ export function buildHandReplayData(
     if (sideDecs.length !== 5) {
       throw new Error(`Expected 5 side-game streets for ${name} in game ${gameId}, found ${sideDecs.length}`)
     }
+    sideDecs.forEach(d => assertValidStreetPlacement(d.actualPlacement, d.street, `${name}'s side game in game ${gameId}`))
     return { qualifies: false, placements: sideDecs.map(d => d.actualPlacement) }
   })
 
