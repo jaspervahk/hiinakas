@@ -87,7 +87,7 @@ function summary(overrides: Partial<GameSummary> & { gameId: string }): GameSumm
 }
 
 describe('computeSessionStats', () => {
-  it('does not count an all-bust hand as a tie', () => {
+  it('does not count an all-bust hand as a tie, but still counts it as a bust for each fouling player', () => {
     const summaries = [
       summary({
         gameId: 'g1',
@@ -100,6 +100,25 @@ describe('computeSessionStats', () => {
     expect(stats.ties.A).toBe(0)
     expect(stats.ties.B).toBe(0)
     expect(stats.allBustHands).toBe(1)
+    expect(stats.busts.A).toBe(1)
+    expect(stats.busts.B).toBe(1)
+    expect(stats.allBustCount.A).toBe(1)
+    expect(stats.allBustCount.B).toBe(1)
+  })
+
+  it('counts a bust for a player who fouled even when their opponent did not (solo bust)', () => {
+    const summaries = [
+      summary({
+        gameId: 'g1',
+        playerNames: ['A', 'B'],
+        points: { A: -6, B: 6 },
+        busts: { A: true, B: false },
+      }),
+    ]
+    const stats = computeSessionStats(summaries, ['A', 'B'])
+    expect(stats.busts.A).toBe(1)
+    expect(stats.busts.B).toBe(0)
+    expect(stats.allBustHands).toBe(0)
   })
 
   it('only credits a tie to players who actually tied, not every participant', () => {

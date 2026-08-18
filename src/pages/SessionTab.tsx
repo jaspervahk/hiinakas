@@ -1166,7 +1166,7 @@ function SessionTabInner() {
               <StatCard key={p}
                 label={`${p} total`}
                 value={`${run > 0 ? '+' : ''}${run}`}
-                sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.soloBusts[p] ?? 0} busts`}
+                sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.busts[p] ?? 0} busts`}
                 color={run >= 0 ? pc(pi).text : 'text-red-400'}
                 action={
                   <span className="flex items-center gap-2">
@@ -1197,10 +1197,10 @@ function SessionTabInner() {
       )}
 
       {/* Bust context */}
-      {stats && players.some(p => (stats.soloBusts[p] ?? 0) > 0) && (
+      {stats && players.some(p => (stats.busts[p] ?? 0) > 0) && (
         <div className="bg-gray-900/60 rounded-lg px-4 py-3 text-xs text-gray-400 space-y-1">
           {players.map((p, pi) => {
-            const n = stats.soloBusts[p] ?? 0
+            const n = stats.busts[p] ?? 0
             if (n === 0) return null
             const cost = stats.bustCost[p] ?? 0
             const run = stats.finalRuns[p] ?? 0

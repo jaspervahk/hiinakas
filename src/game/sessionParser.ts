@@ -460,7 +460,7 @@ export function matchesActual(candidate: Placement, played: Placement): boolean 
 export interface SessionStats {
   wins: Record<string, number>
   ties: Record<string, number>
-  soloBusts: Record<string, number>
+  busts: Record<string, number>
   bustCost: Record<string, number>
   allBustHands: number
   allBustCount: Record<string, number>
@@ -470,23 +470,34 @@ export interface SessionStats {
 // Aggregates wins/ties/busts across a session's hands, scoped per player so a
 // player who didn't participate in a hand never has it counted toward their
 // own tallies (relevant when the group composition changes mid-session).
-// Hands where every participant busted are a wash (docs/01_RULES_AND_SCORING.md:
-// "Both bust = net 0") — they're tracked separately in allBustHands/allBustCount
-// and never counted as a tie.
+// Hands where every participant busted are a wash for wins/ties
+// (docs/01_RULES_AND_SCORING.md: "Both bust = net 0") — nobody "won" a wash,
+// so those hands never count toward wins/ties — but each fouling player's
+// own `busts` tally still counts the hand: they fouled, whether or not
+// everyone else at the table also did. allBustHands/allBustCount remain as
+// a separate combined-table stat ("N hands where everyone fouled").
 export function computeSessionStats(summaries: GameSummary[], allPlayers: string[]): SessionStats {
   const wins: Record<string, number> = {}
   const ties: Record<string, number> = {}
-  const soloBusts: Record<string, number> = {}
+  const busts: Record<string, number> = {}
   const bustCost: Record<string, number> = {}
   const allBustCount: Record<string, number> = {}
-  for (const n of allPlayers) { wins[n] = 0; ties[n] = 0; soloBusts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0 }
+  for (const n of allPlayers) { wins[n] = 0; ties[n] = 0; busts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0 }
   let allBustHands = 0
 
   for (const s of summaries) {
     const gamePlayers = s.playerNames.length > 0 ? s.playerNames : allPlayers
     const bustCount = gamePlayers.filter(p => s.busts[p]).length
+    const isAllBustHand = bustCount === gamePlayers.length
 
-    if (bustCount === gamePlayers.length) {
+    for (const p of gamePlayers) {
+      if (s.busts[p]) {
+        busts[p] = (busts[p] ?? 0) + 1
+        bustCost[p] = (bustCost[p] ?? 0) + (s.points[p] ?? 0)
+      }
+    }
+
+    if (isAllBustHand) {
       allBustHands++
       for (const p of gamePlayers) allBustCount[p] = (allBustCount[p] ?? 0) + 1
       continue
@@ -500,15 +511,8 @@ export function computeSessionStats(summaries: GameSummary[], allPlayers: string
     } else {
       for (const p of winners) ties[p] = (ties[p] ?? 0) + 1
     }
-
-    for (const p of gamePlayers) {
-      if (s.busts[p]) {
-        soloBusts[p] = (soloBusts[p] ?? 0) + 1
-        bustCost[p] = (bustCost[p] ?? 0) + (s.points[p] ?? 0)
-      }
-    }
   }
 
   const finalRuns = summaries.length > 0 ? summaries.at(-1)!.runs : {}
-  return { wins, ties, soloBusts, bustCost, allBustHands, allBustCount, finalRuns }
+  return { wins, ties, busts, bustCost, allBustHands, allBustCount, finalRuns }
 }
