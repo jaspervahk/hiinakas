@@ -102,6 +102,17 @@ export function buildLiveDeck(state: InfoState): Card[] {
 //     apply heuristic policy for each.
 //  4. Score the complete table and return the actor's net.
 
+// A side-game opponent's board is resolved wholesale (all 5 streets) the
+// instant the side game starts (reducer.ts's startBonus -> botSideGamesInterleaved),
+// unlike a normal-round opponent's board, which is genuinely still partial —
+// only ever "one street behind" the actor — since it only grows as real
+// BOT_PLACED actions land. A rollout must never keep dealing hypothetical
+// future streets to an opponent whose board is already full: legalPlacements
+// would find zero remaining row capacity and throw.
+function boardIsFull(b: PartialBoard): boolean {
+  return b.top.length >= 3 && b.middle.length >= 5 && b.bottom.length >= 5
+}
+
 function rollout(
   actorBoardAfterPlacement: PartialBoard,
   state: InfoState,
@@ -123,6 +134,7 @@ function rollout(
   // Current street: deal to opponents (actor's cards already accounted for in state.hand)
   const curN = cardsPerStreet(state.street)
   for (let i = 0; i < oppBrds.length; i++) {
+    if (boardIsFull(oppBrds[i]!)) continue // already fully resolved — nothing left to simulate
     const oppHand = shuffledLiveDeck.slice(di, di + curN)
     di += curN
     if (oppHand.length < curN) return 0 // not enough cards — degenerate rollout
@@ -141,6 +153,7 @@ function rollout(
     actorBrd = applyPlacement(actorBrd, actorPl)
 
     for (let i = 0; i < oppBrds.length; i++) {
+      if (boardIsFull(oppBrds[i]!)) continue // already fully resolved — nothing left to simulate
       const oppHand = shuffledLiveDeck.slice(di, di + 3)
       di += 3
       if (oppHand.length < 3) return 0

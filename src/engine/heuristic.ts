@@ -192,7 +192,10 @@ export function heuristicPlacement(
 ): Placement {
   const candidates = legalPlacements(board, dealt, street)
   if (candidates.length === 0) {
-    throw new Error('No legal placements — board/dealt mismatch')
+    throw new Error(
+      `No legal placements — board/dealt mismatch (board top=${board.top.length}/3 `
+      + `mid=${board.middle.length}/5 bot=${board.bottom.length}/5, dealt=${dealt.length} card(s), street=${street})`,
+    )
   }
   let best = candidates[0]!
   let bestScore = scorePlacement(board, best, oppBoards)

@@ -131,8 +131,17 @@ function doTransition(
     top: [...b.top], middle: [...b.middle], bottom: [...b.bottom],
   }))
 
-  // Deal each opponent their cards for the current street and apply their policy.
+  // Deal each opponent their cards for the current street and apply their
+  // policy. A side-game opponent's board is resolved wholesale (all 5
+  // streets) the instant the side game starts (reducer.ts's startBonus ->
+  // botSideGamesInterleaved), unlike a normal-round opponent's board, which
+  // only ever grows one street at a time from real BOT_PLACED actions — so
+  // an already-full opponent board has nothing left to simulate, and must be
+  // skipped rather than dealt more cards (legalPlacements would find zero
+  // remaining row capacity and throw).
   for (let i = 0; i < oppBrds.length; i++) {
+    const full = oppBrds[i]!.top.length >= 3 && oppBrds[i]!.middle.length >= 5 && oppBrds[i]!.bottom.length >= 5
+    if (full) continue
     const oppHand = world.slice(di.v, di.v + cps)
     di.v += cps
     if (oppHand.length < cps) return null
