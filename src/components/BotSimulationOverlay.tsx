@@ -83,9 +83,11 @@ export function BotSimulationOverlay({
   const run = useCallback(async () => {
     if (queue.length === 0) return
     setState('running'); setError(''); setResults([]); setProgress(0); setOpenIndex(null)
+    let currentGameId: string | null = null
     try {
       for (let i = 0; i < queue.length; i++) {
         const gameId = queue[i]!
+        currentGameId = gameId
         const hand = buildHandReplayData(gameId, username, streetDecisions, bonusBoardDecisions, summaries)
         const ownHistory = buildTargetOwnHistory(gameId, username, streetDecisions, bonusBoardDecisions)
         const own = targetOwnFinalBoards(ownHistory)
@@ -112,7 +114,12 @@ export function BotSimulationOverlay({
       setState('done')
     } catch (e) {
       // Keep whatever hands already completed visible — only the run itself failed.
-      setError(e instanceof Error ? e.message : String(e))
+      // Name the exact hand it choked on: a bare "board/dealt mismatch" from
+      // deep inside the worker gives no way to locate the bad record, and
+      // this is the second time that generic error has survived two rounds
+      // of upstream data validation, so pin down *which* game at minimum.
+      const base = e instanceof Error ? e.message : String(e)
+      setError(currentGameId ? `[game ${currentGameId}] ${base}` : base)
       setState('error')
     }
   }, [queue, username, streetDecisions, bonusBoardDecisions, summaries, policy, sims, rootTopK])

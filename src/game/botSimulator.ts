@@ -85,37 +85,48 @@ export async function simulateHandWithBot(
       throw new Error(`simulateHandWithBot: exceeded ${MAX_STEPS} steps — reducer stuck in phase "${state.phase}"`)
     }
 
-    switch (state.phase) {
-      case 'placing': {
-        const infoState = buildInfoState(state)
-        if (!infoState) throw new Error(`simulateHandWithBot: could not build InfoState in phase "${state.phase}"`)
-        const stepSeed = (seed ^ ((state.street * 31 + state.sideStreet * 17 + (state.context === 'side' ? 1 : 0)) * 0x9e3779b9)) | 0
-        const placement = await getBotMove(infoState, sims, stepSeed, policy, policy === 'nn' ? rootTopK : undefined)
-        state = gameReducer(state, { type: 'APPLY_COACH_PLACEMENT', placement })
-        state = gameReducer(state, { type: 'LOCK_IN' })
-        break
+    // Every branch below can throw deep inside the engine (e.g. a heuristic
+    // policy hitting "No legal placements — board/dealt mismatch") with no
+    // indication of which street/phase/context it happened in — pin that
+    // down here so a corrupted record is locatable from the error alone
+    // instead of a bare worker stack trace.
+    const stepContext = `phase=${state.phase} street=${state.street} sideStreet=${state.sideStreet} context=${state.context}`
+    try {
+      switch (state.phase) {
+        case 'placing': {
+          const infoState = buildInfoState(state)
+          if (!infoState) throw new Error(`simulateHandWithBot: could not build InfoState in phase "${state.phase}"`)
+          const stepSeed = (seed ^ ((state.street * 31 + state.sideStreet * 17 + (state.context === 'side' ? 1 : 0)) * 0x9e3779b9)) | 0
+          const placement = await getBotMove(infoState, sims, stepSeed, policy, policy === 'nn' ? rootTopK : undefined)
+          state = gameReducer(state, { type: 'APPLY_COACH_PLACEMENT', placement })
+          state = gameReducer(state, { type: 'LOCK_IN' })
+          break
+        }
+        case 'bonus_oneshot': {
+          const placement = pickBonusOneshotPlacement(state)
+          state = gameReducer(state, { type: 'APPLY_COACH_PLACEMENT', placement })
+          state = gameReducer(state, { type: 'LOCK_IN' })
+          break
+        }
+        case 'bot_thinking': {
+          const placements = state.replay!.opponentNormalPlacements.map(streets => streets[state.street]!)
+          state = gameReducer(state, { type: 'BOT_PLACED', placements })
+          break
+        }
+        case 'revealing': {
+          state = gameReducer(state, { type: 'ADVANCE' })
+          break
+        }
+        case 'scoring': {
+          state = gameReducer(state, { type: 'START_BONUS' })
+          break
+        }
+        default:
+          throw new Error(`simulateHandWithBot: unexpected phase "${state.phase}"`)
       }
-      case 'bonus_oneshot': {
-        const placement = pickBonusOneshotPlacement(state)
-        state = gameReducer(state, { type: 'APPLY_COACH_PLACEMENT', placement })
-        state = gameReducer(state, { type: 'LOCK_IN' })
-        break
-      }
-      case 'bot_thinking': {
-        const placements = state.replay!.opponentNormalPlacements.map(streets => streets[state.street]!)
-        state = gameReducer(state, { type: 'BOT_PLACED', placements })
-        break
-      }
-      case 'revealing': {
-        state = gameReducer(state, { type: 'ADVANCE' })
-        break
-      }
-      case 'scoring': {
-        state = gameReducer(state, { type: 'START_BONUS' })
-        break
-      }
-      default:
-        throw new Error(`simulateHandWithBot: unexpected phase "${state.phase}"`)
+    } catch (e) {
+      const base = e instanceof Error ? e.message : String(e)
+      throw new Error(`simulateHandWithBot failed at ${stepContext}: ${base}`, { cause: e })
     }
   }
 
