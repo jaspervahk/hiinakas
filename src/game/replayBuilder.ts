@@ -105,6 +105,37 @@ function assertValidPlacementSequence(
   }
 }
 
+// Validates that the target player's own recorded *dealt hand* (not their
+// historical placement — the actual cards they were dealt that street) has
+// the right count. This only matters for the target: opponents always
+// replay their frozen actualPlacement verbatim and their `hand` field is
+// never read, but the target's `hand` is fed straight into the bot as fresh
+// preDealt cards for it to make a genuinely new decision from
+// (buildHandReplayData's preDealt[0] / humanBonusReplay.sideHands). A wrong
+// hand count there silently unbalances the running board-capacity math the
+// bot builds street by street from its own choices — it doesn't fail on the
+// bad street itself (the bot can always place however many cards it was
+// handed), only several streets later when remaining capacity runs out,
+// surfacing as the same generic "No legal placements — board/dealt
+// mismatch" this file's other checks were added to pin down. Unlike the
+// placement-sequence checks above, this one can't be caught by validating
+// actualPlacement, since that field is never consulted for the target's own
+// seat during a bot simulation.
+function assertValidDealtHands(
+  decisions: readonly { street: number; hand: readonly Card[] }[],
+  context: string,
+): void {
+  for (const d of decisions) {
+    const expected = d.street === 0 ? 5 : 3
+    if (d.hand.length !== expected) {
+      throw new Error(
+        `Malformed recorded hand for ${context}: street ${d.street} was dealt ${d.hand.length} card(s) `
+        + `(expected ${expected}) — the underlying session data for this hand looks corrupted or truncated.`,
+      )
+    }
+  }
+}
+
 // The target's own actual historical placements — NOT used by the replay
 // feature itself (the whole point of a replay is a genuinely new decision
 // with the same cards), but needed by the Huub-challenge detail viewer to
@@ -137,6 +168,7 @@ export function buildTargetOwnHistory(
     )
   }
   assertValidPlacementSequence(targetNormal, `${targetUsername} in game ${gameId}`)
+  assertValidDealtHands(targetNormal, `${targetUsername} in game ${gameId}`)
   const normalPlacements = targetNormal.map(d => d.actualPlacement)
 
   const targetBonusBoard = gameBonusBoards.find(d => d.username === targetUsername)
@@ -241,6 +273,7 @@ export function buildHandReplayData(
       `Expected 5 normal-round streets for ${targetUsername} in game ${gameId}, found ${targetNormal.length}`,
     )
   }
+  assertValidDealtHands(targetNormal, `${targetUsername} in game ${gameId}`)
   const targetNormalHands = targetNormal.map(d => [...d.hand])
 
   // Opponents' normal-round per-street actual placements — replayed verbatim,
@@ -291,6 +324,7 @@ export function buildHandReplayData(
         `Expected 5 side-game streets for ${targetUsername} in game ${gameId}, found ${targetSideDecs.length}`,
       )
     }
+    assertValidDealtHands(targetSideDecs, `${targetUsername}'s side game in game ${gameId}`)
     humanBonusReplay = { tier: null, sideHands: targetSideDecs.map(d => [...d.hand]) }
   }
 

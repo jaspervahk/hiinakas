@@ -141,6 +141,25 @@ describe('buildHandReplayData', () => {
     )
   })
 
+  it('catches a target player\'s own dealt hand with the wrong card count for its street', () => {
+    // The actual production bug: a corrupted `hand` field (not
+    // actualPlacement) for the TARGET player specifically — this is the one
+    // field a bot simulation actually reads to make a fresh decision from
+    // (preDealt[0]), so a wrong count here doesn't fail on its own street;
+    // it silently unbalances the bot's own running board-capacity math and
+    // only surfaces several streets later as a generic "No legal placements
+    // — board/dealt mismatch" deep in the worker.
+    const decisions = [...fiveNormalStreets('g1', 'A'), ...fiveNormalStreets('g1', 'B')]
+    const aStreet1 = decisions.find(d => d.username === 'A' && d.street === 1)!
+    aStreet1.hand = [...aStreet1.hand, c(9, 'h')]  // 4 cards instead of 3
+
+    const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 5, B: -5 } })]
+
+    expect(() => buildHandReplayData('g1', 'A', decisions, [], summaries)).toThrow(
+      /Malformed recorded hand for A in game g1: street 1 was dealt 4 card\(s\)/,
+    )
+  })
+
   it('catches a recorded street sequence with a duplicated/missing street index', () => {
     const decisions = [...fiveNormalStreets('g1', 'A'), ...fiveNormalStreets('g1', 'B')]
     // B's street-3 decision is mislabeled as street 2 (duplicate), so street

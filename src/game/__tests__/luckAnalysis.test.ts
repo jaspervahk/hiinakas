@@ -12,6 +12,16 @@ function placement(top: Card[], middle: Card[], bottom: Card[], discard: Card | 
   return { topAdd: top, middleAdd: middle, bottomAdd: bottom, discard }
 }
 
+// computeHandLuck reconstructs the target's actual per-street hand from
+// actualPlacement (see placementCards() in luckAnalysis.ts), never from this
+// `hand` field — but buildHandReplayData validates every target decision's
+// `hand` count regardless of whether the caller ends up using it, so the
+// default here just needs the right count for its street, not real values.
+function defaultHand(street: number): Card[] {
+  const count = street === 0 ? 5 : 3
+  return Array.from({ length: count }, (_, i) => c(2 + i, 's'))
+}
+
 function streetDecision(overrides: Partial<ReviewDecision> & { gameId: string; username: string; street: number }): ReviewDecision {
   return {
     id: `${overrides.gameId}:${overrides.username}:${overrides.segment ?? 'normal_play'}:${overrides.street}`,
@@ -19,7 +29,7 @@ function streetDecision(overrides: Partial<ReviewDecision> & { gameId: string; u
     uid: overrides.username,
     segment: 'normal_play',
     board: { top: [], middle: [], bottom: [] },
-    hand: [c(2, 's')],
+    hand: defaultHand(overrides.street),
     actualPlacement: placement([], [c(2, 's')], []),
     bestPlacement: placement([], [c(2, 's')], []),
     playedEV: 0, bestEV: 0, evLost: 0, topCandidates: [],
