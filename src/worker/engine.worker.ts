@@ -44,6 +44,19 @@ let loadedModel: NNModel | null = null
 // Royalty NN model — null until LOAD_ROYALTY_MODEL completes.
 let royaltyNnModel: NNModel | null = null
 
+// Id of the most recently received GET_EV request. runMC's heuristic loop
+// below runs fully synchronously between yielded batches — nothing else in
+// this worker (including a newer GET_EV that should supersede it, e.g. the
+// user moving to a new street in Live Coach) gets a chance to even start
+// until that loop finishes on its own. Yielding to the event loop after
+// every batch and checking this lets a stale computation notice it's been
+// superseded and abandon itself instead of silently starving the request
+// that actually matters now.
+let latestEvRequestId: string | null = null
+function yieldToEventLoop(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
 // nnOpponents is enabled because WASM makes opponent NN calls cheap enough to
 // be net-faster than heuristic opponents even including the extra forward passes.
 const COACH_MCTS_OPTS: MCTSOptions    = { nSims: 500, maxDepth: 2, nnOpponents: true }
@@ -70,6 +83,7 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       const { state, totalRollouts, batchSize, seed, policy, rootTopK } = msg.payload
       const rng = makeRNG(seed)
       console.log(`[worker] GET_EV street=${state.street} policy=${policy} hasModel=${!!loadedModel}`)
+      latestEvRequestId = msg.id
       const royaltySims = totalRollouts > 0 ? totalRollouts : ROYALTY_MCTS_SIMS
 
       if (policy === 'royalty-nn' && royaltyNnModel) {
@@ -88,6 +102,8 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         for (const results of runMC(state, { totalRollouts, batchSize }, rng)) {
           lastResults = results
           self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
+          await yieldToEventLoop()
+          if (latestEvRequestId !== msg.id) break // superseded by a newer request — abandon
         }
         self.postMessage({ id: msg.id, type: 'EV_DONE', payload: lastResults } as WorkerResponse)
       } else if (loadedModel) {
@@ -113,6 +129,8 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
         for (const results of runMC(state, { totalRollouts, batchSize }, fallbackRng)) {
           lastResults = results
           self.postMessage({ id: msg.id, type: 'EV_PROGRESS', payload: results } as WorkerResponse)
+          await yieldToEventLoop()
+          if (latestEvRequestId !== msg.id) break // superseded by a newer request — abandon
         }
         self.postMessage({ id: msg.id, type: 'EV_DONE', payload: lastResults ?? [] } as WorkerResponse)
       }
