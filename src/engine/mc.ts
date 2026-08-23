@@ -1,11 +1,12 @@
 import type { Card, PartialBoard, BonusQualifier } from './types'
 import { FULL_DECK } from './deck'
-import { scoreTable } from './scoring'
-import { bonusGameValue, isFoul, royalties, AVG_BONUS_ROYALTY } from './rules'
+import { scoreTable, scorePair } from './scoring'
+import { bonusGameValue } from './rules'
 import type { Board } from './types'
 import { legalPlacements, applyPlacement } from './placement'
 import type { Placement } from './placement'
 import { heuristicPlacement } from './heuristic'
+import { sampleBonusOpponentBoard } from './bonusOpponentSamples'
 
 // Optional NN-guided policy replaces heuristicPlacement inside rollouts.
 // Receives (board, hand, street, revealedOppBoards) and returns the chosen placement.
@@ -46,8 +47,8 @@ export interface InfoState {
   // active player's board is scored pairwise, bonus-round or side-game)
   // but whose boards are invisible during play (info-set hygiene: side-game
   // players never see bonus-qualifying players' boards). Since these
-  // opponents can't be simulated, rollout() values each one using
-  // AVG_BONUS_ROYALTY as a stand-in for their expected royalties.
+  // opponents can't be simulated live, rollout() values each one by scoring
+  // against a realistic precomputed sample board (bonusOpponentSamples.ts).
   readonly invisibleBonusOpponents?: readonly BonusQualifier[]
 }
 
@@ -117,6 +118,7 @@ function rollout(
   actorBoardAfterPlacement: PartialBoard,
   state: InfoState,
   shuffledLiveDeck: Card[],
+  rng: RNG,
   includeBonusEV = true,
 ): number {
   let di = 0 // deck index into shuffledLiveDeck
@@ -176,21 +178,24 @@ function rollout(
   let total = (nets[0] ?? 0) + (addBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[]) : 0)
 
   // Invisible bonus-round opponents (side-game info-set hygiene means their
-  // boards can't be simulated) still score against the actor at showdown.
-  // Approximates scorePair's formula with the opponent side standing in via
-  // AVG_BONUS_ROYALTY (foul rate ~0% for optimal bonus play, so bFoul is
-  // treated as always false) and rowScore approximated as 0 (no simulated
-  // opponent board to compare rows against) — without this, a side-game
-  // decision with zero VISIBLE opponents would score exactly 0 for every
-  // candidate (scoreTable's pairwise loop never runs for a 1-board table),
-  // silently dropping the actor's own royalties from the EV entirely.
+  // boards can't be simulated live) still score against the actor at
+  // showdown. A real scorePair() call against a realistic sampled opponent
+  // board (scripts/compute-bonus-samples.ts — precomputed offline via the
+  // exact same bestBonusBoard solver, since running that solver live inside
+  // a rollout is far too expensive, especially for AA_OR_TRIPS) captures
+  // both the royalty differential AND the row-score term properly, unlike
+  // the old flat-average approximation this replaced, which assumed the
+  // row-score half was always a wash (0) — wrong, since a board built from
+  // a bigger 13-15 card pool to maximize royalties also tends to win rows
+  // more often than a neutral assumption implies. Without this term at all,
+  // a side-game decision with zero VISIBLE opponents would score exactly 0
+  // for every candidate (scoreTable's pairwise loop never runs for a
+  // 1-board table), silently dropping the actor's own royalties from the EV
+  // entirely.
   if (state.invisibleBonusOpponents) {
-    const actorFouled = isFoul(actorBrd as Board)
-    const actorRoy = actorFouled ? 0 : royalties(actorBrd as Board)
     for (const tier of state.invisibleBonusOpponents) {
-      total += actorFouled
-        ? -6 - AVG_BONUS_ROYALTY[tier]
-        : actorRoy - AVG_BONUS_ROYALTY[tier]
+      const oppBoard = sampleBonusOpponentBoard(tier, rng)
+      total += scorePair(actorBrd as Board, oppBoard).aNet
     }
   }
 
@@ -212,7 +217,7 @@ export function computeEV(
   let sumSq = 0
   for (let r = 0; r < rollouts; r++) {
     const shuffled = fisherYates(liveDeck, rng)
-    const net = rollout(boardAfter, state, shuffled)
+    const net = rollout(boardAfter, state, shuffled, rng)
     sum += net
     sumSq += net * net
   }
@@ -255,7 +260,7 @@ export function* runMC(
     for (let r = 0; r < batch; r++) {
       const shuffled = fisherYates(liveDeck, rng)
       for (let pi = 0; pi < candidates_.length; pi++) {
-        const net = rollout(boardsAfter[pi]!, state, shuffled)
+        const net = rollout(boardsAfter[pi]!, state, shuffled, rng)
         sums[pi] += net
         sumsSq[pi] += net * net
         counts[pi]++
@@ -292,7 +297,7 @@ export function getBotMove(
   for (let r = 0; r < rollouts; r++) {
     const shuffled = fisherYates(liveDeck, rng)
     for (let pi = 0; pi < candidates.length; pi++) {
-      sums[pi] += rollout(boardsAfter[pi]!, state, shuffled, includeBonusEV)
+      sums[pi] += rollout(boardsAfter[pi]!, state, shuffled, rng, includeBonusEV)
     }
   }
 
