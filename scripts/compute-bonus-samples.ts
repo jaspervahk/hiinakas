@@ -46,11 +46,17 @@ const TIERS: readonly BonusQualifier[] = ['QQ', 'KK', 'AA_OR_TRIPS']
 const DISCARDS: Record<BonusQualifier, number> = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 }
 // Fewer samples for the expensive tiers — bestBonusBoard's cost scales with
 // C(dealt, 13): 1 combo for QQ (13c13), 14 for KK (14c13), 105 for
-// AA_OR_TRIPS (15c13) — so a AA_OR_TRIPS sample costs ~100x a QQ one. 400
-// samples/tier is already a generous distribution to sample from at rollout
-// time; there's no accuracy benefit to matching QQ's count for the
-// expensive tiers, only wasted generation time.
-const SAMPLE_COUNTS: Record<BonusQualifier, number> = { QQ: 400, KK: 400, AA_OR_TRIPS: 150 }
+// AA_OR_TRIPS (15c13) — so a AA_OR_TRIPS sample costs ~100x a QQ one.
+// An initial pass at 400/400/150 was checked for convergence against the
+// independently-computed AVG_BONUS_ROYALTY reference constants (see
+// scripts/_probe_convergence.ts, not committed): QQ and KK's pool means
+// matched closely (within ~0.2 of 8.95/12.36) with a half-split standard
+// error around 0.3-0.4, but AA_OR_TRIPS's 150-sample pool mean (15.6) was
+// off from its reference (16.75) by ~7%, with a half-split SE around 0.7 —
+// too much sampling noise for the tier with the highest stakes. These
+// counts push AA_OR_TRIPS up ~3x (still ~9 minutes to generate) and QQ/KK
+// up 2x since they're cheap enough that there's no reason not to.
+const SAMPLE_COUNTS: Record<BonusQualifier, number> = { QQ: 800, KK: 800, AA_OR_TRIPS: 450 }
 
 const RANK_CHAR: Record<number, string> = {
   2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8', 9: '9', 10: 'T',
