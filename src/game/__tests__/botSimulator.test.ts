@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { simulateHandWithBot } from '../botSimulator'
-import type { GetBotMoveFn } from '../botSimulator'
+import type { GetBotMoveFn, SolveBonusFn } from '../botSimulator'
 import type { HandReplayData } from '../replayBuilder'
+import { bestBonusBoard } from '../../engine/index'
 import type { Card, PartialBoard, Placement } from '../../engine/index'
+
+// botSimulator's own job is the phase-loop orchestration, not the bonus
+// solver's opponent-aware tie-breaking (covered separately by
+// bonusOpponentScoring.test.ts) — this stub ignores `opponents` and just
+// wraps the plain solver.
+const stubSolveBonus: SolveBonusFn = async (cards, numDiscard) => bestBonusBoard(cards, numDiscard)
 
 function c(rank: number, suit: 's' | 'h' | 'd' | 'c'): Card { return { rank: rank as Card['rank'], suit } }
 
@@ -71,7 +78,7 @@ describe('simulateHandWithBot', () => {
       opponentNames: ['Opp'],
     }
 
-    const result = await simulateHandWithBot(hand, 'heuristic', 1, undefined, 42, scriptedBot)
+    const result = await simulateHandWithBot(hand, 'heuristic', 1, undefined, 42, scriptedBot, stubSolveBonus)
 
     expect(result.board.top).toHaveLength(3)
     expect(result.board.middle).toHaveLength(5)
@@ -109,7 +116,7 @@ describe('simulateHandWithBot', () => {
       opponentNames: ['Opp'],
     }
 
-    const result = await simulateHandWithBot(hand, 'heuristic', 1, undefined, 42, scriptedBot)
+    const result = await simulateHandWithBot(hand, 'heuristic', 1, undefined, 42, scriptedBot, stubSolveBonus)
 
     expect(result.board.top).toEqual(expect.arrayContaining([c(14, 's'), c(14, 'h'), c(2, 'c')]))
     expect(result.bonusBoard).not.toBeNull()
@@ -135,6 +142,6 @@ describe('simulateHandWithBot', () => {
       replay: baseReplay([]),
       opponentNames: ['Opp'],
     }
-    await expect(simulateHandWithBot(hand, 'heuristic', 1, undefined, 1, scriptedBot)).rejects.toThrow()
+    await expect(simulateHandWithBot(hand, 'heuristic', 1, undefined, 1, scriptedBot, stubSolveBonus)).rejects.toThrow()
   })
 })

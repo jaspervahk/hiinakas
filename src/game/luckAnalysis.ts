@@ -25,8 +25,8 @@
 // analysis and a reopened saved analysis has no raw decisions at all.
 
 import type { Card, InfoState, Board, BonusQualifier, Placement } from '../engine/index'
-import { FULL_DECK, bonusTrigger, scoreTable, bestBonusBoard } from '../engine/index'
-import type { BotPolicy } from '../worker/client'
+import { FULL_DECK, bonusTrigger, scoreTable } from '../engine/index'
+import type { BotPolicy, OpponentRef } from '../worker/client'
 import {
   buildHandReplayData, buildTargetOwnHistory, foldPlacements, resolveBonusOutcomeBoard,
 } from './replayBuilder'
@@ -136,6 +136,11 @@ export interface ComputeHandLuckOptions {
   outerSamples: number
   seed: number
   analyzePositions: AnalyzePositionsFn
+  // Opponent-aware one-shot bonus solve (bonusOpponentScoring.ts, via the
+  // worker — see worker/client.ts's solveBonus). Matches WorkerClient's own
+  // method signature so callers can pass workerClient.solveBonus.bind(...)
+  // directly with no wrapper needed.
+  solveBonus: (cards: Card[], numDiscard: number, opponents: OpponentRef[], seed: number) => Promise<Board>
 }
 
 export async function computeHandLuck(
@@ -146,7 +151,7 @@ export async function computeHandLuck(
   summaries: GameSummary[],
   opts: ComputeHandLuckOptions,
 ): Promise<HandLuck> {
-  const { policy, sims, rootTopK, outerSamples, seed, analyzePositions } = opts
+  const { policy, sims, rootTopK, outerSamples, seed, analyzePositions, solveBonus } = opts
   const rng = mulberry32(seed)
 
   const hand = buildHandReplayData(gameId, targetUsername, streetDecisions, bonusBoardDecisions, summaries)
@@ -199,13 +204,18 @@ export async function computeHandLuck(
         .flatMap(o => [...o.board.top, ...o.board.middle, ...o.board.bottom])
 
       const deck = remainingDeck(oneShotOpponentCards)
-      const actualBoard = bestBonusBoard(dealt.cards, dealt.numDiscard)
+      // Exact-board mode: every opponent's real final board is already known
+      // (frozen historical data), so the solver scores tied candidates
+      // against them directly — no sampling needed, strictly more accurate
+      // than the tier-scenario mode real-time gameplay callers must use.
+      const opponents: OpponentRef[] = oppBoardsForScoring.map(board => ({ board }))
+      const actualBoard = await solveBonus(dealt.cards, dealt.numDiscard, opponents, seed)
       const actualEV = scoreTable([actualBoard, ...oppBoardsForScoring])[0]!
 
       const sampledEVs: number[] = []
       for (let k = 0; k < outerSamples; k++) {
         const sample = sampleWithoutReplacement(deck, dealt.cards.length, rng)
-        const sampleBoard = bestBonusBoard(sample, dealt.numDiscard)
+        const sampleBoard = await solveBonus(sample, dealt.numDiscard, opponents, seed + k + 1)
         sampledEVs.push(scoreTable([sampleBoard, ...oppBoardsForScoring])[0]!)
       }
       const baselineEV = average(sampledEVs)

@@ -69,13 +69,20 @@ const evOf = (state: InfoState) => state.hand.reduce((s, card) => s + card.rank,
 const stubAnalyze: AnalyzePositionsFn = async (positions) =>
   positions.map(p => ({ id: p.id, candidates: [{ ev: evOf(p.state) }] }))
 
+// computeHandLuck's own job is the luck-math orchestration, not the bonus
+// solver's tie-breaking behavior (covered separately by
+// bonusOpponentScoring.test.ts) — this stub ignores `opponents` and just
+// wraps the plain solver, matching this file's existing expected-value
+// computations (e.g. `scoreTable([bestBonusBoard(...), bBoard])`) exactly.
+const stubSolveBonus = async (cards: Card[], numDiscard: number) => bestBonusBoard(cards, numDiscard)
+
 describe('computeHandLuck', () => {
   it('computes per-street normal-round luck with no bonus reached', async () => {
     const decisions = [...aNormalDecisions('g1'), ...bNormalDecisions('g1')]
     const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 5, B: -5 } })]
 
     const result = await computeHandLuck('g1', 'A', decisions, [], summaries, {
-      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 5, seed: 42, analyzePositions: stubAnalyze,
+      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 5, seed: 42, analyzePositions: stubAnalyze, solveBonus: stubSolveBonus,
     })
 
     expect(result.gameId).toBe('g1')
@@ -93,7 +100,7 @@ describe('computeHandLuck', () => {
   it('is deterministic for a fixed seed', async () => {
     const decisions = [...aNormalDecisions('g1'), ...bNormalDecisions('g1')]
     const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'] })]
-    const opts = { policy: 'heuristic' as const, sims: 1, rootTopK: undefined, outerSamples: 5, seed: 7, analyzePositions: stubAnalyze }
+    const opts = { policy: 'heuristic' as const, sims: 1, rootTopK: undefined, outerSamples: 5, seed: 7, analyzePositions: stubAnalyze, solveBonus: stubSolveBonus }
 
     const r1 = await computeHandLuck('g1', 'A', decisions, [], summaries, opts)
     const r2 = await computeHandLuck('g1', 'A', decisions, [], summaries, opts)
@@ -110,7 +117,7 @@ describe('computeHandLuck', () => {
     const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'] })]
 
     await computeHandLuck('g1', 'A', decisions, [], summaries, {
-      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 7, seed: 1, analyzePositions: countingStub,
+      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 7, seed: 1, analyzePositions: countingStub, solveBonus: stubSolveBonus,
     })
     expect(calls).toEqual([8, 8, 8, 8, 8])   // 1 actual + 7 samples, once per normal street
   })
@@ -133,7 +140,7 @@ describe('computeHandLuck', () => {
     const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'] })]
 
     const result = await computeHandLuck('g1', 'A', decisions, [], summaries, {
-      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 300, seed: 11, analyzePositions: indicatorStub,
+      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 300, seed: 11, analyzePositions: indicatorStub, solveBonus: stubSolveBonus,
     })
 
     expect(result.streets[1]!.baselineEV).toBe(0)
@@ -157,7 +164,7 @@ describe('computeHandLuck', () => {
     const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'] })]
 
     const result = await computeHandLuck('g1', 'A', [...decisions, ...bSideDecisions], bonusBoards, summaries, {
-      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 5, seed: 3, analyzePositions: stubAnalyze,
+      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 5, seed: 3, analyzePositions: stubAnalyze, solveBonus: stubSolveBonus,
     })
 
     expect(result.streets).toHaveLength(6)   // 5 normal + 1 bonus_oneshot
@@ -204,7 +211,7 @@ describe('computeHandLuck', () => {
     const summaries = [summary({ gameId: 'g1', playerNames: ['A', 'B'] })]
 
     const result = await computeHandLuck('g1', 'A', decisions, bonusBoards, summaries, {
-      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 4, seed: 9, analyzePositions: stubAnalyze,
+      policy: 'heuristic', sims: 1, rootTopK: undefined, outerSamples: 4, seed: 9, analyzePositions: stubAnalyze, solveBonus: stubSolveBonus,
     })
 
     expect(result.streets).toHaveLength(10)   // 5 normal + 5 side

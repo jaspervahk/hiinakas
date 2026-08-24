@@ -15,9 +15,8 @@ import { gameReducer, makeInitialState } from './reducer'
 import { buildInfoState } from '../coach/useCoach'
 import type { HandReplayData } from './replayBuilder'
 import type { GameState } from './types'
-import { bestBonusBoard } from '../engine/index'
-import type { Board, InfoState, Placement } from '../engine/index'
-import type { BotPolicy } from '../worker/client'
+import type { Board, Card, InfoState, Placement } from '../engine/index'
+import type { BotPolicy, OpponentRef } from '../worker/client'
 
 export type GetBotMoveFn = (
   state: InfoState,
@@ -26,6 +25,18 @@ export type GetBotMoveFn = (
   policy?: BotPolicy,
   rootTopK?: number,
 ) => Promise<Placement>
+
+// Opponent-aware one-shot bonus solve — matches WorkerClient.solveBonus's
+// signature so callers can pass it (or botWorkerClient.solveBonus.bind(...))
+// directly. Injected rather than imported directly, same reasoning as
+// GetBotMoveFn: keeps this module worker-free and trivially testable with a
+// stub.
+export type SolveBonusFn = (
+  cards: Card[],
+  numDiscard: number,
+  opponents: OpponentRef[],
+  seed: number,
+) => Promise<Board>
 
 export interface BotSimResult {
   totalScores: number[]   // [target, ...opponents] — same order as HandReplayData's preDealt/replay
@@ -45,13 +56,20 @@ export interface BotSimResult {
 const DISCARD_FOR_TIER = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 } as const
 
 // A one-shot bonus board is a solved combinatorial-optimum problem (maximize
-// royalties on a fixed 13/14/15 cards), not a multi-street policy decision —
-// so it's always played via the exact solver the coach panel already
-// recommends to a human, regardless of which street-level policy was picked.
-function pickBonusOneshotPlacement(state: GameState): Placement {
+// royalties on a fixed 13/14/15 cards, then break any royalty ties by
+// expected performance against the real bots in this hand), not a
+// multi-street policy decision — so it's always played via the exact solver
+// the coach panel already recommends to a human, regardless of which
+// street-level policy was picked. state.botBonusQualifiers is already fully
+// resolved by reducer.ts's startBonus() the instant the bonus round begins
+// (before this decision happens), so every bot's real scenario — bonus-
+// eligible at a known tier, or in the side game — is known here, for any
+// player count.
+async function pickBonusOneshotPlacement(state: GameState, seed: number, solveBonus: SolveBonusFn): Promise<Placement> {
   const q = state.humanBonusQualifier
   if (!q) throw new Error('botSimulator: bonus_oneshot phase with no qualifier')
-  const board = bestBonusBoard(state.humanBonusCards, DISCARD_FOR_TIER[q])
+  const opponents: OpponentRef[] = state.botBonusQualifiers.map(tier => tier === null ? 'side' : { tier })
+  const board = await solveBonus(state.humanBonusCards, DISCARD_FOR_TIER[q], opponents, seed)
   return { topAdd: board.top, middleAdd: board.middle, bottomAdd: board.bottom, discard: null }
 }
 
@@ -66,6 +84,7 @@ export async function simulateHandWithBot(
   rootTopK: number | undefined,
   seed: number,
   getBotMove: GetBotMoveFn,
+  solveBonus: SolveBonusFn,
 ): Promise<BotSimResult> {
   let state: GameState = gameReducer(makeInitialState(), {
     type: 'START_REPLAY',
@@ -103,7 +122,8 @@ export async function simulateHandWithBot(
           break
         }
         case 'bonus_oneshot': {
-          const placement = pickBonusOneshotPlacement(state)
+          const stepSeed = (seed ^ (0x2545F491 * 0x9e3779b9)) | 0
+          const placement = await pickBonusOneshotPlacement(state, stepSeed, solveBonus)
           state = gameReducer(state, { type: 'APPLY_COACH_PLACEMENT', placement })
           state = gameReducer(state, { type: 'LOCK_IN' })
           break

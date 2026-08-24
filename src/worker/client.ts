@@ -1,9 +1,9 @@
 import type { InfoState, MCOptions, ScoredPlacement } from '../engine/mc'
 import type { Placement } from '../engine/placement'
 import type { Card, Board } from '../engine/types'
-import type { WorkerRequest, WorkerResponse, BotPolicy, MatchHandRecord, BotSpec, BonusAnalysisResult } from './types'
+import type { WorkerRequest, WorkerResponse, BotPolicy, MatchHandRecord, BotSpec, BonusAnalysisResult, OpponentRef } from './types'
 import type { BotKind } from '../engine/matchTypes'
-export type { BotPolicy, MatchHandRecord, BotSpec, BotKind, BonusAnalysisResult }
+export type { BotPolicy, MatchHandRecord, BotSpec, BotKind, BonusAnalysisResult, OpponentRef }
 
 // Available model variants served via Firebase Hosting.
 export const MODEL_URLS = {
@@ -33,6 +33,7 @@ type Handler =
   | { kind: 'analysis'; resolve: (r: AnalysisResult[]) => void; onProgress?: (done: number, total: number, item: AnalysisResult) => void }
   | { kind: 'match'; resolve: (r: MatchHandRecord[]) => void; onProgress?: (done: number, total: number, batch: MatchHandRecord[]) => void; onError: () => void }
   | { kind: 'bonus'; resolve: (r: BonusAnalysisResult[]) => void; onProgress?: (done: number, total: number, item: BonusAnalysisResult) => void }
+  | { kind: 'bonusSolve'; resolve: (b: Board) => void; reject: (e: string) => void }
 
 export class WorkerClient {
   private worker: Worker | null = null
@@ -49,6 +50,7 @@ export class WorkerClient {
       // Fail-safe: drop all pending handlers
       for (const [, h] of this.handlers) {
         if (h.kind === 'bot') h.reject('Worker error')
+        else if (h.kind === 'bonusSolve') h.reject('Worker error')
         else if (h.kind === 'model') h.resolve(false)
         else if (h.kind === 'analysis') h.resolve([])
         else if (h.kind === 'bonus') h.resolve([])
@@ -101,8 +103,13 @@ export class WorkerClient {
         if (handler.kind === 'bonus') handler.resolve(msg.payload)
         this.handlers.delete(msg.id)
         return
+      case 'BONUS_SOLVED':
+        if (handler.kind === 'bonusSolve') handler.resolve(msg.payload)
+        this.handlers.delete(msg.id)
+        return
       case 'ERROR':
         if (handler.kind === 'bot') handler.reject(msg.payload)
+        else if (handler.kind === 'bonusSolve') handler.reject(msg.payload)
         else if (handler.kind === 'model') handler.resolve(false)
         else if (handler.kind === 'analysis') handler.resolve([])
         else if (handler.kind === 'bonus') handler.resolve([])
@@ -202,6 +209,20 @@ export class WorkerClient {
     return new Promise((resolve) => {
       this.handlers.set(id, { kind: 'bonus', resolve, onProgress })
       const req: WorkerRequest = { id, type: 'ANALYZE_BONUS', payload: { positions } }
+      this.getWorker().postMessage(req)
+    })
+  }
+
+  // Opponent-aware one-shot bonus solve. Pass `opponents` (each real
+  // opponent's known scenario, or their exact board if already known — see
+  // OpponentRef) for a context-specific solve; pass an empty array when no
+  // real game context exists (falls back to a generic field rather than
+  // skipping tie-breaking).
+  solveBonus(cards: Card[], numDiscard: number, opponents: OpponentRef[], seed: number): Promise<Board> {
+    const id = makeId()
+    return new Promise<Board>((resolve, reject) => {
+      this.handlers.set(id, { kind: 'bonusSolve', resolve, reject: (msg) => reject(new Error(msg)) })
+      const req: WorkerRequest = { id, type: 'SOLVE_BONUS', payload: { cards, numDiscard, opponents, seed } }
       this.getWorker().postMessage(req)
     })
   }

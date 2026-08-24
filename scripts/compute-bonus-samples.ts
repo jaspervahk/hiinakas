@@ -15,16 +15,26 @@
 // exhaustive search that costs ~7.5M evaluations for a 15-card (AA_OR_TRIPS)
 // hand, and rollout() runs thousands of times per coaching decision.
 //
-// The fix: do the expensive part (bestBonusBoard on a freshly dealt random
-// hand — exactly what the game's own "fresh reshuffled deck per bonus round"
-// rule describes) ONCE per sample, offline, and bake a modest set of
-// resulting boards in as static data. At rollout time we just pick one at
-// random and score it with the already-cheap scorePair() — no search, just
-// a direct hand comparison — so this is candidate-sensitive (the actor's
-// REAL board this rollout gets compared against a REAL bonus board) without
-// costing anything live.
+// The fix: do the expensive part (solving a freshly dealt random hand —
+// exactly what the game's own "fresh reshuffled deck per bonus round" rule
+// describes) ONCE per sample, offline, and bake a modest set of resulting
+// boards in as static data. At rollout time we just pick one at random and
+// score it with the already-cheap scorePair() — no search, just a direct
+// hand comparison — so this is candidate-sensitive (the actor's REAL board
+// this rollout gets compared against a REAL bonus board) without costing
+// anything live.
+//
+// BOOTSTRAP NOTE: this regenerates BONUS_OPPONENT_SAMPLES using
+// solveBonusVsOpponents (the kicker-aware solver, generic field — see
+// bonusOpponentScoring.ts) rather than the plain bestBonusBoard. That
+// solver's generic field is itself built from the CURRENT on-disk
+// BONUS_OPPONENT_SAMPLES/SIDE_GAME_SAMPLES (loaded once at process start,
+// before this script overwrites anything) — so running this regenerates the
+// pool to be self-consistent with the upgraded solver: what a rational
+// opponent using our best algorithm actually produces, rather than what the
+// old kicker-blind first-tie-wins bestBonusBoard happened to produce.
 
-import { bestBonusBoard } from '../src/engine/bestBonus'
+import { solveBonusVsOpponents } from '../src/engine/bonusOpponentScoring'
 import { bonusDealCount } from '../src/engine/rules'
 import { Deck } from '../src/engine/deck'
 import type { Board, BonusQualifier, Card } from '../src/engine/types'
@@ -44,19 +54,16 @@ const rng = mulberry32(20260824)
 
 const TIERS: readonly BonusQualifier[] = ['QQ', 'KK', 'AA_OR_TRIPS']
 const DISCARDS: Record<BonusQualifier, number> = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 }
-// Fewer samples for the expensive tiers — bestBonusBoard's cost scales with
-// C(dealt, 13): 1 combo for QQ (13c13), 14 for KK (14c13), 105 for
-// AA_OR_TRIPS (15c13) — so a AA_OR_TRIPS sample costs ~100x a QQ one.
-// An initial pass at 400/400/150 was checked for convergence against the
-// independently-computed AVG_BONUS_ROYALTY reference constants (see
-// scripts/_probe_convergence.ts, not committed): QQ and KK's pool means
-// matched closely (within ~0.2 of 8.95/12.36) with a half-split standard
-// error around 0.3-0.4, but AA_OR_TRIPS's 150-sample pool mean (15.6) was
-// off from its reference (16.75) by ~7%, with a half-split SE around 0.7 —
-// too much sampling noise for the tier with the highest stakes. These
-// counts push AA_OR_TRIPS up ~3x (still ~9 minutes to generate) and QQ/KK
-// up 2x since they're cheap enough that there's no reason not to.
-const SAMPLE_COUNTS: Record<BonusQualifier, number> = { QQ: 800, KK: 800, AA_OR_TRIPS: 450 }
+// 1000/tier — up from an earlier 800/800/450 pass (which was itself checked
+// for convergence against the independently-computed AVG_BONUS_ROYALTY
+// reference constants and bumped up after AA_OR_TRIPS's original 150-sample
+// pool showed a ~7% mean gap with a half-split SE around 0.7 — too much
+// noise for the tier with the highest stakes). solveBonusVsOpponents is
+// substantially more expensive per sample than plain bestBonusBoard (it
+// scores every royalty-tied candidate against full opponent pools), so this
+// run will take meaningfully longer than the earlier bestBonusBoard-only
+// passes — run in the background.
+const SAMPLE_COUNTS: Record<BonusQualifier, number> = { QQ: 1000, KK: 1000, AA_OR_TRIPS: 1000 }
 
 const RANK_CHAR: Record<number, string> = {
   2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8', 9: '9', 10: 'T',
@@ -82,8 +89,10 @@ for (const tier of TIERS) {
     const seed = (rng() * 0x7fffffff) | 0
     const deck = new Deck(seed)
     const cards = deck.deal(bonusDealCount(tier))
-    const board = bestBonusBoard(cards, DISCARDS[tier])
+    const solverSeed = (rng() * 0x7fffffff) | 0
+    const board = solveBonusVsOpponents(cards, DISCARDS[tier], [], mulberry32(solverSeed))
     out[tier].push(encodeBoard(board))
+    if ((i + 1) % 100 === 0) console.error(`    ${tier} ${i + 1}/${n}`)
   }
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
   console.error(`  ${tier.padEnd(11)} n=${n}  (${elapsed}s)`)

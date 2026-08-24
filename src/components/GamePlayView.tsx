@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { bonusTrigger, isFoul, royalties, bestBonusBoard } from '../engine/index'
+import { bonusTrigger, isFoul, royalties } from '../engine/index'
 import type { Board, PartialBoard, Card, InfoState, Placement } from '../engine/index'
 import { BoardView } from './BoardView'
 import { HandView } from './HandView'
@@ -8,6 +8,7 @@ import { ScoreView } from './ScoreView'
 import { CoachPanel } from './CoachPanel'
 import { useCoach } from '../coach/useCoach'
 import { botWorkerClient } from '../worker/client'
+import type { OpponentRef } from '../worker/client'
 import type { AppPage } from '../App'
 import type { StreetLog, HandLog, GameState } from '../game/types'
 import type { Action } from '../game/reducer'
@@ -73,20 +74,29 @@ export function GamePlayView({ state, dispatch, canUndo, undo, onNavigate, curre
     coachMode === 'nn' ? coachRootTopK : undefined,
   )
 
-  // Best bonus board (for bonus_oneshot coaching)
-  const bonusOptimal = useMemo<PartialBoard | null>(() => {
-    if (state.phase !== 'bonus_oneshot') return null
-    if (state.humanBonusCards.length === 0) return null
-    const q = state.humanBonusQualifier
-    if (!q) return null
-    const discardCount = q === 'QQ' ? 0 : q === 'KK' ? 1 : 2
-    try {
-      return bestBonusBoard(state.humanBonusCards, discardCount)
-    } catch (e) {
-      console.error('bestBonusBoard failed', e)
-      return null
+  // Best bonus board (for bonus_oneshot coaching) — opponent-aware: bots'
+  // real bonus/side scenario for this hand is already fully resolved by
+  // reducer.ts's startBonus() the instant the round begins (before this
+  // decision happens), so state.botBonusQualifiers gives ground truth for
+  // any player count. Routed through the worker (bonusOpponentScoring.ts's
+  // tie-breaking is more expensive than the plain solver this replaced,
+  // though still well under a second — never block the UI thread with it).
+  const [bonusOptimal, setBonusOptimal] = useState<PartialBoard | null>(null)
+  useEffect(() => {
+    if (state.phase !== 'bonus_oneshot' || state.humanBonusCards.length === 0 || !state.humanBonusQualifier) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setBonusOptimal(null)
+      return
     }
-  }, [state.phase, state.humanBonusCards, state.humanBonusQualifier])
+    const q = state.humanBonusQualifier
+    const discardCount = q === 'QQ' ? 0 : q === 'KK' ? 1 : 2
+    const opponents: OpponentRef[] = state.botBonusQualifiers.map(tier => tier === null ? 'side' : { tier })
+    let cancelled = false
+    botWorkerClient.solveBonus(state.humanBonusCards, discardCount, opponents, Date.now() & 0xffffffff)
+      .then(board => { if (!cancelled) setBonusOptimal(board) })
+      .catch(e => { console.error('solveBonus failed', e); if (!cancelled) setBonusOptimal(null) })
+    return () => { cancelled = true }
+  }, [state.phase, state.humanBonusCards, state.humanBonusQualifier, state.botBonusQualifiers])
 
   const lockAfterAnalyzerRef = useRef(false)
 

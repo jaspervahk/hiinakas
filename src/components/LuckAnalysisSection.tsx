@@ -74,6 +74,7 @@ export function LuckAnalysisSection({ players, summaries, streetDecisions, bonus
           const seed = ((username.length * 0x9e3779b9) ^ (i * 0x517cc1b7)) | 0
           const handLuck = await computeHandLuck(gameId, username, streetDecisions, bonusBoardDecisions, summaries, {
             policy, sims, rootTopK: policy === 'nn' ? rootTopK : undefined, outerSamples, seed, analyzePositions,
+            solveBonus: workerClient.solveBonus.bind(workerClient),
           })
           player.totalLuck += handLuck.totalLuck
           player.handsProcessed++

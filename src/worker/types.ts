@@ -1,7 +1,8 @@
 import type { InfoState, ScoredPlacement } from '../engine/mc'
 import type { MatchHandRecord, BotSpec } from '../engine/matchTypes'
 import type { Card, Board } from '../engine/types'
-export type { ScoredPlacement, MatchHandRecord, BotSpec }
+import type { OpponentRef } from '../engine/bonusOpponentScoring'
+export type { ScoredPlacement, MatchHandRecord, BotSpec, OpponentRef }
 
 export type BotPolicy = 'nn' | 'royalty' | 'royalty-nn' | 'heuristic'
 
@@ -71,6 +72,18 @@ export interface WorkerRequestAnalyzeBonus {
   payload: { positions: Array<{ id: string; cards: Card[]; numDiscard: number; actualBoard: Board }> }
 }
 
+// Opponent-aware one-shot bonus solve — like ANALYZE_BONUS, exhaustively
+// searched (bestBonusBoard/searchBonusBoardTies), but additionally breaks
+// ties among royalty-maximal boards by expected performance against
+// `opponents` (bonusOpponentScoring.ts). `opponents` is empty for
+// context-free callers (e.g. the standalone Analyzer bonus solver), which
+// falls back to a generic field rather than skipping tie-breaking.
+export interface WorkerRequestSolveBonus {
+  id: string
+  type: 'SOLVE_BONUS'
+  payload: { cards: Card[]; numDiscard: number; opponents: OpponentRef[]; seed: number }
+}
+
 export type WorkerRequest =
   | WorkerRequestGetEV
   | WorkerRequestGetBotMove
@@ -79,6 +92,7 @@ export type WorkerRequest =
   | WorkerRequestAnalyzePositions
   | WorkerRequestRunMatch
   | WorkerRequestAnalyzeBonus
+  | WorkerRequestSolveBonus
 
 export interface WorkerResponseProgress {
   id: string
@@ -156,6 +170,12 @@ export interface WorkerResponseBonusDone {
   payload: BonusAnalysisResult[]
 }
 
+export interface WorkerResponseBonusSolved {
+  id: string
+  type: 'BONUS_SOLVED'
+  payload: Board
+}
+
 export type WorkerResponse =
   | WorkerResponseProgress
   | WorkerResponseDone
@@ -168,3 +188,4 @@ export type WorkerResponse =
   | WorkerResponseMatchDone
   | WorkerResponseBonusProgress
   | WorkerResponseBonusDone
+  | WorkerResponseBonusSolved

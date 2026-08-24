@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { signInWithPopup, onAuthStateChanged, type User } from 'firebase/auth'
 import { doc, onSnapshot } from 'firebase/firestore'
 import type { AppPage } from '../App'
-import type { BonusQualifier, InfoState, PartialBoard } from '../engine/index'
-import { bestBonusBoard } from '../engine/index'
+import type { Board, BonusQualifier, InfoState, PartialBoard } from '../engine/index'
 import { huubAuth, huubDb, huubGoogleProvider } from '../services/huubFirebase'
 import { fromHuubBoard, fromHuubCard } from '../game/huubChallengeDetail'
 import type { HuubBoard, HuubCard } from '../firestore/huubBridge'
 import { useLiveHuubGames, type LiveHuubGameCandidate } from '../game/liveHuubGame'
 import { useLiveHuubCoach } from '../coach/useLiveHuubCoach'
+import { workerClient } from '../worker/client'
+import type { OpponentRef } from '../worker/client'
 import { PlacementTable } from '../components/CoachPanel'
 import { CardView } from '../components/CardView'
 
@@ -128,13 +129,34 @@ export default function LiveCoachPage({ onNavigate }: LiveCoachPageProps) {
   // sideGameParticipantUids/bonusHandSizes membership lists to be internally
   // consistent with what was actually dealt (session-analysis's own bonus-role
   // derivation hit exactly this class of drift once, see sessionParser.ts).
-  const oneShotRecommendation = useMemo(() => {
-    if (!user || !game?.chinesePoker || game.chinesePoker.segment !== 'bonus_play' || !playerHand) return null
+  // Opponent-aware and worker-routed: each real opponent's known scenario
+  // (bonusHandSizes gives their tier if bonus-eligible; otherwise they're in
+  // the side game) is passed through so ties are broken by actual expected
+  // performance against this specific table, for any player count.
+  const [oneShotRecommendation, setOneShotRecommendation] = useState<Board | null>(null)
+  useEffect(() => {
+    if (!user || !game?.chinesePoker || game.chinesePoker.segment !== 'bonus_play' || !playerHand) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOneShotRecommendation(null)
+      return
+    }
     const cp = game.chinesePoker
-    if (cp.bonusSubmitted?.[user.uid] === true) return null
+    if (cp.bonusSubmitted?.[user.uid] === true) { setOneShotRecommendation(null); return }
     const n = playerHand.cards.length
-    if (n < 13) return null
-    return bestBonusBoard(playerHand.cards.map(fromHuubCard), n - 13)
+    if (n < 13) { setOneShotRecommendation(null); return }
+
+    const opponents: OpponentRef[] = game.players
+      .filter(p => p.uid !== user.uid)
+      .map((p): OpponentRef => {
+        const size = cp.bonusHandSizes?.[p.uid]
+        return size ? { tier: TIER_FROM_HAND_SIZE[size] } : 'side'
+      })
+
+    let cancelled = false
+    workerClient.solveBonus(playerHand.cards.map(fromHuubCard), n - 13, opponents, Date.now() & 0xffffffff)
+      .then(board => { if (!cancelled) setOneShotRecommendation(board) })
+      .catch(e => { console.error('solveBonus failed', e); if (!cancelled) setOneShotRecommendation(null) })
+    return () => { cancelled = true }
   }, [user, game, playerHand])
 
   const info: InfoState | null = useMemo(() => {

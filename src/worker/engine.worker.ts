@@ -6,6 +6,7 @@ import type { MatchHandRecord } from '../engine/matchTypes'
 import { runMC, getBotMove, legalPlacements } from '../engine/mc'
 import type { InfoState, ScoredPlacement } from '../engine/mc'
 import { bestBonusBoard } from '../engine/bestBonus'
+import { solveBonusVsOpponents } from '../engine/bonusOpponentScoring'
 import { isFoul, royalties } from '../engine/rules'
 import type { WorkerRequest, WorkerResponse, BonusAnalysisResult } from './types'
 import type { NNModel } from '../engine/wasmModel'
@@ -227,6 +228,11 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>): Promise<void> 
       }
 
       self.postMessage({ id: msg.id, type: 'BONUS_DONE', payload: allResults } as WorkerResponse)
+
+    } else if (msg.type === 'SOLVE_BONUS') {
+      const { cards, numDiscard, opponents, seed } = msg.payload
+      const board = solveBonusVsOpponents(cards, numDiscard, opponents, makeRNG(seed))
+      self.postMessage({ id: msg.id, type: 'BONUS_SOLVED', payload: board } as WorkerResponse)
 
     } else if (msg.type === 'RUN_MATCH') {
       const { totalHands, baseSeed, botA, botB } = msg.payload

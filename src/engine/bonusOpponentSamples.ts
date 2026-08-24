@@ -25,3 +25,10 @@ export function sampleBonusOpponentBoard(tier: BonusQualifier, rng: () => number
   const samples = DECODED[tier]
   return samples[Math.floor(rng() * samples.length)]!
 }
+
+// The full decoded pool for `tier` — used by bonusOpponentScoring.ts's
+// tie-breaking solver, which (unlike mc.ts's single-pick-per-rollout use
+// above) wants to average a candidate's performance across the whole pool.
+export function getBonusOpponentPool(tier: BonusQualifier): readonly Board[] {
+  return DECODED[tier]
+}

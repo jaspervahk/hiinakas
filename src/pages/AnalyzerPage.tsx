@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppPage } from '../App'
 import type { Card, PartialBoard, ScoredPlacement, InfoState, Board, Placement } from '../engine/index'
-import { bestBonusBoard, royalties, isFoul } from '../engine/index'
+import { royalties, isFoul } from '../engine/index'
 import { CardPicker } from '../components/CardPicker'
 import { BoardView } from '../components/BoardView'
 import { workerClient, royaltyWorkerClient, MODEL_URLS } from '../worker/client'
@@ -797,15 +797,15 @@ function BonusTab() {
     if (numDiscard < 0) return
     setSolving(true)
     setResult(null)
-    setTimeout(() => {
-      try {
-        setResult(bestBonusBoard(cards, numDiscard))
-      } catch (e) {
-        console.error('bestBonusBoard error', e)
-      } finally {
-        setSolving(false)
-      }
-    }, 0)
+    // No real opponents exist here (manual position entry, no game/table) —
+    // empty array falls back to the generic field (bonusOpponentScoring.ts)
+    // rather than skipping kicker-aware tie-breaking. Routed through the
+    // worker per the engine-boundary rule (this used to call bestBonusBoard
+    // directly on the main thread).
+    workerClient.solveBonus(cards, numDiscard, [], Date.now() & 0xffffffff)
+      .then(setResult)
+      .catch(e => console.error('solveBonus error', e))
+      .finally(() => setSolving(false))
   }
 
   const discarded = useMemo(() => {

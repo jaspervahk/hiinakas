@@ -95,6 +95,7 @@ export function BotSimulationOverlay({
         const sim = await simulateHandWithBot(
           hand, policy, sims, policy === 'nn' ? rootTopK : undefined, seed,
           (...args) => botWorkerClient.getBotMove(...args),
+          (...args) => botWorkerClient.solveBonus(...args),
         )
         const handResult: HandResult = {
           gameId,
