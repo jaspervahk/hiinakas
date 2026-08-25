@@ -25,6 +25,21 @@
 // gives an EV that is automatically correct for both 2p (1 opponent) and 3p
 // (2 opponents) games, and automatically accounts for opponents who are
 // independently also about to trigger their own bonus round.
+//
+// Two optimizations that a previous version of this script documented but
+// never actually implemented (found while regenerating this table after the
+// kicker-aware bonus solver landed):
+//   1. Diagonal cells (actorTier === oppScenario) are EXACTLY 0 by symmetry
+//      — two boards drawn i.i.d. from the same distribution give
+//      E[net] = E[-net] = 0. No need to simulate them at all; this also
+//      eliminates the single most expensive cell (AA_OR_TRIPS vs itself,
+//      ~2.5s/trial with two 15-card exhaustive solves per trial).
+//   2. Off-diagonal cells come in pairs — (A,B) and (B,A) are two
+//      independent noisy estimates of the SAME underlying quantity, since
+//      net(A,B) = -net(B,A) exactly in expectation. Averaging
+//      (sampled_AB - sampled_BA) / 2 halves the estimation variance with NO
+//      extra simulation cost, since both directions get simulated anyway to
+//      fill the table.
 
 import { bestBonusBoard } from '../src/engine/bestBonus'
 import { heuristicPlacement } from '../src/engine/heuristic'
@@ -45,7 +60,7 @@ function mulberry32(seed: number): () => number {
   }
 }
 
-const rng = mulberry32(20260709)
+const rng = mulberry32(20260825)
 
 const TIERS: readonly BonusQualifier[] = ['QQ', 'KK', 'AA_OR_TRIPS']
 const DISCARDS: Record<BonusQualifier, number> = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 }
@@ -53,15 +68,22 @@ const DISCARDS: Record<BonusQualifier, number> = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 
 type OppScenario = 'BASE' | BonusQualifier
 const OPP_SCENARIOS: readonly OppScenario[] = ['BASE', 'QQ', 'KK', 'AA_OR_TRIPS']
 
-// Flat trial count per cell — uniform precision across all 12 combinations
-// regardless of bestBonusBoard's cost (which scales with C(dealt, 13): 0
-// discards → C(13,13)=1, 1 discard → C(14,13)=14, 2 discards → C(15,13)=105,
-// so AA_OR_TRIPS-involving cells take much longer per trial than QQ/BASE
-// ones, but get the same trial count for consistent precision).
-const TRIALS_PER_CELL = 500
+// bestBonusBoard's cost scales with C(dealt, 13): 0 discards -> C(13,13)=1,
+// 1 discard -> C(14,13)=14, 2 discards -> C(15,13)=105 — so any cell
+// touching AA_OR_TRIPS (as actor or opponent) costs ~100x a QQ-only cell.
+// Empirically measured (n=150 probe): QQ~0.013s/trial, KK~0.163s/trial
+// combined, AA_OR_TRIPS-involving pairs ~1.2-1.4s/trial. Trial counts below
+// are picked so the AA_OR_TRIPS-heavy cells (which dominate total runtime
+// regardless) get a real precision bump without the whole run stretching to
+// many hours; the cheap cells are generous since they're nearly free.
+const TRIALS_CHEAP = 3000       // any cell not touching AA_OR_TRIPS
+const TRIALS_AA = 1200          // any cell touching AA_OR_TRIPS (actor or opponent)
 
-function trialsFor(_actorTier: BonusQualifier, _oppScenario: OppScenario): number {
-  return TRIALS_PER_CELL
+function involvesAA(actorTier: BonusQualifier, oppScenario: OppScenario): boolean {
+  return actorTier === 'AA_OR_TRIPS' || oppScenario === 'AA_OR_TRIPS'
+}
+function trialsFor(actorTier: BonusQualifier, oppScenario: OppScenario): number {
+  return involvesAA(actorTier, oppScenario) ? TRIALS_AA : TRIALS_CHEAP
 }
 
 // Build a full 5-street 3-5-5 board via the standard heuristic policy
@@ -95,14 +117,15 @@ function simulateCell(actorTier: BonusQualifier, oppScenario: OppScenario, n: nu
     const oppBoard = buildOpponentBoard(deck, oppScenario)
     const { aNet } = scorePair(actorBoard, oppBoard)
     total += aNet
+    if ((i + 1) % 200 === 0) process.stderr.write(`    ${actorTier} vs ${oppScenario}: ${i + 1}/${n}\n`)
   }
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
   const avg = total / n
-  console.log(`  actor=${actorTier.padEnd(11)} vs opp=${oppScenario.padEnd(11)}  n=${n}  avg_net=${avg.toFixed(3)}  (${elapsed}s)`)
+  console.error(`  actor=${actorTier.padEnd(11)} vs opp=${oppScenario.padEnd(11)}  n=${n}  avg_net=${avg.toFixed(3)}  (${elapsed}s)`)
   return avg
 }
 
-console.log('Computing exact pairwise bonus-round EV table (scorePair, shared-deck trials)...\n')
+console.error('Computing exact pairwise bonus-round EV table (scorePair, shared-deck trials)...\n')
 
 const table: Record<BonusQualifier, Record<OppScenario, number>> = {
   QQ: { BASE: 0, QQ: 0, KK: 0, AA_OR_TRIPS: 0 },
@@ -110,10 +133,29 @@ const table: Record<BonusQualifier, Record<OppScenario, number>> = {
   AA_OR_TRIPS: { BASE: 0, QQ: 0, KK: 0, AA_OR_TRIPS: 0 },
 }
 
-for (const actorTier of TIERS) {
-  for (const oppScenario of OPP_SCENARIOS) {
-    const n = trialsFor(actorTier, oppScenario)
-    table[actorTier][oppScenario] = simulateCell(actorTier, oppScenario, n)
+// Diagonal cells: exactly 0 by symmetry, no simulation needed.
+for (const tier of TIERS) {
+  table[tier][tier] = 0
+  console.error(`  actor=${tier.padEnd(11)} vs opp=${tier.padEnd(11)}  (diagonal, exact 0 by symmetry — skipped)`)
+}
+
+// BASE cells: no symmetric counterpart, simulate independently.
+for (const tier of TIERS) {
+  table[tier].BASE = simulateCell(tier, 'BASE', trialsFor(tier, 'BASE'))
+}
+
+// Off-diagonal tier pairs: simulate both directions, combine for free
+// variance reduction (net(A,B) = -net(B,A) in expectation).
+for (let i = 0; i < TIERS.length; i++) {
+  for (let j = i + 1; j < TIERS.length; j++) {
+    const a = TIERS[i]!, b = TIERS[j]!
+    const n = trialsFor(a, b)
+    const sampledAB = simulateCell(a, b, n)
+    const sampledBA = simulateCell(b, a, n)
+    const combinedAB = (sampledAB - sampledBA) / 2
+    table[a][b] = combinedAB
+    table[b][a] = -combinedAB
+    console.error(`  combined: ${a} vs ${b} = ${combinedAB.toFixed(3)}  (raw AB=${sampledAB.toFixed(3)}, raw BA=${sampledBA.toFixed(3)})`)
   }
 }
 

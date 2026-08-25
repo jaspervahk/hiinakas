@@ -89,8 +89,8 @@ export function bonusDealCount(qualifier: BonusQualifier): number {
 
 // Expected net pairwise score (scorePair-equivalent: row-score + royalty
 // differential) from optimal bonus-board play, computed via exact Monte
-// Carlo simulation (scripts/compute-bonus-ev.ts, shared-deck trials, flat
-// 500 trials per cell) against every possible opponent scenario.
+// Carlo simulation (scripts/compute-bonus-ev.ts, shared-deck trials) against
+// every possible opponent scenario.
 //
 // The bonus round is scored pairwise against EVERY active opponent, exactly
 // like a normal round (docs/01_RULES_AND_SCORING.md section 8), so a flat
@@ -105,18 +105,23 @@ export function bonusDealCount(qualifier: BonusQualifier): number {
 // opponents who are about to trigger their own bonus round.
 //
 // Diagonal cells (actor tier === opponent tier) are exactly 0 by symmetry
-// (two boards drawn i.i.d. from the same distribution ⇒ E[net] = E[-net] = 0).
-// Off-diagonal cells are symmetrized from both simulated directions
-// (net(A,B) = -net(B,A) exactly, for any specific pair of boards, so
-// averaging both directions' independent samples halves the estimation
-// variance for free). BASE (non-qualifying opponent playing the 17-card
-// side game) has no such counterpart and uses the raw simulated value.
+// (two boards drawn i.i.d. from the same distribution ⇒ E[net] = E[-net] = 0)
+// — not simulated at all. Off-diagonal cells are symmetrized from both
+// simulated directions (net(A,B) = -net(B,A) exactly, for any specific pair
+// of boards, so averaging both directions' independent samples halves the
+// estimation variance for free). BASE (non-qualifying opponent playing the
+// 17-card side game) has no such counterpart and uses the raw simulated
+// value. Regenerated 2026-08-25 after the kicker-aware bonus solver landed
+// (bonusOpponentScoring.ts) — cells not touching AA_OR_TRIPS use 3000
+// trials/direction, cells touching it (the expensive tier, ~100x a QQ-only
+// cell) use 1200/direction; implied standard error ranges ~0.11-0.23 across
+// the table, down from ~0.3-0.5 at the previous flat 500 trials/cell.
 export type BonusOppScenario = 'BASE' | BonusQualifier
 
 export const BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>> = {
-  QQ:          { BASE: 13.89, QQ: 0,     KK: -4.57,  AA_OR_TRIPS: -9.65 },
-  KK:          { BASE: 18.21, QQ: 4.57,  KK: 0,      AA_OR_TRIPS: -4.68 },
-  AA_OR_TRIPS: { BASE: 21.68, QQ: 9.65,  KK: 4.68,   AA_OR_TRIPS: 0     },
+  QQ:          { BASE: 12.13, QQ: 0,    KK: -4.34, AA_OR_TRIPS: -9.19 },
+  KK:          { BASE: 16.50, QQ: 4.34, KK: 0,     AA_OR_TRIPS: -4.62 },
+  AA_OR_TRIPS: { BASE: 20.44, QQ: 9.19, KK: 4.62,  AA_OR_TRIPS: 0     },
 }
 
 // Deprecated: the single-opponent ("BASE") net values, kept for callers
