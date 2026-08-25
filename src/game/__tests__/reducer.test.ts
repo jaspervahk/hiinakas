@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { gameReducer, makeInitialState } from '../reducer'
+import { emptyBoard } from '../types'
 import type { GameState } from '../types'
 import type { ReplayConfig } from '../types'
 import type { Card, Placement } from '../../engine/index'
@@ -186,5 +187,103 @@ describe('startBonus() replay branch', () => {
     s = gameReducer(s, { type: 'START_BONUS' })
     // The opponent still qualifies (QQ, frozen), so a bonus round happens either way.
     expect(s.botBonusQualifiers[0]).toBe('QQ')
+  })
+})
+
+// Live play (replay === null): bot bonus/side-game decisions are deferred to
+// the async resolver (bonusBotResolver.ts, driven from GamePlayView.tsx) —
+// startBonus() must stop short at 'bonus_resolving' with placeholder boards
+// rather than computing them synchronously (that path is replay-only).
+describe('startBonus() live branch (replay === null)', () => {
+  // A non-fouled board with pair-of-Queens on top (bonusTrigger -> 'QQ'),
+  // reused from the replay describe block above.
+  const QQ_BOARD = {
+    top: [c(12, 's'), c(12, 'h'), c(2, 'c')],
+    middle: [c(3, 'c'), c(3, 'd'), c(3, 'h'), c(9, 's'), c(8, 'h')],
+    bottom: [c(5, 'd'), c(6, 'h'), c(7, 's'), c(8, 'd'), c(9, 'c')],
+  }
+  // A non-fouled, non-qualifying board (unpaired top).
+  const NON_QUALIFYING_BOARD = {
+    top: [c(2, 'c'), c(3, 'd'), c(4, 'h')],
+    middle: [c(5, 'c'), c(5, 'd'), c(6, 'h'), c(7, 's'), c(8, 'h')],
+    bottom: [c(9, 'c'), c(9, 'd'), c(10, 'h'), c(10, 's'), c(11, 'd')],
+  }
+
+  function postNormalRoundState(overrides: Partial<GameState>): GameState {
+    return {
+      ...makeInitialState(),
+      phase: 'scoring',
+      playerCount: 2,
+      seed: 123,
+      replay: null,
+      normalScores: [0, 0],
+      ...overrides,
+    }
+  }
+
+  it('transitions to bonus_resolving with placeholder bot boards when the human qualifies', () => {
+    const s = gameReducer(
+      postNormalRoundState({ humanBoard: QQ_BOARD, botBoards: [NON_QUALIFYING_BOARD] }),
+      { type: 'START_BONUS' },
+    )
+    expect(s.phase).toBe('bonus_resolving')
+    expect(s.context).toBe('normal')  // human qualifies -> bonus_oneshot destination once resolved
+    expect(s.humanBonusQualifier).toBe('QQ')
+    expect(s.botBonusQualifiers).toEqual([null])
+    expect(s.humanBonusCards).toHaveLength(13)
+    expect(s.botBonusBoards).toEqual([emptyBoard()])
+    expect(s.botSideBoards).toEqual([emptyBoard()])
+    expect(s.sidePreDealt).toHaveLength(1)  // only the non-qualifying bot is dealt a side game
+  })
+
+  it('transitions to bonus_resolving with context "side" when the human does not qualify', () => {
+    const s = gameReducer(
+      postNormalRoundState({ humanBoard: NON_QUALIFYING_BOARD, botBoards: [QQ_BOARD] }),
+      { type: 'START_BONUS' },
+    )
+    expect(s.phase).toBe('bonus_resolving')
+    expect(s.context).toBe('side')
+    expect(s.humanBonusQualifier).toBeNull()
+    expect(s.botBonusQualifiers).toEqual(['QQ'])
+    expect(s.sidePreDealt).toHaveLength(1)  // only the human is dealt a side game (bot qualified)
+  })
+
+  it('BONUS_BOTS_RESOLVED routes to bonus_oneshot when the human qualifies, applying the resolved boards', () => {
+    let s = gameReducer(
+      postNormalRoundState({ humanBoard: QQ_BOARD, botBoards: [NON_QUALIFYING_BOARD] }),
+      { type: 'START_BONUS' },
+    )
+    const resolvedSideBoard = {
+      top: [c(4, 's'), c(4, 'h'), c(4, 'c')],
+      middle: [c(5, 's'), c(5, 'h'), c(6, 's'), c(6, 'h'), c(7, 's')],
+      bottom: [c(8, 's'), c(8, 'h'), c(9, 's'), c(9, 'h'), c(10, 's')],
+    }
+    s = gameReducer(s, { type: 'BONUS_BOTS_RESOLVED', botBonusBoards: [emptyBoard()], botSideBoards: [resolvedSideBoard] })
+    expect(s.phase).toBe('bonus_oneshot')
+    expect(s.humanHand).toEqual(s.humanBonusCards)
+    expect(s.botSideBoards).toEqual([resolvedSideBoard])
+  })
+
+  it('BONUS_BOTS_RESOLVED routes to placing/side when the human does not qualify, applying the resolved boards', () => {
+    let s = gameReducer(
+      postNormalRoundState({ humanBoard: NON_QUALIFYING_BOARD, botBoards: [QQ_BOARD] }),
+      { type: 'START_BONUS' },
+    )
+    const resolvedBonusBoard = {
+      top: [c(14, 's'), c(14, 'h'), c(14, 'c')],
+      middle: [c(2, 's'), c(2, 'h'), c(2, 'c'), c(3, 's'), c(3, 'h')],
+      bottom: [c(4, 's'), c(4, 'h'), c(4, 'c'), c(5, 's'), c(5, 'h')],
+    }
+    s = gameReducer(s, { type: 'BONUS_BOTS_RESOLVED', botBonusBoards: [resolvedBonusBoard], botSideBoards: [emptyBoard()] })
+    expect(s.phase).toBe('placing')
+    expect(s.context).toBe('side')
+    expect(s.humanHand).toEqual(s.sidePreDealt[0]![0])
+    expect(s.botBonusBoards).toEqual([resolvedBonusBoard])
+  })
+
+  it('ignores BONUS_BOTS_RESOLVED when not in bonus_resolving phase (stale dispatch guard)', () => {
+    const s = postNormalRoundState({ humanBoard: NON_QUALIFYING_BOARD, botBoards: [NON_QUALIFYING_BOARD] })
+    const result = gameReducer(s, { type: 'BONUS_BOTS_RESOLVED', botBonusBoards: [], botSideBoards: [] })
+    expect(result).toBe(s)
   })
 })

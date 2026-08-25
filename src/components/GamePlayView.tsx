@@ -12,6 +12,7 @@ import type { OpponentRef } from '../worker/client'
 import type { AppPage } from '../App'
 import type { StreetLog, HandLog, GameState } from '../game/types'
 import type { Action } from '../game/reducer'
+import { resolveBonusBots } from '../game/bonusBotResolver'
 import type { UndoControls } from '../game/useGame'
 import { saveHand } from '../firestore/persistence'
 import { analyzerBridge } from '../game/analyzerBridge'
@@ -216,6 +217,29 @@ export function GamePlayView({ state, dispatch, canUndo, undo, onNavigate, curre
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.phase])
 
+  // ── Bots resolve the bonus round (one-shot boards + full side game) ──────
+  // Live play only — replay mode never enters 'bonus_resolving' (reducer.ts's
+  // startBonus() computes bot boards synchronously there instead). There's no
+  // "hidden thinking time" trick available here (unlike normal-round bot
+  // moves): bots must fully resolve before the human's own bonus/side phase
+  // begins, since the human's InfoState reads their revealed boards from the
+  // very first side-game street.
+  useEffect(() => {
+    if (state.phase !== 'bonus_resolving') return
+    let cancelled = false
+    resolveBonusBots(
+      state,
+      botWorkerClient.getBotMove.bind(botWorkerClient),
+      botWorkerClient.solveBonus.bind(botWorkerClient),
+    )
+      .then(({ botBonusBoards, botSideBoards }) => {
+        if (!cancelled) dispatch({ type: 'BONUS_BOTS_RESOLVED', botBonusBoards, botSideBoards })
+      })
+      .catch(err => console.error('Bot bonus resolution failed:', err))
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.phase])
+
   // ── Lock-in with coach logging ────────────────────────────────────────────
   function lockInWithLog() {
     if (state.phase === 'placing') {
@@ -298,6 +322,16 @@ export function GamePlayView({ state, dispatch, canUndo, undo, onNavigate, curre
           onContinue={() => dispatch({ type: hasBonus ? 'START_BONUS' : 'SKIP_BONUS' })}
           continueLabel={hasBonus ? 'Bonus round' : 'See review'}
         />
+      </div>
+    )
+  }
+
+  // ── Bots resolving the bonus round ────────────────────────────────────────
+  if (state.phase === 'bonus_resolving') {
+    return (
+      <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center gap-3 p-6">
+        <span className="inline-block w-6 h-6 border-2 border-gray-600 border-t-amber-400 rounded-full animate-spin" />
+        <p className="text-sm text-gray-400">Bots resolving the bonus round…</p>
       </div>
     )
   }

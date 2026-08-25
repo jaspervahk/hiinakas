@@ -2,14 +2,10 @@ import { useGame } from '../game/useGame'
 import { GamePlayView } from '../components/GamePlayView'
 import type { AppPage } from '../App'
 import type { CoachMode } from '../game/types'
+import { DEFAULT_SIMS_FOR, MAX_SIMS_FOR } from '../worker/botPolicyDefaults'
 
-// Default sims when a policy/mode is first selected — the user can override
-// via the Sims field. Heuristic MC brute-forces a full rollout per candidate
-// with no NN/tree-search guidance, so it needs a far smaller budget to stay
-// usable live (see the same tradeoff in Arena's Heuristic MC default).
-const DEFAULT_BOT_SIMS_FOR: Record<'nn' | 'royalty' | 'royalty-nn', number> = {
-  nn: 500, royalty: 1000, 'royalty-nn': 1000,
-}
+// Default sims when a coach mode is first selected — the user can override
+// via the Sims field.
 const DEFAULT_COACH_SIMS_FOR: Record<CoachMode, number> = {
   nn: 500, royalty: 1000, 'royalty-nn': 1000, heuristic: 20,
 }
@@ -65,10 +61,10 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
         <div className="flex items-center justify-between">
           <span className="text-xs text-gray-400">Opponent bot</span>
           <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-            {(['nn', 'royalty', 'royalty-nn'] as const).map(p => (
+            {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(p => (
               <button
                 key={p}
-                onClick={() => onUpdateSettings({ botPolicy: p, botSims: DEFAULT_BOT_SIMS_FOR[p] })}
+                onClick={() => onUpdateSettings({ botPolicy: p, botSims: DEFAULT_SIMS_FOR[p] })}
                 className={[
                   'px-3 py-1 transition-colors',
                   settings.botPolicy === p
@@ -76,7 +72,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                     : 'bg-gray-800 text-gray-500 hover:text-gray-300',
                 ].join(' ')}
               >
-                {p === 'nn' ? 'NN + MCTS' : p === 'royalty' ? 'Royalty' : 'Royalty NN'}
+                {p === 'nn' ? 'NN + MCTS' : p === 'royalty' ? 'Royalty' : p === 'royalty-nn' ? 'Royalty NN' : 'Heuristic'}
               </button>
             ))}
           </div>
@@ -91,8 +87,8 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
               className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
               value={settings.botSims}
               min={1}
-              max={10_000}
-              onChange={e => onUpdateSettings({ botSims: Math.max(1, Math.min(10_000, Number(e.target.value))) })}
+              max={MAX_SIMS_FOR[settings.botPolicy]}
+              onChange={e => onUpdateSettings({ botSims: Math.max(1, Math.min(MAX_SIMS_FOR[settings.botPolicy], Number(e.target.value))) })}
             />
             {settings.botPolicy === 'nn' && (
               <>

@@ -84,6 +84,7 @@ export type Action =
   | { type: 'SKIP_BONUS' }       // from scoring → bonus_scoring (no bonus needed)
   | { type: 'LOCK_BONUS_ONESHOT' }
   | { type: 'BOT_PLACED'; placements: Placement[] }   // async MC bot results
+  | { type: 'BONUS_BOTS_RESOLVED'; botBonusBoards: PartialBoard[]; botSideBoards: PartialBoard[] } // async bot bonus/side resolution (live play only)
   | { type: 'RESTORE_SNAPSHOT'; snapshot: GameState } // undo to pre-lock state
   | { type: 'RESET' }
   | { type: 'RECORD_STREET_LOG'; log: StreetLog }
@@ -295,6 +296,20 @@ export function gameReducer(state: GameState, action: Action): GameState {
       return { ...state, phase: 'revealing', botBoards: newBotBoards }
     }
 
+    case 'BONUS_BOTS_RESOLVED': {
+      if (state.phase !== 'bonus_resolving') return state  // stale dispatch guard
+      return routeToBonusPlay(
+        state,
+        state.humanBonusQualifier,
+        state.botBonusQualifiers,
+        state.humanBonusCards,
+        state.botBonusCards,
+        action.botBonusBoards,
+        state.sidePreDealt,
+        action.botSideBoards,
+      )
+    }
+
     case 'RESTORE_SNAPSHOT':
       return action.snapshot
 
@@ -401,6 +416,62 @@ function foldPlacements(placements: readonly Placement[]): PartialBoard {
   return board
 }
 
+// Shared "route to the human's next bonus-round destination" logic, used both
+// by startBonus()'s replay path (bot boards computed synchronously, already
+// known) and by the BONUS_BOTS_RESOLVED action (live play: bot boards just
+// arrived from the async resolver — see bonusBotResolver.ts).
+function routeToBonusPlay(
+  state: GameState,
+  humanQ: import('../engine/index').BonusQualifier | null,
+  botQs: (import('../engine/index').BonusQualifier | null)[],
+  humanBonusCards: Card[],
+  botBonusCards: Card[][],
+  botBonusBoards: PartialBoard[],
+  sidePreDealt: Card[][][],
+  botSideBoards: PartialBoard[],
+): GameState {
+  const humanInSide = humanQ === null
+  if (humanInSide) {
+    return {
+      ...state,
+      phase: 'placing',
+      context: 'side',
+      humanBonusQualifier: humanQ,
+      botBonusQualifiers: botQs,
+      humanBonusCards,
+      botBonusCards,
+      humanBonusBoard: emptyBoard(),
+      botBonusBoards,
+      sidePreDealt,
+      sideStreet: 0,
+      humanSideBoard: emptyBoard(),
+      botSideBoards,
+      humanHand: sidePreDealt[0]![0]!,
+      pending: emptyPending(),
+      selectedCard: null,
+    }
+  } else {
+    return {
+      ...state,
+      phase: 'bonus_oneshot',
+      context: 'normal',
+      humanBonusQualifier: humanQ,
+      botBonusQualifiers: botQs,
+      humanBonusCards,
+      botBonusCards,
+      humanBonusBoard: emptyBoard(),
+      botBonusBoards,
+      sidePreDealt,
+      sideStreet: 0,
+      humanSideBoard: emptyBoard(),
+      botSideBoards,
+      humanHand: humanBonusCards,
+      pending: emptyPending(),
+      selectedCard: null,
+    }
+  }
+}
+
 function startBonus(state: GameState): GameState {
   const { humanBoard, botBoards, normalScores, seed, replay } = state
   const bonusSeed = replay ? replay.fallbackSeed : seed + 1
@@ -437,20 +508,6 @@ function startBonus(state: GameState): GameState {
   // Deal bonus cards for qualifiers; deal side game for non-qualifiers
   const botBonusCards = botQs.map(q => q ? bonusDeck.deal(bonusDealCount(q)) : [])
 
-  // Bot qualifier boards (one-shot): use the frozen historical board when
-  // replaying (opponents always replay verbatim, never recomputed); fall
-  // back to the computed one-shot solver otherwise, or if replay data for
-  // this specific opponent happens to be missing.
-  const computedBotBonusBoards: PartialBoard[] = botQs.map((q, i) =>
-    q ? botOneShotBonus(botBonusCards[i]!) : emptyBoard()
-  )
-  const botBonusBoards: PartialBoard[] = replay
-    ? computedBotBonusBoards.map((b, i) => {
-        const outcome = replay.opponentBonusOutcomes[i]
-        return outcome && outcome.qualifies ? outcome.board : b
-      })
-    : computedBotBonusBoards
-
   // Side game: non-qualifying players
   // Deal side game cards from a separate section of the bonus deck
   const humanInSide = humanQ === null
@@ -475,6 +532,43 @@ function startBonus(state: GameState): GameState {
       sidePreDealt.push(botSide)
     }
   }
+
+  // Live play: bot one-shot boards and side-game boards need real MC/solver
+  // compute (bonusBotResolver.ts, driven async from GamePlayView.tsx's
+  // 'bonus_resolving' effect) — defer with empty placeholders rather than
+  // the crude synchronous fallbacks below, which remain only for replay.
+  if (replay === null) {
+    return {
+      ...state,
+      phase: 'bonus_resolving',
+      context: humanInSide ? 'side' : 'normal',
+      humanBonusQualifier: humanQ,
+      botBonusQualifiers: botQs,
+      humanBonusCards,
+      botBonusCards,
+      humanBonusBoard: emptyBoard(),
+      botBonusBoards: botQs.map(() => emptyBoard()),
+      sidePreDealt,
+      sideStreet: 0,
+      humanSideBoard: emptyBoard(),
+      botSideBoards: botQs.map(() => emptyBoard()),
+      humanHand: [],
+      pending: emptyPending(),
+      selectedCard: null,
+    }
+  }
+
+  // Bot qualifier boards (one-shot): use the frozen historical board when
+  // replaying (opponents always replay verbatim, never recomputed); fall
+  // back to the computed one-shot solver otherwise, or if replay data for
+  // this specific opponent happens to be missing.
+  const computedBotBonusBoards: PartialBoard[] = botQs.map((q, i) =>
+    q ? botOneShotBonus(botBonusCards[i]!) : emptyBoard()
+  )
+  const botBonusBoards: PartialBoard[] = computedBotBonusBoards.map((b, i) => {
+    const outcome = replay.opponentBonusOutcomes[i]
+    return outcome && outcome.qualifies ? outcome.board : b
+  })
 
   // Pre-compute bot non-qualifying side game boards. Interleaved across all
   // participating bots (see botSideGamesInterleaved) so if more than one bot
@@ -502,55 +596,13 @@ function startBonus(state: GameState): GameState {
 
   // Replay: replace each side-gaming opponent's computed board with their
   // frozen historical placements folded in order, when available.
-  if (replay) {
-    for (let i = 0; i < botQs.length; i++) {
-      if (!botInSide[i]) continue
-      const outcome = replay.opponentBonusOutcomes[i]
-      if (outcome && !outcome.qualifies) botSideBoards[i] = foldPlacements(outcome.placements)
-    }
+  for (let i = 0; i < botQs.length; i++) {
+    if (!botInSide[i]) continue
+    const outcome = replay.opponentBonusOutcomes[i]
+    if (outcome && !outcome.qualifies) botSideBoards[i] = foldPlacements(outcome.placements)
   }
 
-  if (humanInSide) {
-    // Human plays side game interactively
-    return {
-      ...state,
-      phase: 'placing',
-      context: 'side',
-      humanBonusQualifier: humanQ,
-      botBonusQualifiers: botQs,
-      humanBonusCards,
-      botBonusCards,
-      humanBonusBoard: emptyBoard(),
-      botBonusBoards,
-      sidePreDealt,
-      sideStreet: 0,
-      humanSideBoard: emptyBoard(),
-      botSideBoards,
-      humanHand: sidePreDealt[0]![0]!,
-      pending: emptyPending(),
-      selectedCard: null,
-    }
-  } else {
-    // Human qualifies: bonus_oneshot
-    return {
-      ...state,
-      phase: 'bonus_oneshot',
-      context: 'normal',
-      humanBonusQualifier: humanQ,
-      botBonusQualifiers: botQs,
-      humanBonusCards,
-      botBonusCards,
-      humanBonusBoard: emptyBoard(),
-      botBonusBoards,
-      sidePreDealt,
-      sideStreet: 0,
-      humanSideBoard: emptyBoard(),
-      botSideBoards,
-      humanHand: humanBonusCards,
-      pending: emptyPending(),
-      selectedCard: null,
-    }
-  }
+  return routeToBonusPlay(state, humanQ, botQs, humanBonusCards, botBonusCards, botBonusBoards, sidePreDealt, botSideBoards)
 }
 
 // ── Lock bonus one-shot ───────────────────────────────────────────────────────

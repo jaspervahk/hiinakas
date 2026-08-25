@@ -6,6 +6,7 @@ export type GamePhase =
   | 'bot_thinking'    // human locked in; waiting for async MC bot moves
   | 'revealing'       // post-lock: all boards shown, awaiting advance
   | 'scoring'         // normal-round score display
+  | 'bonus_resolving' // live play only: awaiting async bot bonus/side-game moves
   | 'bonus_oneshot'   // human qualifies: place all bonus cards at once
   | 'bonus_scoring'   // bonus totals display
 
@@ -130,7 +131,7 @@ export type CoachMode = 'nn' | 'royalty' | 'royalty-nn' | 'heuristic'
 export interface AppSettings {
   coachEnabled: boolean
   playerCount: 2 | 3
-  botPolicy: 'nn' | 'royalty' | 'royalty-nn'
+  botPolicy: 'nn' | 'royalty' | 'royalty-nn' | 'heuristic'
   coachMode: CoachMode
   botSims: number
   botRootTopK: number     // nn policy only
