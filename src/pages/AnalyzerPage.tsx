@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppPage } from '../App'
-import type { Card, PartialBoard, ScoredPlacement, InfoState, Board, Placement } from '../engine/index'
+import type { Card, PartialBoard, ScoredPlacement, InfoState, Board, Placement, BonusQualifier } from '../engine/index'
 import { royalties, isFoul } from '../engine/index'
 import { CardPicker } from '../components/CardPicker'
 import { BoardView } from '../components/BoardView'
@@ -127,8 +127,14 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   const [oppBoards, setOppBoards] = useState<PartialBoard[]>([
     { top: [], middle: [], bottom: [] },
   ])
-  // Per-opponent: true = in a bonus game (fresh separate deck, not a side-game opponent)
-  const [oppIsBonus, setOppIsBonus] = useState<boolean[]>([false])
+  // Per-opponent: the qualifier tier of an opponent playing the bonus round
+  // (null = a normal/side-game opponent). The tier matters, not just the fact
+  // of qualifying: a bonus opponent's board is invisible during play but is
+  // still scored pairwise against yours at showdown
+  // (docs/01_RULES_AND_SCORING.md section 8), and the engine values that via a
+  // sampled board drawn from the matching 13/14/15-card tier.
+  const [oppBonusTier, setOppBonusTier] = useState<(BonusQualifier | null)[]>([null])
+  const oppIsBonus = useMemo(() => oppBonusTier.map(t => t !== null), [oppBonusTier])
   const historyRef = useRef<PositionSnapshot[]>([])
   const fromGameRef = useRef(false)
 
@@ -167,22 +173,22 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       while (next.length > n - 1) next.pop()
       return next
     })
-    setOppIsBonus(prev => {
+    setOppBonusTier(prev => {
       const next = [...prev]
-      while (next.length < n - 1) next.push(false)
+      while (next.length < n - 1) next.push(null)
       while (next.length > n - 1) next.pop()
       return next
     })
   }
 
-  function toggleOppBonus(i: number) {
-    setOppIsBonus(prev => {
+  function setOppBonus(i: number, tier: BonusQualifier | null) {
+    setOppBonusTier(prev => {
       const next = [...prev]
-      next[i] = !next[i]
+      next[i] = tier
       return next
     })
     // If the active slot belongs to this opponent, reset to hand
-    if (activeSlot.startsWith(`opp-${i}-`)) setActiveSlot('you-hand')
+    if (tier !== null && activeSlot.startsWith(`opp-${i}-`)) setActiveSlot('you-hand')
   }
 
   const used = useMemo<Card[]>(() => {
@@ -302,7 +308,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     return errs
   }, [used, street, yourBoard, yourHand, oppBoards, oppIsBonus])
 
-  const [analyzerPolicy, setAnalyzerPolicy] = useState<BotPolicy>('nn')
+  const [analyzerPolicy, setAnalyzerPolicy] = useState<BotPolicy>('heuristic')
   const [results, setResults] = useState<ScoredPlacement[]>([])
   const [computing, setComputing] = useState(false)
   const [doneRollouts, setDoneRollouts] = useState(0)
@@ -362,12 +368,26 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       if (!loaded) { setNoModel(true); return }
     }
 
+    // An opponent in the bonus round is invisible during play (their board is
+    // built from a fresh separate deck, so it's excluded from the live-deck
+    // and revealed-board pools) but is still scored pairwise against your
+    // final board at showdown — docs/01_RULES_AND_SCORING.md section 8. Pass
+    // the tiers so rollout() values each one against a sampled board of the
+    // right size instead of silently dropping the matchup from the EV.
+    const bonusTiers = oppBonusTier
+      .slice(0, playerCount - 1)
+      .filter((t): t is BonusQualifier => t !== null)
     const state: InfoState = {
       board: yourBoard,
       hand: yourHand,
       street,
-      // Bonus opponents use a fresh separate deck — exclude from scoring pool
       revealedOpponentBoards: oppBoards.slice(0, playerCount - 1).filter((_, i) => !oppIsBonus[i]),
+      // If any opponent triggered the bonus, the position being analyzed is
+      // itself a side game — and re-triggering is disabled in v1, so a
+      // qualifying top reached here earns no further bonus value.
+      ...(bonusTiers.length > 0
+        ? { inBonusRound: true, invisibleBonusOpponents: bonusTiers }
+        : {}),
     }
     const seed = (Date.now() & 0xffffffff) | 0
     setResults([])
@@ -375,9 +395,14 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setDoneRollouts(0)
     const client = analyzerPolicy === 'royalty' ? royaltyWorkerClient : workerClient
     const totalRollouts = analyzerPolicy === 'royalty' ? 1000 : 2000
+    // Heuristic MC streams a batch at a time over one continuous budget, so a
+    // smaller batch just paints the first ranking sooner (street 0's 232
+    // candidates make each rollout pass expensive) — it doesn't change the
+    // numbers, which stay identical to Live Coach's at the same rollout count.
+    const batchSize = analyzerPolicy === 'heuristic' ? 10 : 20
     cancelRef.current = client.streamMC(
       state,
-      { totalRollouts, batchSize: 20 },
+      { totalRollouts, batchSize },
       seed,
       (r) => {
         setResults([...r].sort((a, b) => b.ev - a.ev))
@@ -398,7 +423,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setYourBoard({ top: [], middle: [], bottom: [] })
     setYourHand([])
     setOppBoards(Array.from({ length: playerCount - 1 }, () => ({ top: [], middle: [], bottom: [] })))
-    setOppIsBonus(Array.from({ length: playerCount - 1 }, () => false))
+    setOppBonusTier(Array.from({ length: playerCount - 1 }, () => null))
     setResults([])
     setDoneRollouts(0)
     setActiveSlot('you-hand')
@@ -446,14 +471,16 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
         <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-widest text-gray-500">Mode</span>
           <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-            {([['nn', 'NN + MCTS'], ['royalty', 'Royalty']] as const).map(([p, lbl]) => (
+            {([['heuristic', 'Heuristic MC'], ['nn', 'NN + MCTS'], ['royalty', 'Royalty']] as const).map(([p, lbl]) => (
               <button
                 key={p}
                 onClick={() => handlePolicyChange(p)}
                 className={[
                   'px-3 py-1 transition-colors',
                   analyzerPolicy === p
-                    ? (p === 'royalty' ? 'bg-amber-700 text-white' : 'bg-indigo-700 text-white')
+                    ? (p === 'royalty'
+                        ? 'bg-amber-700 text-white'
+                        : p === 'heuristic' ? 'bg-emerald-700 text-white' : 'bg-indigo-700 text-white')
                     : 'bg-gray-800 text-gray-400 hover:text-gray-200',
                 ].join(' ')}
               >
@@ -559,21 +586,30 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
               <p className="text-[10px] uppercase tracking-widest text-gray-500">
                 {playerCount === 2 ? 'Opponent' : `Opp ${i + 1}`}
               </p>
-              <button
-                onClick={() => toggleOppBonus(i)}
-                className={[
-                  'px-2 py-0.5 text-[10px] font-medium rounded transition-colors border',
-                  oppIsBonus[i]
-                    ? 'bg-amber-900/40 text-amber-300 border-amber-700/60'
-                    : 'bg-gray-800 text-gray-500 border-gray-700 hover:text-gray-300 hover:border-gray-600',
-                ].join(' ')}
-              >
-                Bonus game
-              </button>
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-gray-600">Bonus</span>
+                {([[null, 'Off'], ['QQ', 'QQ'], ['KK', 'KK'], ['AA_OR_TRIPS', 'AA+']] as const).map(([tier, lbl]) => (
+                  <button
+                    key={lbl}
+                    onClick={() => setOppBonus(i, tier)}
+                    title={tier === null
+                      ? 'Normal or side-game opponent'
+                      : `Opponent is playing the bonus round (${tier === 'AA_OR_TRIPS' ? 'AA or trips — 15 cards' : tier === 'KK' ? 'KK — 14 cards' : 'QQ — 13 cards'})`}
+                    className={[
+                      'px-1.5 py-0.5 text-[10px] font-medium rounded transition-colors border',
+                      oppBonusTier[i] === tier
+                        ? 'bg-amber-900/40 text-amber-300 border-amber-700/60'
+                        : 'bg-gray-800 text-gray-500 border-gray-700 hover:text-gray-300 hover:border-gray-600',
+                    ].join(' ')}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
             </div>
             {oppIsBonus[i] ? (
               <div className="text-[10px] text-gray-600 italic px-1">
-                Playing bonus — separate deck, not a scoring opponent
+                Playing bonus — separate deck, board hidden, still scored against you
               </div>
             ) : (
               <SlotGroup
