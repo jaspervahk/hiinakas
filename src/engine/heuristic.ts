@@ -1,17 +1,31 @@
 import type { Card, HandRank, PartialBoard, Board } from './types'
 import { HandCategory } from './types'
-import { evaluate3, evaluate5 } from './evaluate'
+// fastEval3/fastEval5 (fastEvaluate.ts) return HandRanks identical to
+// evaluate.ts's — same category, same tiebreaker tuple — but without the
+// per-call Map, spread and comparator sorts. This module is the single
+// hottest thing in the engine: it's the rollout policy, so mc.ts calls it
+// once per simulated street per candidate per rollout, and a CPU profile put
+// ~86% of all bot/coach runtime inside the scoring below. Equivalence is
+// covered by heuristic.test.ts.
+import { fastEval3, fastEval5 } from './fastEvaluate'
 import { isFoul } from './rules'
 import { legalPlacements } from './placement'
 import type { Placement } from './placement'
 
 // ── Hand rank → numeric score (for fast heuristic comparison) ─────────────
 
+// Math.pow(15, n) for the only exponents a tiebreaker tuple can reach (a
+// 5-card hand has at most 5 tiebreakers). Exact integers, so the scores are
+// bit-identical to the Math.pow form this replaces.
+const POW15 = [1, 15, 225, 3375, 50625] as const
+
 function handRankScore(rank: HandRank): number {
   // Encode as category * large_base + tiebreakers weighted by position
+  const tb = rank.tiebreakers
+  const n = tb.length
   let score = rank.category * 1_000_000
-  for (let i = 0; i < rank.tiebreakers.length; i++) {
-    score += (rank.tiebreakers[i] ?? 0) * Math.pow(15, rank.tiebreakers.length - 1 - i)
+  for (let i = 0; i < n; i++) {
+    score += (tb[i] ?? 0) * (POW15[n - 1 - i] ?? Math.pow(15, n - 1 - i))
   }
   return score
 }
@@ -37,15 +51,35 @@ function handRankScore(rank: HandRank): number {
 // filling a row with unrelated cards for no reason outscores a genuinely
 // sensible spread across all three rows, confirmed with a fully unconnected
 // hand (2,3,5,8,K) that otherwise still got dumped into a single row.
+//
+// Counts live in a module-level scratch array rather than a per-call Map: this
+// was the single hottest function in the engine (~26% of all bot/coach self
+// time) purely from the Map, the .map() and the Math.max spread it used to
+// allocate on every call. Reusing one buffer is safe because scoring is
+// synchronous, single-threaded and never re-enters itself. The result is
+// integer arithmetic either way, so the score is bit-identical to the Map
+// version — only the accumulation order of `bonus` changes, and integer
+// addition is exact.
+const RANK_COUNTS = new Int8Array(15)
+
 function smallScore(cards: readonly Card[]): number {
-  const ranks = cards.map(c => c.rank)
-  const freq = new Map<number, number>()
-  for (const r of ranks) freq.set(r, (freq.get(r) ?? 0) + 1)
-  let bonus = 0
-  for (const count of freq.values()) {
-    if (count >= 2) bonus += (count - 1) * 8 // modest pair/trips-in-progress credit
+  const n = cards.length
+  let maxRank = 0
+  for (let i = 0; i < n; i++) {
+    const r = cards[i]!.rank
+    RANK_COUNTS[r]++
+    if (r > maxRank) maxRank = r
   }
-  return Math.max(...ranks) + bonus
+  let bonus = 0
+  for (let i = 0; i < n; i++) {
+    const r = cards[i]!.rank
+    const c = RANK_COUNTS[r]!
+    if (c !== 0) {
+      if (c >= 2) bonus += (c - 1) * 8 // modest pair/trips-in-progress credit
+      RANK_COUNTS[r] = 0               // count each distinct rank once, then clear
+    }
+  }
+  return maxRank + bonus
 }
 
 // Whether completing a row as this exact hand actually earns anything
@@ -65,7 +99,9 @@ function partialRowScore(cards: readonly Card[], isTop: boolean): number {
   if (cards.length === 0) return 0
   const fullSize = isTop ? 3 : 5
   if (cards.length < fullSize) return smallScore(cards)
-  const rank = isTop ? evaluate3(cards) : evaluate5(cards)
+  const rank = isTop
+    ? fastEval3(cards[0]!, cards[1]!, cards[2]!)
+    : fastEval5(cards[0]!, cards[1]!, cards[2]!, cards[3]!, cards[4]!)
   // A row that completes into a hand with no real royalty value (HighCard,
   // a low top pair, or — critically for middle/bottom — OnePair/TwoPair,
   // since neither earns any royalty there) hasn't actually gained much by
@@ -83,7 +119,18 @@ function partialRowScore(cards: readonly Card[], isTop: boolean): number {
 }
 
 // Penalty: if full board is already determined to be fouled, large negative.
-function foulPenalty(board: PartialBoard): number {
+//
+// topScore/midScore/botScore are passed in rather than recomputed: the caller
+// (scorePlacement) needs the very same three partialRowScore values for its
+// own weighted sum, and opponentComparisonAdj needs them again. Computing
+// them once per candidate instead of three times is the bulk of this
+// module's speedup and cannot change a score — they are the same numbers.
+function foulPenalty(
+  board: PartialBoard,
+  topScore: number,
+  midScore: number,
+  botScore: number,
+): number {
   if (board.top.length === 3 && board.middle.length === 5 && board.bottom.length === 5) {
     return isFoul(board as Board) ? -1e9 : 0
   }
@@ -109,9 +156,6 @@ function foulPenalty(board: PartialBoard): number {
   // the ~71% baseline with no middle-vs-bottom check at all); -1e9 needed to
   // actually change the argmax choice.
   let penalty = 0
-  const topScore = partialRowScore(board.top, true)
-  const midScore = partialRowScore(board.middle, false)
-  const botScore = partialRowScore(board.bottom, false)
   if (board.top.length > 0 && board.middle.length > 0 && topScore > midScore) penalty -= 1e9
   if (board.middle.length > 0 && board.bottom.length > 0 && midScore > botScore) penalty -= 1e9
   return penalty
@@ -132,25 +176,47 @@ const OPPONENT_AWARENESS_FRACTION = 0.15
 // fighting a likely-lost row is worth less than banking royalties or safety
 // elsewhere. Returns 0 (no adjustment) when no opponent info is available,
 // exactly preserving old behavior for callers that don't pass any.
-function opponentComparisonAdj(newBoard: PartialBoard, oppBoards: readonly PartialBoard[]): number {
-  if (oppBoards.length === 0) return 0
+// The strongest visible opponent score per row, in [top, middle, bottom]
+// order. A row where no opponent has placed anything yet is 0, which reads as
+// "no signal" below — matching the old per-row `maxOppScore === 0` skip.
+type OppRowMax = readonly [number, number, number]
+
+// Opponent boards do not change while a single decision's candidates are
+// being ranked, so their row scores are computed once per heuristicPlacement
+// call instead of once per candidate (at street 0 that is 232x less work for
+// the same numbers).
+function opponentRowMax(oppBoards: readonly PartialBoard[]): OppRowMax | null {
+  if (oppBoards.length === 0) return null
+  let t = 0, m = 0, b = 0
+  for (const opp of oppBoards) {
+    if (opp.top.length > 0)    { const s = partialRowScore(opp.top, true);     if (s > t) t = s }
+    if (opp.middle.length > 0) { const s = partialRowScore(opp.middle, false); if (s > m) m = s }
+    if (opp.bottom.length > 0) { const s = partialRowScore(opp.bottom, false); if (s > b) b = s }
+  }
+  return [t, m, b]
+}
+
+function opponentComparisonAdj(
+  newBoard: PartialBoard,
+  ourTop: number,
+  ourMid: number,
+  ourBot: number,
+  oppMax: OppRowMax | null,
+): number {
+  if (oppMax === null) return 0
   let adj = 0
-  for (const row of ['top', 'middle', 'bottom'] as const) {
-    const ourCards = newBoard[row]
-    if (ourCards.length === 0) continue
-    const isTop = row === 'top'
-    const ourScore = partialRowScore(ourCards, isTop)
-    let maxOppScore = 0
-    for (const opp of oppBoards) {
-      const oppCards = opp[row]
-      if (oppCards.length === 0) continue
-      const s = partialRowScore(oppCards, isTop)
-      if (s > maxOppScore) maxOppScore = s
-    }
-    if (maxOppScore === 0) continue // no opponent has cards in this row yet — no signal
-    if (ourScore < maxOppScore) {
-      adj -= (maxOppScore - ourScore) * ROW_WEIGHT[row] * OPPONENT_AWARENESS_FRACTION
-    }
+  // Row order and the accumulation order of `adj` are load-bearing: these are
+  // floating-point terms (ROW_WEIGHT x 0.15), and heuristicPlacement's argmax
+  // keeps the FIRST candidate of an equal score, so reordering could flip a
+  // near-tie into a different move.
+  if (newBoard.top.length > 0 && oppMax[0] !== 0 && ourTop < oppMax[0]) {
+    adj -= (oppMax[0] - ourTop) * ROW_WEIGHT.top * OPPONENT_AWARENESS_FRACTION
+  }
+  if (newBoard.middle.length > 0 && oppMax[1] !== 0 && ourMid < oppMax[1]) {
+    adj -= (oppMax[1] - ourMid) * ROW_WEIGHT.middle * OPPONENT_AWARENESS_FRACTION
+  }
+  if (newBoard.bottom.length > 0 && oppMax[2] !== 0 && ourBot < oppMax[2]) {
+    adj -= (oppMax[2] - ourBot) * ROW_WEIGHT.bottom * OPPONENT_AWARENESS_FRACTION
   }
   return adj
 }
@@ -158,19 +224,27 @@ function opponentComparisonAdj(newBoard: PartialBoard, oppBoards: readonly Parti
 // Score a placement for the heuristic. Higher = better. `oppBoards` (each
 // opponent's own revealed board so far) is optional — when supplied, adds a
 // small opponent-comparison signal on top of the base row-strength scoring.
-function scorePlacement(board: PartialBoard, p: Placement, oppBoards: readonly PartialBoard[] = []): number {
+function scorePlacement(board: PartialBoard, p: Placement, oppMax: OppRowMax | null = null): number {
   const newTop    = [...board.top,    ...p.topAdd]
   const newMid    = [...board.middle, ...p.middleAdd]
   const newBot    = [...board.bottom, ...p.bottomAdd]
   const newBoard: PartialBoard = { top: newTop, middle: newMid, bottom: newBot }
 
+  // Each row is scored once and the value reused by all three terms below.
+  // This used to be nine partialRowScore calls per candidate — three here,
+  // three inside foulPenalty, three inside opponentComparisonAdj — all on
+  // identical inputs.
+  const topScore = partialRowScore(newTop, true)
+  const midScore = partialRowScore(newMid, false)
+  const botScore = partialRowScore(newBot, false)
+
   // Bottom weighted most heavily (strongest hand should go bottom)
   const score =
-    partialRowScore(newBot, false) * 3.0 +
-    partialRowScore(newMid, false) * 2.0 +
-    partialRowScore(newTop, true)  * 1.0 +
-    foulPenalty(newBoard) +
-    opponentComparisonAdj(newBoard, oppBoards)
+    botScore * 3.0 +
+    midScore * 2.0 +
+    topScore * 1.0 +
+    foulPenalty(newBoard, topScore, midScore, botScore) +
+    opponentComparisonAdj(newBoard, topScore, midScore, botScore, oppMax)
 
   return score
 }
@@ -197,10 +271,11 @@ export function heuristicPlacement(
       + `mid=${board.middle.length}/5 bot=${board.bottom.length}/5, dealt=${dealt.length} card(s), street=${street})`,
     )
   }
+  const oppMax = opponentRowMax(oppBoards)
   let best = candidates[0]!
-  let bestScore = scorePlacement(board, best, oppBoards)
+  let bestScore = scorePlacement(board, best, oppMax)
   for (let i = 1; i < candidates.length; i++) {
-    const s = scorePlacement(board, candidates[i]!, oppBoards)
+    const s = scorePlacement(board, candidates[i]!, oppMax)
     if (s > bestScore) {
       bestScore = s
       best = candidates[i]!
