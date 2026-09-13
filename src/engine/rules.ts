@@ -1,10 +1,37 @@
 import { HandCategory } from './types'
-import type { Board, BonusQualifier, Card } from './types'
+import type { Board, BonusQualifier, Card, HandRank } from './types'
 import { evaluate3, evaluate5, compareHandRank } from './evaluate'
+import { fastEval3, fastEval5, fastRoyalties, cmpRank } from './fastEvaluate'
 
 // ── Foul detection ─────────────────────────────────────────────────────────
 
+// The fast evaluator indexes its cards positionally, so it can only be used
+// on a genuinely complete 3-5-5 board. These functions are typed for `Board`
+// but several UI callers cast a still-growing board to it (BoardView and
+// GamePlayView both display a live foul/royalty status mid-hand), and the
+// Map-based evaluators tolerate a short row where the fast ones would read
+// past the end. Complete boards — every call from the bot, coach, analyzer
+// and scorer, i.e. all the hot ones — take the fast path; anything partial
+// falls through to the original behavior unchanged.
+function isCompleteBoard(b: Board): boolean {
+  return b.top.length === 3 && b.middle.length === 5 && b.bottom.length === 5
+}
+
+// Ranks all three rows of a complete board with the allocation-light
+// evaluator. Callers below share one call instead of re-evaluating per row.
+function rankRows(b: Board): { top: HandRank; mid: HandRank; bot: HandRank } {
+  return {
+    top: fastEval3(b.top[0]!, b.top[1]!, b.top[2]!),
+    mid: fastEval5(b.middle[0]!, b.middle[1]!, b.middle[2]!, b.middle[3]!, b.middle[4]!),
+    bot: fastEval5(b.bottom[0]!, b.bottom[1]!, b.bottom[2]!, b.bottom[3]!, b.bottom[4]!),
+  }
+}
+
 export function isFoul(board: Board): boolean {
+  if (isCompleteBoard(board)) {
+    const { top, mid, bot } = rankRows(board)
+    return cmpRank(top, mid) > 0 || cmpRank(mid, bot) > 0
+  }
   const top = evaluate3(board.top)
   const mid = evaluate5(board.middle)
   const bot = evaluate5(board.bottom)
@@ -58,6 +85,14 @@ export function bottomRoyalty(cards: readonly Card[]): number {
 
 // Returns total royalties for a board; 0 if fouled.
 export function royalties(board: Board): number {
+  if (isCompleteBoard(board)) {
+    // One ranking pass covers both the foul check and all three royalty
+    // tables; the slow path below evaluates every row twice over (once inside
+    // isFoul, once more per row-royalty function).
+    const { top, mid, bot } = rankRows(board)
+    if (cmpRank(top, mid) > 0 || cmpRank(mid, bot) > 0) return 0
+    return fastRoyalties(top, mid, bot)
+  }
   if (isFoul(board)) return 0
   return topRoyalty(board.top) + middleRoyalty(board.middle) + bottomRoyalty(board.bottom)
 }
@@ -66,8 +101,15 @@ export function royalties(board: Board): number {
 
 // Returns the bonus qualifier for a non-bust board's top row, or null.
 export function bonusTrigger(board: Board): BonusQualifier | null {
-  if (isFoul(board)) return null
-  const top = evaluate3(board.top)
+  let top: HandRank
+  if (isCompleteBoard(board)) {
+    const ranks = rankRows(board)
+    if (cmpRank(ranks.top, ranks.mid) > 0 || cmpRank(ranks.mid, ranks.bot) > 0) return null
+    top = ranks.top
+  } else {
+    if (isFoul(board)) return null
+    top = evaluate3(board.top)
+  }
   if (top.category === HandCategory.Trips) return 'AA_OR_TRIPS'
   if (top.category === HandCategory.OnePair) {
     const pairRank = top.tiebreakers[0]!
