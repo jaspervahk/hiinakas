@@ -172,49 +172,67 @@ export function bonusDealCount(qualifier: BonusQualifier): number {
 // the table, down from ~0.3-0.5 at the previous flat 500 trials/cell.
 export type BonusOppScenario = 'BASE' | BonusQualifier
 
+// BASE column re-measured 2026-09-14 against a side-game opponent with the
+// CORRECT info set — getBotMove with invisibleBonusOpponents set (n=500/tier).
+// The previous values (12.13 / 16.50 / 20.44) were measured against
+// heuristicPlacement, which fouls ~30% of the time and earns 0.83 royalties;
+// a properly-informed side-game player earns 2.06 at a similar foul rate, so
+// the old numbers were collecting free +6 scoops and facing almost no royalty
+// opposition. Decomposition of the old QQ cell: 8.95 own royalties + 4.28 row
+// score (70% scoop rate, 31% of which came from the opponent busting) - 0.82
+// opponent royalties = 12.41, reproducing the old table against its own weak
+// opponent. Against a real one the same cell is 10.13.
+//
+// The actor's own royalties (~9 / ~12 / ~15 by tier, at a 0% foul rate) are
+// the dominant term and are unaffected — a solver handed 13-15 cards really
+// does build boards that strong. What changed is the quality of what it is
+// being compared against.
+//
+// Tier-vs-tier cells are NOT re-measured and keep their 3000/1200-trial
+// values: those are bonus board vs bonus board, with no side game involved, so
+// side-game policy cannot affect them. Diagonals remain exactly 0 by symmetry.
 export const BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>> = {
-  QQ:          { BASE: 12.13, QQ: 0,    KK: -4.34, AA_OR_TRIPS: -9.19 },
-  KK:          { BASE: 16.50, QQ: 4.34, KK: 0,     AA_OR_TRIPS: -4.62 },
-  AA_OR_TRIPS: { BASE: 20.44, QQ: 9.19, KK: 4.62,  AA_OR_TRIPS: 0     },
+  QQ:          { BASE: 10.13, QQ: 0,    KK: -4.34, AA_OR_TRIPS: -9.19 },
+  KK:          { BASE: 14.92, QQ: 4.34, KK: 0,     AA_OR_TRIPS: -4.62 },
+  AA_OR_TRIPS: { BASE: 19.87, QQ: 9.19, KK: 4.62,  AA_OR_TRIPS: 0     },
 }
 
 // The same table for the variant ruleset, where a qualifying SIDE GAME starts
 // a further bonus round (allowBonusRecursion). Solved by
 // scripts/compute-variant-bonus-ev.ts.
 //
-// The chain has a closed form rather than needing iteration. A 13-15 card
-// bonus board cannot re-trigger, so a round in which both players hold bonus
-// boards ends it — every tier-vs-tier cell below is therefore IDENTICAL to
-// BONUS_NET. Only the BASE column moves, and writing V for the whole-chain
-// value and x_a := V[a][BASE]:
+// A 13-15 card bonus board cannot re-trigger, so a round in which both players
+// hold bonus boards ends the chain — every tier-vs-tier cell below is
+// therefore IDENTICAL to BONUS_NET. Only the BASE column moves. Writing V for
+// the whole-chain value and x_a := V[a][BASE]:
 //
-//   x_a = R[a][BASE] + SUM_t P(t) * V[BASE][t],  and  V[BASE][t] = -x_t
+//   x_a = R[a][BASE] + SUM_t P_a(t) * V[BASE][t],  V[BASE][t] = -x_t
+//   =>  (I + P) x = R_BASE
 //
-// by zero-sum symmetry, which collapses to
+// P is indexed by the actor's tier, not a single scalar: the side-game player
+// knows which tier they are up against and plays differently when further
+// behind (measured: they foul 28% against a QQ board but 46% against an AA
+// one, gambling harder when the board they must beat is stronger). So the
+// recursion penalty differs per tier — 0.93 / 0.84 / 0.72 — rather than being
+// one shared constant.
 //
-//   x_a = R[a][BASE] - S,   S = M/(1+q),
-//   q = SUM_t P(t) = 0.11033,  M = SUM_t P(t)*R[t][BASE] = 1.7666,  S = 1.591
+// Direction: recursion makes triggering a bonus round worth LESS. The
+// follow-up round only happens when the OPPONENT's side game qualifies, which
+// hands them the bonus board and the actor the side game, so qualifying
+// carries retaliation risk.
 //
-// Note the direction: recursion makes triggering a bonus round worth LESS,
-// not more. The follow-up round happens only when the OPPONENT's side game
-// qualifies, which puts them on the bonus board and the actor on the side
-// game — so qualifying now carries retaliation risk.
-//
-// P(t) is the tier distribution of side-game boards played by getBotMove under
-// variant rules (n=3000, se(q)=0.0057), not by heuristicPlacement: the greedy
-// heuristic reaches a qualifying board roughly ten times less often (q=0.0126)
-// because it has no EV term to chase qualification with, and a real opponent
-// plays like the bot. R[a][BASE] is reused from BONUS_NET, which measured it
-// over 3000/1200 trials against heuristic side games; re-measuring it against
-// bot side games (n=600) moved it by at most ~1 standard error (12.52/15.94/
-// 20.71 vs 12.13/16.50/20.44), i.e. it is insensitive to the side-game policy,
-// so the more precise numbers are kept. S itself is robust either way: it
-// varies by 0.001 between the two R sets and by only +/-0.016 across +/-2se
-// of q.
+// Both R[a][BASE] and P_a(t) are measured against a side-game player with the
+// correct info set — getBotMove with invisibleBonusOpponents set (n=500/tier).
+// That field is load-bearing, not cosmetic: a side-game player has no VISIBLE
+// opponent, so without it every rollout scores a one-board table, scoreTable's
+// pairwise loop never runs, and every candidate gets exactly 0. The bot then
+// returns an arbitrary first candidate and fouls ~67% of the time. An earlier
+// version of this table was measured that way and was wrong; see mc.ts's note
+// on invisibleBonusOpponents.
 export const VARIANT_BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>> = {
-  QQ:          { BASE: 10.54, QQ: 0,    KK: -4.34, AA_OR_TRIPS: -9.19 },
-  KK:          { BASE: 14.91, QQ: 4.34, KK: 0,     AA_OR_TRIPS: -4.62 },
-  AA_OR_TRIPS: { BASE: 18.85, QQ: 9.19, KK: 4.62,  AA_OR_TRIPS: 0     },
+  QQ:          { BASE: 9.14,  QQ: 0,    KK: -4.34, AA_OR_TRIPS: -9.19 },
+  KK:          { BASE: 14.04, QQ: 4.34, KK: 0,     AA_OR_TRIPS: -4.62 },
+  AA_OR_TRIPS: { BASE: 19.27, QQ: 9.19, KK: 4.62,  AA_OR_TRIPS: 0     },
 }
 
 // Deprecated: the single-opponent ("BASE") net values, kept for callers

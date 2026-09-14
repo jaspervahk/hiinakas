@@ -2,35 +2,46 @@
 // Solve BONUS_NET for the variant ruleset (recursive bonus rounds + bottom
 // straight-flush trigger). Run: npx tsx scripts/compute-variant-bonus-ev.ts
 //
+// ── The chain ──────────────────────────────────────────────────────────────
+//
 // Under variant rules a SIDE-GAME player who qualifies starts a further bonus
 // round; a 13-15 card bonus board cannot re-trigger. Writing V[p][q] for the
 // actor's expected net over the WHOLE chain:
 //
-//   - Both players hold bonus boards -> neither can re-trigger, the chain ends,
-//     so V[a][b] = R[a][b]. The tier-vs-tier cells are unchanged.
+//   - Both hold bonus boards -> neither re-triggers, the chain ends, so
+//     V[a][b] = R[a][b]. The tier-vs-tier cells are unchanged.
 //
-//   - Actor holds a bonus board, opponent plays a side game:
-//       x_a := V[a][BASE] = R[a][BASE] + SUM_t P(t) * V[BASE][t]
-//     where P(t) is the chance the side game finishes in tier t. If it does,
-//     the next round has THEM on a bonus board and the actor (who just played
-//     a bonus board, and so cannot qualify) on a side game.
+//   - Actor holds a bonus board of tier a, opponent plays the side game:
+//       x_a := V[a][BASE] = R[a][BASE] + SUM_t P_a(t) * V[BASE][t]
+//     P_a(t) is the chance that side game ends in tier t. It is indexed by a
+//     because the side-game player's info set includes which tier they are up
+//     against, and they play differently when further behind (measured: they
+//     foul 28% against a QQ board but 46% against an AA board, gambling more
+//     when the board they must beat is stronger).
 //
-//   - The game is zero-sum and the roles are symmetric, so V[BASE][t] = -x_t:
-//       x_a = R[a][BASE] - S,  S := SUM_t P(t) * x_t
-//     Substituting x_t = R[t][BASE] - S gives S = M - qS, hence
-//       S = M / (1 + q),  q := SUM_t P(t),  M := SUM_t P(t) * R[t][BASE]
+//   - Zero-sum symmetry gives V[BASE][t] = -x_t, so
+//       x_a = R[a][BASE] - SUM_t P_a(t) * x_t
+//     i.e. the linear system  (I + P) x = R_BASE,  solved exactly below.
 //
-//   => x_a = R[a][BASE] - M / (1 + q)     (closed form, no iteration)
+// Note the SIGN: recursion makes triggering a bonus round worth LESS. The
+// follow-up round only happens when the OPPONENT's side game qualifies, which
+// puts them on the bonus board and the actor on the side game.
 //
-// Note the SIGN: recursion makes triggering a bonus round worth LESS, not
-// more. The follow-up round only happens when the OPPONENT's side game
-// qualifies, which puts them on the bonus board and the actor on the side
-// game. The bonus round now carries retaliation risk.
+// ── The side-game opponent ─────────────────────────────────────────────────
 //
-// R[a][BASE] is unchanged from the classic table: side games are played by
-// heuristicPlacement, which takes no RuleSet (it is a pure greedy scorer with
-// no EV term), and scoring is unchanged. So the only new quantity to measure
-// is P(t) under variant triggers.
+// Both R[a][BASE] and P_a(t) are only as meaningful as the side-game player
+// they are measured against, and this is easy to get badly wrong.
+//
+// A side-game player has NO visible opponent: the bonus-board player's board
+// is hidden. If their info set says only that, every rollout scores a
+// one-board table, scoreTable's pairwise loop never runs, and EVERY candidate
+// gets exactly 0 — getBotMove then returns an arbitrary first candidate and
+// fouls ~67% of the time. That degenerate case is exactly what
+// invisibleBonusOpponents exists to prevent (see mc.ts): it scores the actor
+// against a realistic sampled board of the opponent's tier, which restores
+// both the royalty and the foul signal. Measured with it, the side-game
+// player fouls ~28% and earns ~2.1 royalties rather than ~1.2; without it the
+// numbers are meaningless. Always pass it.
 
 import { heuristicPlacement } from '../src/engine/heuristic'
 import { bonusTrigger, BONUS_NET, bonusDealCount } from '../src/engine/rules'
@@ -58,140 +69,101 @@ const getArg = (n: string, d: string) => {
   const i = args.indexOf(`--${n}`)
   return i !== -1 ? (args[i + 1] ?? d) : d
 }
-const N_HEURISTIC = parseInt(getArg('trials', '200000'), 10)
-const N_BOT       = parseInt(getArg('bot-trials', '400'), 10)
-const BOT_SIMS    = parseInt(getArg('bot-sims', '20'), 10)
-// Re-measure R[a][BASE] with bot-played side games too. The committed
-// BONUS_NET BASE column was measured against heuristicPlacement side games,
-// but a real side-game opponent plays like the bot, and the two reach a
-// qualifying board at very different rates — so both q AND R[a][BASE] should
-// come from the same, realistic policy.
-const N_RBASE     = parseInt(getArg('rbase-trials', '0'), 10)
+const N        = parseInt(getArg('trials', '500'), 10)
+const BOT_SIMS = parseInt(getArg('bot-sims', '20'), 10)
+const BASELINE = args.includes('--heuristic-opponent')
+// Which ruleset the SIDE-GAME player is playing under. Under classic they have
+// no reason to chase a qualifying board (re-triggering is disabled, so
+// qualifying in a side game is worth nothing); under variant it starts another
+// bonus round and is worth chasing. That changes their policy, so the classic
+// and variant tables must each be measured under their own rules.
+const SIDE_RULES = args.includes('--classic') ? CLASSIC_RULES : VARIANT_RULES
+const RULES_LABEL = args.includes('--classic') ? 'CLASSIC' : 'VARIANT'
 
 const TIERS: readonly BonusQualifier[] = ['QQ', 'KK', 'AA_OR_TRIPS']
+const DISCARDS: Record<BonusQualifier, number> = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 }
 const rng = mulberry32(20260914)
+const botRng = mulberry32(55501)
 
-function playSideGameHeuristic(deck: Deck): Board {
-  let board: PartialBoard = { top: [], middle: [], bottom: [] }
-  const sizes = [5, 3, 3, 3, 3]
-  for (let s = 0; s <= 4; s++) {
-    board = applyPlacement(board, heuristicPlacement(board, deck.deal(sizes[s]!), s))
-  }
-  return board as Board
-}
-
-// The bot actually plays side games with rollouts, and under variant rules it
-// sees value in qualifying — so it should reach a qualifying board more often
-// than the greedy heuristic. Measured separately as a sensitivity check.
-function playSideGameBot(deck: Deck, r: () => number): Board {
+// The side game, played against a hidden bonus board of tier `vs`.
+function playSideGame(deck: Deck, vs: BonusQualifier): Board {
   let board: PartialBoard = { top: [], middle: [], bottom: [] }
   const sizes = [5, 3, 3, 3, 3]
   for (let s = 0; s <= 4; s++) {
     const hand = deck.deal(sizes[s]!)
-    const pl = getBotMove(
-      { board, hand, street: s, revealedOpponentBoards: [], inBonusRound: true, rules: VARIANT_RULES },
-      BOT_SIMS, r,
-    )
+    const pl = BASELINE
+      ? heuristicPlacement(board, hand, s)
+      : getBotMove({
+          board, hand, street: s, revealedOpponentBoards: [], inBonusRound: true,
+          invisibleBonusOpponents: [vs], rules: SIDE_RULES,
+        }, BOT_SIMS, botRng)
     board = applyPlacement(board, pl)
   }
   return board as Board
 }
 
-function measureP(play: (d: Deck) => Board, n: number, label: string) {
+console.error(`Measuring R[a][BASE] and P_a(t) under ${RULES_LABEL} rules against a ${BASELINE ? 'heuristicPlacement' : `getBotMove (sims=${BOT_SIMS}, invisibleBonusOpponents set)`} side game, n=${N}/tier\n`)
+
+const R: Record<BonusQualifier, number> = { QQ: 0, KK: 0, AA_OR_TRIPS: 0 }
+const P: Record<BonusQualifier, Record<BonusQualifier, number>> = {
+  QQ: { QQ: 0, KK: 0, AA_OR_TRIPS: 0 },
+  KK: { QQ: 0, KK: 0, AA_OR_TRIPS: 0 },
+  AA_OR_TRIPS: { QQ: 0, KK: 0, AA_OR_TRIPS: 0 },
+}
+
+for (const a of TIERS) {
+  let net = 0
   const counts: Record<BonusQualifier, number> = { QQ: 0, KK: 0, AA_OR_TRIPS: 0 }
-  let classicQualified = 0
-  for (let i = 0; i < n; i++) {
-    const board = play(new Deck((rng() * 0x7fffffff) | 0))
-    const t = bonusTrigger(board, VARIANT_RULES)
+  for (let i = 0; i < N; i++) {
+    const deck = new Deck((rng() * 0x7fffffff) | 0)
+    const actor = bestBonusBoard(deck.deal(bonusDealCount(a)), DISCARDS[a])
+    const opp = playSideGame(deck, a)
+    net += scorePair(actor, opp).aNet
+    const t = bonusTrigger(opp, VARIANT_RULES)
     if (t) counts[t]++
-    if (bonusTrigger(board, CLASSIC_RULES)) classicQualified++
-    if ((i + 1) % 20000 === 0) process.stderr.write(`    ${label}: ${i + 1}/${n}\n`)
+    if ((i + 1) % 100 === 0) process.stderr.write(`    ${a}: ${i + 1}/${N}\n`)
   }
-  const P: Record<BonusQualifier, number> = {
-    QQ: counts.QQ / n, KK: counts.KK / n, AA_OR_TRIPS: counts.AA_OR_TRIPS / n,
-  }
-  const q = P.QQ + P.KK + P.AA_OR_TRIPS
-  console.error(`\n${label} (n=${n})`)
-  console.error(`  P(QQ)=${P.QQ.toFixed(5)}  P(KK)=${P.KK.toFixed(5)}  P(AA/trips/bottomSF)=${P.AA_OR_TRIPS.toFixed(5)}`)
-  console.error(`  q = P(side game qualifies) = ${q.toFixed(5)}   [classic-rule rate: ${(classicQualified / n).toFixed(5)}]`)
-  // Binomial standard error on q.
-  console.error(`  se(q) ~ ${Math.sqrt(q * (1 - q) / n).toFixed(5)}`)
-  return { P, q }
+  R[a] = net / N
+  for (const t of TIERS) P[a][t] = counts[t] / N
+  const q = TIERS.reduce((s, t) => s + P[a][t], 0)
+  console.error(`  a=${a.padEnd(11)} R[a][BASE]=${R[a].toFixed(3).padStart(7)}  q=${q.toFixed(4)}  (classic table: ${BONUS_NET[a].BASE})`)
 }
 
-console.error('Solving variant BONUS_NET (recursive bonus rounds + bottom straight flush)\n')
-
-const heur = measureP(playSideGameHeuristic, N_HEURISTIC, 'side game played by heuristicPlacement')
-const botRng = mulberry32(4242)
-const bot = measureP(d => playSideGameBot(d, botRng), N_BOT, `side game played by getBotMove (sims=${BOT_SIMS})`)
-
-function solveWith(
-  P: Record<BonusQualifier, number>,
-  q: number,
-  R: Record<BonusQualifier, number>,
-) {
-  const M = TIERS.reduce((acc, t) => acc + P[t] * R[t], 0)
-  const S = M / (1 + q)
-  const x: Record<BonusQualifier, number> = { QQ: 0, KK: 0, AA_OR_TRIPS: 0 }
-  for (const t of TIERS) x[t] = R[t] - S
-  return { M, S, x }
-}
-const CLASSIC_RBASE: Record<BonusQualifier, number> = {
-  QQ: BONUS_NET.QQ.BASE, KK: BONUS_NET.KK.BASE, AA_OR_TRIPS: BONUS_NET.AA_OR_TRIPS.BASE,
-}
-const solve = (P: Record<BonusQualifier, number>, q: number) => solveWith(P, q, CLASSIC_RBASE)
-
-for (const [label, m] of [['heuristic', heur], ['bot', bot]] as const) {
-  const { M, S, x } = solve(m.P, m.q)
-  console.error(`\n=== solved from the ${label} side-game distribution ===`)
-  console.error(`  M = SUM P(t)*R[t][BASE] = ${M.toFixed(4)}`)
-  console.error(`  S = M/(1+q)             = ${S.toFixed(4)}   <- every BASE cell drops by this`)
-  for (const t of TIERS) {
-    console.error(`  V[${t.padEnd(11)}][BASE] = ${BONUS_NET[t].BASE.toFixed(2)} - ${S.toFixed(4)} = ${x[t].toFixed(4)}`)
-  }
-}
-
-// Optionally re-measure R[a][BASE] against bot-played side games.
-const DISCARDS: Record<BonusQualifier, number> = { QQ: 0, KK: 1, AA_OR_TRIPS: 2 }
-if (N_RBASE > 0) {
-  const r2 = mulberry32(99881)
-  const rBase: Record<BonusQualifier, number> = { QQ: 0, KK: 0, AA_OR_TRIPS: 0 }
-  for (const tier of TIERS) {
-    let total = 0
-    for (let i = 0; i < N_RBASE; i++) {
-      const deck = new Deck((rng() * 0x7fffffff) | 0)
-      const actor = bestBonusBoard(deck.deal(bonusDealCount(tier)), DISCARDS[tier])
-      const opp = playSideGameBot(deck, r2)
-      total += scorePair(actor, opp).aNet
-      if ((i + 1) % 50 === 0) process.stderr.write(`    R[${tier}][BASE]: ${i + 1}/${N_RBASE}\n`)
+// Solve (I + P) x = R exactly by Gaussian elimination (3x3).
+function solve3(A: number[][], b: number[]): number[] {
+  const m = A.map((row, i) => [...row, b[i]!])
+  for (let c = 0; c < 3; c++) {
+    let piv = c
+    for (let r = c + 1; r < 3; r++) if (Math.abs(m[r]![c]!) > Math.abs(m[piv]![c]!)) piv = r
+    ;[m[c], m[piv]] = [m[piv]!, m[c]!]
+    for (let r = 0; r < 3; r++) {
+      if (r === c) continue
+      const f = m[r]![c]! / m[c]![c]!
+      for (let k = c; k <= 3; k++) m[r]![k] = m[r]![k]! - f * m[c]![k]!
     }
-    rBase[tier] = total / N_RBASE
-    console.error(`  R[${tier.padEnd(11)}][BASE] vs BOT side game = ${rBase[tier].toFixed(3)}  (n=${N_RBASE}, classic table says ${BONUS_NET[tier].BASE})`)
   }
-  const { M, S, x } = solveWith(bot.P, bot.q, rBase)
-  console.error(`\n=== solved from BOT side games throughout (the realistic combination) ===`)
-  console.error(`  M = ${M.toFixed(4)}   S = M/(1+q) = ${S.toFixed(4)}`)
-  for (const t of TIERS) console.error(`  V[${t.padEnd(11)}][BASE] = ${rBase[t].toFixed(3)} - ${S.toFixed(4)} = ${x[t].toFixed(4)}`)
+  return [0, 1, 2].map(i => m[i]![3]! / m[i]![i]!)
 }
 
-// Emit the shipped table: the BOT side-game distribution (a real opponent plays
-// like the bot, not like the greedy heuristic, and the two differ ~10x on q)
-// combined with the CLASSIC R[a][BASE] values, which were measured over
-// 3000/1200 trials rather than this script's --rbase-trials. Re-measuring R
-// against bot side games moves it by about one standard error, so the more
-// precise numbers are kept; S is insensitive to the choice either way.
-const { S, x } = solve(bot.P, bot.q)
+// Classic has no recursion: a qualifying side game starts nothing, so the
+// chain is one round deep and V[a][BASE] is just R[a][BASE].
+const A = TIERS.map((a, i) => TIERS.map((t, j) =>
+  (i === j ? 1 : 0) + (SIDE_RULES.allowBonusRecursion ? P[a][t] : 0)))
+const x = solve3(A, TIERS.map(a => R[a]))
+
+console.error(`\n=== ${SIDE_RULES.allowBonusRecursion ? 'solved (I + P) x = R' : 'no recursion: V[a][BASE] = R[a][BASE]'} ===`)
+TIERS.forEach((a, i) => {
+  console.error(`  V[${a.padEnd(11)}][BASE] = ${x[i]!.toFixed(4)}   (R=${R[a].toFixed(3)}, drop ${(R[a] - x[i]!).toFixed(4)})`)
+})
+
 console.log(`// Auto-generated by scripts/compute-variant-bonus-ev.ts — do not hand-edit.`)
 console.log(`// Variant rules: recursive bonus rounds + bottom straight-flush trigger.`)
 console.log(`// Tier-vs-tier cells are identical to BONUS_NET (bonus boards cannot`)
-console.log(`// re-trigger, so the chain ends there). Every BASE cell is reduced by`)
-console.log(`// S = M/(1+q) = ${S.toFixed(4)}, the expected cost of handing the opponent a`)
-console.log(`// bonus round when their side game qualifies (q = ${bot.q.toFixed(5)}).`)
+console.log(`// re-trigger, so the chain ends there). BASE solves (I + P) x = R_BASE.`)
 console.log(`export const VARIANT_BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>> = {`)
-for (const t of TIERS) {
+TIERS.forEach((a, i) => {
   const cells = (['BASE', 'QQ', 'KK', 'AA_OR_TRIPS'] as const)
-    .map(o => `${o}: ${(o === 'BASE' ? x[t] : BONUS_NET[t][o]).toFixed(2)}`)
-    .join(', ')
-  console.log(`  ${t.padEnd(12)}: { ${cells} },`)
-}
+    .map(o => `${o}: ${(o === 'BASE' ? x[i]! : BONUS_NET[a][o]).toFixed(2)}`).join(', ')
+  console.log(`  ${a.padEnd(12)}: { ${cells} },`)
+})
 console.log(`}`)

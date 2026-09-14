@@ -31,13 +31,19 @@ describe('variant bonus EV table', () => {
     }
   })
 
-  it('reduces every BASE cell by the same amount', () => {
+  it('reduces every BASE cell, by a tier-dependent amount', () => {
+    // (I + P) x = R with P indexed by the actor's tier, so the penalty is NOT
+    // one shared constant: a side-game player facing a stronger board gambles
+    // harder and qualifies at a different rate. The penalty shrinks as the
+    // actor's tier rises.
     const drops = TIERS.map(t => BONUS_NET[t].BASE - VARIANT_BONUS_NET[t].BASE)
     for (const d of drops) {
-      expect(d).toBeGreaterThan(0)          // recursion COSTS the trigger-er
-      expect(d).toBeCloseTo(drops[0]!, 2)   // x_a = R[a][BASE] - S, one shared S
+      expect(d).toBeGreaterThan(0)  // recursion COSTS the trigger-er
+      expect(d).toBeLessThan(6)     // and not by an implausible amount
     }
-    expect(drops[0]).toBeCloseTo(1.59, 1)
+    // Strictly decreasing QQ -> KK -> AA.
+    expect(drops[0]).toBeGreaterThan(drops[1]!)
+    expect(drops[1]).toBeGreaterThan(drops[2]!)
   })
 
   it('stays antisymmetric and zero on the diagonal', () => {
