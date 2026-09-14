@@ -77,12 +77,16 @@ type RowKey = 'top' | 'middle' | 'bottom'
 type SlotKey = string
 
 function slotMax(key: SlotKey, street: number): number {
+  if (key === 'dead') return 52 // no natural cap; whatever the user knows is gone
   if (key.endsWith('-top')) return 3
   if (key === 'you-hand') return street === 0 ? 5 : 3
   return 5
 }
 
-function slotCards(key: SlotKey, board: PartialBoard, hand: Card[], oppBoards: PartialBoard[]): Card[] {
+function slotCards(
+  key: SlotKey, board: PartialBoard, hand: Card[], oppBoards: PartialBoard[], dead: Card[] = [],
+): Card[] {
+  if (key === 'dead') return dead
   if (key === 'you-top') return [...board.top]
   if (key === 'you-mid') return [...board.middle]
   if (key === 'you-bot') return [...board.bottom]
@@ -93,6 +97,7 @@ function slotCards(key: SlotKey, board: PartialBoard, hand: Card[], oppBoards: P
 }
 
 function slotLabel(key: SlotKey, playerCount: number): string {
+  if (key === 'dead') return 'Dead'
   if (key === 'you-hand') return 'Hand'
   if (key === 'you-top') return 'Your Top'
   if (key === 'you-mid') return 'Your Mid'
@@ -107,6 +112,7 @@ function orderedSlots(playerCount: number): SlotKey[] {
   for (let i = 0; i < playerCount - 1; i++) {
     slots.push(`opp-${i}-top`, `opp-${i}-mid`, `opp-${i}-bot`)
   }
+  slots.push('dead')
   return slots
 }
 
@@ -116,6 +122,7 @@ interface PositionSnapshot {
   yourBoard: PartialBoard
   yourHand: Card[]
   oppBoards: PartialBoard[]
+  deadCards: Card[]
 }
 
 function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
@@ -133,6 +140,11 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   // still scored pairwise against yours at showdown
   // (docs/01_RULES_AND_SCORING.md section 8), and the engine values that via a
   // sampled board drawn from the matching 13/14/15-card tier.
+  // Cards known to be gone but not visible on any board: your own discards,
+  // cards you saw folded or exposed. The engine removes them from the live
+  // deck (buildLiveDeck), so every rollout draws from the deck you are
+  // actually facing instead of one that still contains them.
+  const [deadCards, setDeadCards] = useState<Card[]>([])
   const [oppBonusTier, setOppBonusTier] = useState<(BonusQualifier | null)[]>([null])
   const oppIsBonus = useMemo(() => oppBonusTier.map(t => t !== null), [oppBonusTier])
   const historyRef = useRef<PositionSnapshot[]>([])
@@ -194,6 +206,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   const used = useMemo<Card[]>(() => {
     const acc: Card[] = []
     acc.push(...yourBoard.top, ...yourBoard.middle, ...yourBoard.bottom, ...yourHand)
+    acc.push(...deadCards)
     // Bonus opponents play a separate game with a fresh deck — their cards are independent
     for (let i = 0; i < oppBoards.length; i++) {
       if (oppIsBonus[i]) continue
@@ -201,10 +214,10 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       acc.push(...b.top, ...b.middle, ...b.bottom)
     }
     return acc
-  }, [yourBoard, yourHand, oppBoards, oppIsBonus])
+  }, [yourBoard, yourHand, oppBoards, oppIsBonus, deadCards])
 
   // Keep refs for snapshot capture
-  const stateRefs = { yourBoard, yourHand, oppBoards }
+  const stateRefs = { yourBoard, yourHand, oppBoards, deadCards }
   const yourBoardRef = useRef(yourBoard)
   // eslint-disable-next-line react-hooks/refs
   yourBoardRef.current = yourBoard
@@ -214,11 +227,17 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   const oppBoardsRef = useRef(oppBoards)
   // eslint-disable-next-line react-hooks/refs
   oppBoardsRef.current = oppBoards
+  const deadCardsRef = useRef(deadCards)
+  // eslint-disable-next-line react-hooks/refs
+  deadCardsRef.current = deadCards
 
   function saveSnapshot() {
     historyRef.current = [
       ...historyRef.current.slice(-9),
-      { yourBoard: yourBoardRef.current, yourHand: yourHandRef.current, oppBoards: oppBoardsRef.current },
+      {
+        yourBoard: yourBoardRef.current, yourHand: yourHandRef.current,
+        oppBoards: oppBoardsRef.current, deadCards: deadCardsRef.current,
+      },
     ]
   }
 
@@ -228,10 +247,12 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setYourBoard(snap.yourBoard)
     setYourHand(snap.yourHand)
     setOppBoards(snap.oppBoards)
+    setDeadCards(snap.deadCards)
   }, [])
 
   function placeInSlot(card: Card, key: SlotKey) {
-    if (key === 'you-top') setYourBoard(b => ({ ...b, top: [...b.top, card] }))
+    if (key === 'dead') setDeadCards(d => [...d, card])
+    else if (key === 'you-top') setYourBoard(b => ({ ...b, top: [...b.top, card] }))
     else if (key === 'you-mid') setYourBoard(b => ({ ...b, middle: [...b.middle, card] }))
     else if (key === 'you-bot') setYourBoard(b => ({ ...b, bottom: [...b.bottom, card] }))
     else if (key === 'you-hand') setYourHand(h => [...h, card])
@@ -247,7 +268,8 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
 
   function removeFromSlot(key: SlotKey, cardIdx: number) {
     saveSnapshot()
-    if (key === 'you-top') setYourBoard(b => ({ ...b, top: b.top.filter((_, i) => i !== cardIdx) }))
+    if (key === 'dead') setDeadCards(d => d.filter((_, i) => i !== cardIdx))
+    else if (key === 'you-top') setYourBoard(b => ({ ...b, top: b.top.filter((_, i) => i !== cardIdx) }))
     else if (key === 'you-mid') setYourBoard(b => ({ ...b, middle: b.middle.filter((_, i) => i !== cardIdx) }))
     else if (key === 'you-bot') setYourBoard(b => ({ ...b, bottom: b.bottom.filter((_, i) => i !== cardIdx) }))
     else if (key === 'you-hand') setYourHand(h => h.filter((_, i) => i !== cardIdx))
@@ -262,7 +284,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   }
 
   function handleCardClick(card: Card) {
-    const cur = slotCards(activeSlot, yourBoard, yourHand, oppBoards)
+    const cur = slotCards(activeSlot, yourBoard, yourHand, oppBoards, deadCards)
     const max = slotMax(activeSlot, street)
     if (cur.length >= max) return
     if (used.some(c => sameCard(c, card))) return
@@ -271,6 +293,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     // Auto-advance when slot fills up (skip bonus opponent slots)
     if (cur.length + 1 >= max) {
       const order = orderedSlots(playerCount).filter(key => {
+        if (key === 'dead') return false // never auto-advance into the dead pile
         if (!key.startsWith('opp-')) return true
         const idx = Number(key.split('-')[1])
         return !oppIsBonus[idx]
@@ -278,7 +301,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       const idx = order.indexOf(activeSlot)
       for (let i = idx + 1; i < order.length; i++) {
         const next = order[i]!
-        const nextCards = slotCards(next, yourBoard, yourHand, oppBoards)
+        const nextCards = slotCards(next, yourBoard, yourHand, oppBoards, deadCards)
         if (nextCards.length < slotMax(next, street)) {
           setActiveSlot(next)
           return
@@ -400,6 +423,10 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       ...(bonusTiers.length > 0
         ? { inBonusRound: true, invisibleBonusOpponents: bonusTiers }
         : {}),
+      // InfoState calls this `discards` because in a real hand the actor's own
+      // discards are the dead cards they know about. Here it carries every
+      // card the user has marked dead; buildLiveDeck simply subtracts it.
+      ...(deadCards.length > 0 ? { discards: deadCards } : {}),
       rules: useVariant ? VARIANT_RULES : CLASSIC_RULES,
     }
     const seed = (Date.now() & 0xffffffff) | 0
@@ -437,6 +464,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setYourHand([])
     setOppBoards(Array.from({ length: playerCount - 1 }, () => ({ top: [], middle: [], bottom: [] })))
     setOppBonusTier(Array.from({ length: playerCount - 1 }, () => null))
+    setDeadCards([])
     setResults([])
     setDoneRollouts(0)
     setActiveSlot('you-hand')
@@ -531,7 +559,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
         <div className="flex flex-wrap gap-1.5">
           <div className="flex gap-1.5 flex-wrap">
             {youSlots.map(key => {
-              const cur = slotCards(key, yourBoard, yourHand, oppBoards)
+              const cur = slotCards(key, yourBoard, yourHand, oppBoards, deadCards)
               const max = slotMax(key, street)
               const isFull = cur.length >= max
               const isActive = activeSlot === key
@@ -554,6 +582,21 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
               )
             })}
           </div>
+          <div className="flex gap-1.5 flex-wrap items-center">
+            <span className="self-center text-gray-700 text-xs">|</span>
+            <button
+              onClick={() => setActiveSlot('dead')}
+              title="Cards you know are gone but that aren't on any visible board — your own discards, cards you saw folded or exposed"
+              className={[
+                'px-2.5 py-1 rounded text-xs font-medium transition-colors tabular-nums',
+                activeSlot === 'dead'
+                  ? 'bg-rose-800 text-white ring-1 ring-rose-500'
+                  : 'bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700',
+              ].join(' ')}
+            >
+              Dead <span className="opacity-60">{deadCards.length}</span>
+            </button>
+          </div>
           {oppSlotGroups.map((group, gi) => (
             <div key={gi} className="flex gap-1.5 flex-wrap items-center">
               <span className="self-center text-gray-700 text-xs">|</span>
@@ -562,7 +605,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
                   {playerCount === 2 ? 'Opp' : `Opp ${gi + 1}`} — bonus game
                 </span>
               ) : group.map(key => {
-                const cur = slotCards(key, yourBoard, yourHand, oppBoards)
+                const cur = slotCards(key, yourBoard, yourHand, oppBoards, deadCards)
                 const max = slotMax(key, street)
                 const isFull = cur.length >= max
                 const isActive = activeSlot === key
@@ -659,6 +702,43 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
             )}
           </div>
         ))}
+
+        <div>
+          <div className="flex items-center gap-2 mb-1.5">
+            <p className="text-[10px] uppercase tracking-widest text-gray-500">Dead cards</p>
+            {deadCards.length > 0 && (
+              <button
+                onClick={() => { saveSnapshot(); setDeadCards([]) }}
+                className="px-2 py-0.5 text-[10px] rounded border border-gray-700 bg-gray-800 text-gray-500 hover:text-gray-300"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <div
+            className={[
+              'flex gap-1 flex-wrap min-h-[34px] items-center rounded-xl border p-2.5 transition-colors',
+              activeSlot === 'dead'
+                ? 'bg-rose-950/30 border-rose-800/60'
+                : 'bg-gray-900/40 border-gray-800',
+            ].join(' ')}
+          >
+            {deadCards.length === 0 ? (
+              <span className="text-[10px] text-gray-600 italic">
+                Removed from the deck the analysis draws from — your discards, or any card you know is gone
+              </span>
+            ) : deadCards.map((c, i) => (
+              <button
+                key={i}
+                onClick={() => removeFromSlot('dead', i)}
+                title="Remove"
+                className={`px-1 py-0.5 text-[11px] rounded bg-gray-800 hover:bg-red-900/40 border border-gray-700 font-medium ${suitColor(c.suit)}`}
+              >
+                {cardLabel(c)}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {errors.length > 0 && (
