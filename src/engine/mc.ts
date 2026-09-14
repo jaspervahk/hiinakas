@@ -1,4 +1,5 @@
-import type { Card, PartialBoard, BonusQualifier } from './types'
+import type { Card, PartialBoard, BonusQualifier, RuleSet } from './types'
+import { CLASSIC_RULES } from './types'
 import { FULL_DECK } from './deck'
 import { scoreTable, scorePair } from './scoring'
 import { bonusGameValue } from './rules'
@@ -50,6 +51,10 @@ export interface InfoState {
   // opponents can't be simulated live, rollout() values each one by scoring
   // against a realistic precomputed sample board (bonusOpponentSamples.ts).
   readonly invisibleBonusOpponents?: readonly BonusQualifier[]
+  // Which ruleset this decision is played under. Omitted means CLASSIC_RULES,
+  // so every existing caller is unchanged. Plain data, so it crosses the
+  // worker boundary with the rest of the info set.
+  readonly rules?: RuleSet
 }
 
 // ── Scored placement (result of MC evaluation) ────────────────────────────
@@ -132,10 +137,28 @@ function rollout(
   const pick = activePolicy ?? ((b, h, s, opp) => heuristicPlacement(b, h, s, opp))
 
   const cardsPerStreet = (s: number) => s === 0 ? 5 : 3
+  const cardCount = (b: PartialBoard) => b.top.length + b.middle.length + b.bottom.length
 
-  // Current street: deal to opponents (actor's cards already accounted for in state.hand)
+  // Who has already placed THIS street, inferred from card counts rather than
+  // carried in the info set. Before placing street s a player shows 3+2s cards
+  // (5 after street 0, then 2 more each street); after placing, 5+2s. So an
+  // opponent holding more cards than the actor has already acted.
+  //
+  // Under simultaneous rules every player places at once, so opponents are
+  // always exactly level with the actor and this is uniformly false — the
+  // behaviour below is then bit-identical to before. Under sequential rules
+  // (placementOrder: 'sequential', players acting in order from the left of
+  // the dealer) the opponents seated before the actor have already committed
+  // their cards for the street, and those cards are already on the revealed
+  // board. Dealing them a second hand would both double-count their progress
+  // and consume cards from the live deck that are still available.
+  const actorCardsBefore = cardCount(state.board)
+  const actedAlready: boolean[] = oppBrds.map(b => cardCount(b) > actorCardsBefore)
+
+  // Current street: deal only to opponents still to act.
   const curN = cardsPerStreet(state.street)
   for (let i = 0; i < oppBrds.length; i++) {
+    if (actedAlready[i]) continue // their street-s cards are already on the board
     if (boardIsFull(oppBrds[i]!)) continue // already fully resolved — nothing left to simulate
     const oppHand = shuffledLiveDeck.slice(di, di + curN)
     di += curN
@@ -146,8 +169,29 @@ function rollout(
     oppBrds[i] = applyPlacement(oppBrds[i]!, pl)
   }
 
-  // Remaining streets
+  // Remaining streets. Seat order persists: an opponent who acted before the
+  // actor this street acts before them on every later street too, and so
+  // decides without seeing the actor's new cards. Opponents who act after keep
+  // seeing the actor's placement first, which is what the simultaneous path
+  // has always done.
+  const placeOpp = (i: number, s: number, n: number): boolean => {
+    if (boardIsFull(oppBrds[i]!)) return true
+    const oppHand = shuffledLiveDeck.slice(di, di + n)
+    di += n
+    if (oppHand.length < n) return false
+    const visibleToOpp = [actorBrd, ...oppBrds.filter((_, j) => j !== i)]
+    const pl = pick(oppBrds[i]!, oppHand, s, visibleToOpp)
+    oppBrds[i] = applyPlacement(oppBrds[i]!, pl)
+    return true
+  }
+
   for (let s = state.street + 1; s <= 4; s++) {
+    // Opponents seated ahead of the actor move first this street.
+    for (let i = 0; i < oppBrds.length; i++) {
+      if (!actedAlready[i]) continue
+      if (!placeOpp(i, s, 3)) return 0
+    }
+
     const actorHand = shuffledLiveDeck.slice(di, di + 3)
     di += 3
     if (actorHand.length < 3) return 0
@@ -155,13 +199,8 @@ function rollout(
     actorBrd = applyPlacement(actorBrd, actorPl)
 
     for (let i = 0; i < oppBrds.length; i++) {
-      if (boardIsFull(oppBrds[i]!)) continue // already fully resolved — nothing left to simulate
-      const oppHand = shuffledLiveDeck.slice(di, di + 3)
-      di += 3
-      if (oppHand.length < 3) return 0
-      const visibleToOpp = [actorBrd, ...oppBrds.filter((_, j) => j !== i)]
-      const pl = pick(oppBrds[i]!, oppHand, s, visibleToOpp)
-      oppBrds[i] = applyPlacement(oppBrds[i]!, pl)
+      if (actedAlready[i]) continue
+      if (!placeOpp(i, s, 3)) return 0
     }
   }
 
@@ -174,8 +213,19 @@ function rollout(
   // opponent's own bonus board correctly instead of assuming a generic one.
   // Suppressed entirely when this decision is already inside a side game —
   // re-triggering is disabled, so a new qualifying top here grants nothing.
-  const addBonusEV = includeBonusEV && !state.inBonusRound
-  let total = (nets[0] ?? 0) + (addBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[]) : 0)
+  // Inside a side game, reaching a qualifying board is worth nothing under
+  // classic rules because re-triggering is disabled. Under allowBonusRecursion
+  // a qualifying side-game board DOES start a further bonus round, so the
+  // value applies there too.
+  //
+  // NOTE: the magnitude still comes from BONUS_NET, which was solved for the
+  // non-recursive game. With recursion the true values are larger (a round can
+  // beget another), so this is directionally right but conservative until the
+  // table is re-solved as a fixed point.
+  const rules = state.rules ?? CLASSIC_RULES
+  const addBonusEV = includeBonusEV && (!state.inBonusRound || rules.allowBonusRecursion)
+  let total = (nets[0] ?? 0)
+    + (addBonusEV ? bonusGameValue(actorBrd as Board, oppBrds as Board[], rules) : 0)
 
   // Invisible bonus-round opponents (side-game info-set hygiene means their
   // boards can't be simulated live) still score against the actor at

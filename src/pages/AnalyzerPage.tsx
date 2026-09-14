@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppPage } from '../App'
 import type { Card, PartialBoard, ScoredPlacement, InfoState, Board, Placement, BonusQualifier } from '../engine/index'
-import { royalties, isFoul } from '../engine/index'
+import { royalties, isFoul, CLASSIC_RULES, VARIANT_RULES } from '../engine/index'
 import { CardPicker } from '../components/CardPicker'
 import { BoardView } from '../components/BoardView'
 import { workerClient, royaltyWorkerClient, MODEL_URLS } from '../worker/client'
@@ -309,11 +309,23 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   }, [used, street, yourBoard, yourHand, oppBoards, oppIsBonus])
 
   const [analyzerPolicy, setAnalyzerPolicy] = useState<BotPolicy>('heuristic')
+  // Which ruleset the position is analyzed under. Classic is v1 Hiinakas;
+  // variant adds the bottom straight-flush bonus trigger, recursive bonus
+  // rounds, and ordered placement within a street.
+  const [useVariant, setUseVariant] = useState(false)
   const [results, setResults] = useState<ScoredPlacement[]>([])
   const [computing, setComputing] = useState(false)
   const [doneRollouts, setDoneRollouts] = useState(0)
   const [noModel, setNoModel] = useState(false)
   const cancelRef = useRef<(() => void) | null>(null)
+
+  function handleRulesChange(variant: boolean) {
+    if (cancelRef.current) { cancelRef.current(); cancelRef.current = null }
+    setUseVariant(variant)
+    setResults([])
+    setDoneRollouts(0)
+    setComputing(false)
+  }
 
   function handlePolicyChange(p: BotPolicy) {
     if (cancelRef.current) { cancelRef.current(); cancelRef.current = null }
@@ -388,6 +400,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       ...(bonusTiers.length > 0
         ? { inBonusRound: true, invisibleBonusOpponents: bonusTiers }
         : {}),
+      rules: useVariant ? VARIANT_RULES : CLASSIC_RULES,
     }
     const seed = (Date.now() & 0xffffffff) | 0
     setResults([])
@@ -468,6 +481,27 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
             ))}
           </div>
         </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-widest text-gray-500">Rules</span>
+          <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
+            {([[false, 'Classic'], [true, 'Variant']] as const).map(([v, lbl]) => (
+              <button
+                key={lbl}
+                onClick={() => handleRulesChange(v)}
+                title={v
+                  ? 'Bottom straight flush or better also deals a 15-card bonus; side games can trigger further bonus rounds; players place in order'
+                  : 'v1 Hiinakas rules'}
+                className={[
+                  'px-3 py-1 transition-colors',
+                  useVariant === v ? 'bg-sky-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200',
+                ].join(' ')}
+              >
+                {lbl}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-widest text-gray-500">Mode</span>
           <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
