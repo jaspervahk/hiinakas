@@ -178,6 +178,45 @@ export const BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>>
   AA_OR_TRIPS: { BASE: 20.44, QQ: 9.19, KK: 4.62,  AA_OR_TRIPS: 0     },
 }
 
+// The same table for the variant ruleset, where a qualifying SIDE GAME starts
+// a further bonus round (allowBonusRecursion). Solved by
+// scripts/compute-variant-bonus-ev.ts.
+//
+// The chain has a closed form rather than needing iteration. A 13-15 card
+// bonus board cannot re-trigger, so a round in which both players hold bonus
+// boards ends it — every tier-vs-tier cell below is therefore IDENTICAL to
+// BONUS_NET. Only the BASE column moves, and writing V for the whole-chain
+// value and x_a := V[a][BASE]:
+//
+//   x_a = R[a][BASE] + SUM_t P(t) * V[BASE][t],  and  V[BASE][t] = -x_t
+//
+// by zero-sum symmetry, which collapses to
+//
+//   x_a = R[a][BASE] - S,   S = M/(1+q),
+//   q = SUM_t P(t) = 0.11033,  M = SUM_t P(t)*R[t][BASE] = 1.7666,  S = 1.591
+//
+// Note the direction: recursion makes triggering a bonus round worth LESS,
+// not more. The follow-up round happens only when the OPPONENT's side game
+// qualifies, which puts them on the bonus board and the actor on the side
+// game — so qualifying now carries retaliation risk.
+//
+// P(t) is the tier distribution of side-game boards played by getBotMove under
+// variant rules (n=3000, se(q)=0.0057), not by heuristicPlacement: the greedy
+// heuristic reaches a qualifying board roughly ten times less often (q=0.0126)
+// because it has no EV term to chase qualification with, and a real opponent
+// plays like the bot. R[a][BASE] is reused from BONUS_NET, which measured it
+// over 3000/1200 trials against heuristic side games; re-measuring it against
+// bot side games (n=600) moved it by at most ~1 standard error (12.52/15.94/
+// 20.71 vs 12.13/16.50/20.44), i.e. it is insensitive to the side-game policy,
+// so the more precise numbers are kept. S itself is robust either way: it
+// varies by 0.001 between the two R sets and by only +/-0.016 across +/-2se
+// of q.
+export const VARIANT_BONUS_NET: Record<BonusQualifier, Record<BonusOppScenario, number>> = {
+  QQ:          { BASE: 10.54, QQ: 0,    KK: -4.34, AA_OR_TRIPS: -9.19 },
+  KK:          { BASE: 14.91, QQ: 4.34, KK: 0,     AA_OR_TRIPS: -4.62 },
+  AA_OR_TRIPS: { BASE: 18.85, QQ: 9.19, KK: 4.62,  AA_OR_TRIPS: 0     },
+}
+
 // Deprecated: the single-opponent ("BASE") net values, kept for callers
 // (royaltyMcts.ts's solitaire-style objective) that don't model opponents.
 export const BONUS_EV_QQ       = BONUS_NET.QQ.BASE
@@ -210,11 +249,14 @@ export function bonusGameValue(
 ): number {
   const q = bonusTrigger(actorBoard, rules)
   if (!q) return 0
-  if (opponentBoards.length === 0) return BONUS_NET[q].BASE
+  // Recursive rulesets are worth less per trigger, not more — see
+  // VARIANT_BONUS_NET above.
+  const table = rules.allowBonusRecursion ? VARIANT_BONUS_NET : BONUS_NET
+  if (opponentBoards.length === 0) return table[q].BASE
   let total = 0
   for (const oppBoard of opponentBoards) {
     const oppQ = bonusTrigger(oppBoard, rules)
-    total += BONUS_NET[q][oppQ ?? 'BASE']
+    total += table[q][oppQ ?? 'BASE']
   }
   return total
 }
