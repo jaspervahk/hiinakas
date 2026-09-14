@@ -129,3 +129,49 @@ describe('heuristicPlacement behavior lock', () => {
     expect(h.toString(16)).toBe('6af05040')
   })
 })
+
+// smallScore counts ranks in a module-level scratch buffer (RANK_COUNTS) so it
+// allocates nothing per call. That is only sound while scoring never
+// interleaves with itself. runMC is a generator and the worker drives two of
+// them concurrently when a newer coach request supersedes an older one
+// (engine.worker.ts awaits between batches), so this pins the property: a
+// generator suspended at a yield must not be able to observe another one's
+// leftover counts.
+describe('scoring is safe against interleaved runMC generators', () => {
+  it('interleaved generators produce the same EVs as sequential ones', async () => {
+    const { runMC } = await import('../mc')
+    const mk = (seed: number) => {
+      const rng = mulberry32(seed)
+      const d = shuffled(rng)
+      return {
+        state: {
+          board: { top: [d[0]!], middle: [d[1]!, d[2]!], bottom: [d[3]!, d[4]!] },
+          hand: [d[5]!, d[6]!, d[7]!],
+          street: 2,
+          revealedOpponentBoards: [{ top: [d[8]!], middle: [d[9]!], bottom: [d[10]!] }],
+        },
+        seed,
+      }
+    }
+    const a = mk(11), b = mk(22)
+    const drain = (s: typeof a) => {
+      let last: unknown[] = []
+      for (const r of runMC(s.state, { totalRollouts: 12, batchSize: 3 }, mulberry32(s.seed))) last = r
+      return last
+    }
+    const seqA = drain(a), seqB = drain(b)
+
+    // Now step both generators in lockstep, alternating between them.
+    const ga = runMC(a.state, { totalRollouts: 12, batchSize: 3 }, mulberry32(a.seed))
+    const gb = runMC(b.state, { totalRollouts: 12, batchSize: 3 }, mulberry32(b.seed))
+    let la: unknown[] = [], lb: unknown[] = []
+    for (;;) {
+      const ra = ga.next(), rb = gb.next()
+      if (!ra.done) la = ra.value
+      if (!rb.done) lb = rb.value
+      if (ra.done && rb.done) break
+    }
+    expect(la).toEqual(seqA)
+    expect(lb).toEqual(seqB)
+  })
+})
