@@ -91,12 +91,19 @@ export default function AnalyzerPage({ onNavigate }: AnalyzerPageProps) {
 type RowKey = 'top' | 'middle' | 'bottom'
 type SlotKey = string
 
-function slotMax(key: SlotKey, street: number): number {
+function slotMax(key: SlotKey, handMax: number): number {
   if (key === 'dead') return 52 // no natural cap; whatever the user knows is gone
   if (key.endsWith('-top')) return 3
-  if (key === 'you-hand') return street === 0 ? 5 : 3
+  if (key === 'you-hand') return handMax
   return 5
 }
+
+// How many cards your board holds BEFORE placing each street: nothing at
+// street 1, then five from the opening and two more per street after. The
+// street is read back out of this rather than chosen by hand — the position
+// already determines it, and letting the two disagree is what used to produce
+// an unanalysable state.
+const BOARD_COUNT_BY_STREET = [0, 5, 7, 9, 11] as const
 
 function slotCards(
   key: SlotKey, board: PartialBoard, hand: Card[], oppBoards: PartialBoard[], dead: Card[] = [],
@@ -142,7 +149,6 @@ interface PositionSnapshot {
 
 function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   const [playerCount, setPlayerCount] = useState<2 | 3>(2)
-  const [street, setStreet] = useState<number>(0)
   const [activeSlot, setActiveSlot] = useState<SlotKey>('you-hand')
   const [yourBoard, setYourBoard] = useState<PartialBoard>({ top: [], middle: [], bottom: [] })
   const [yourHand, setYourHand] = useState<Card[]>([])
@@ -189,7 +195,6 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
           }))
         : [{ top: [], middle: [], bottom: [] }]
     )
-    setStreet(init.street)
   }, [])
 
   function handlePlayerCount(n: 2 | 3) {
@@ -300,7 +305,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
 
   function handleCardClick(card: Card) {
     const cur = slotCards(activeSlot, yourBoard, yourHand, oppBoards, deadCards)
-    const max = slotMax(activeSlot, street)
+    const max = slotMax(activeSlot, handMax)
     if (cur.length >= max) return
     if (used.some(c => sameCard(c, card))) return
     saveSnapshot()
@@ -317,7 +322,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       for (let i = idx + 1; i < order.length; i++) {
         const next = order[i]!
         const nextCards = slotCards(next, yourBoard, yourHand, oppBoards, deadCards)
-        if (nextCards.length < slotMax(next, street)) {
+        if (nextCards.length < slotMax(next, handMax)) {
           setActiveSlot(next)
           return
         }
@@ -325,14 +330,41 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     }
   }
 
+  // ── Street detection ────────────────────────────────────────────────────────
+  const detection = useMemo(() => {
+    const boardCount = yourBoard.top.length + yourBoard.middle.length + yourBoard.bottom.length
+    const overfull = yourBoard.top.length > 3 || yourBoard.middle.length > 5 || yourBoard.bottom.length > 5
+    const street = overfull ? -1 : (BOARD_COUNT_BY_STREET as readonly number[]).indexOf(boardCount)
+    const handMax = boardCount === 0 ? 5 : 3
+    if (street === -1) {
+      return {
+        street: null, handMax, boardCount,
+        problem: overfull
+          ? 'A row is over its limit, so this board can never be reached.'
+          : `A board of ${boardCount} card${boardCount === 1 ? '' : 's'} isn't reachable at any street — you place 5 to open, then 2 per street, so it should hold 0, 5, 7, 9 or 11 before acting.`,
+      }
+    }
+    const need = street === 0 ? 5 : 3
+    if (yourHand.length === 0) {
+      return { street, handMax, boardCount, pending: `Street ${street + 1} detected — deal ${need} cards to analyse.` }
+    }
+    if (yourHand.length !== need) {
+      return {
+        street, handMax, boardCount,
+        pending: `Street ${street + 1} deals ${need} cards — ${yourHand.length} entered.`,
+      }
+    }
+    return { street, handMax, boardCount, ready: `Street ${street + 1}` }
+  }, [yourBoard, yourHand])
+
+  const street = detection.street ?? 0
+  const handMax = detection.handMax
+
   // ── Validation ──────────────────────────────────────────────────────────────
   const errors = useMemo(() => {
     const errs: string[] = []
     const keys = used.map(c => `${c.rank}${c.suit}`)
     if (new Set(keys).size !== keys.length) errs.push('Duplicate cards detected.')
-    const handReq = street === 0 ? 5 : 3
-    if (yourHand.length !== 0 && yourHand.length !== handReq)
-      errs.push(`Hand for street ${street + 1} should be ${handReq} cards (or empty).`)
     if (yourBoard.top.length > 3) errs.push('Your top row exceeds 3.')
     if (yourBoard.middle.length > 5) errs.push('Your middle row exceeds 5.')
     if (yourBoard.bottom.length > 5) errs.push('Your bottom row exceeds 5.')
@@ -344,7 +376,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       if (b.bottom.length > 5) errs.push(`Opp ${i + 1} bottom exceeds 5.`)
     }
     return errs
-  }, [used, street, yourBoard, yourHand, oppBoards, oppIsBonus])
+  }, [used, yourBoard, oppBoards, oppIsBonus])
 
   const [analyzerPolicy, setAnalyzerPolicy] = useState<BotPolicy>('heuristic')
   // Which ruleset the position is analyzed under. Classic is v1 Hiinakas;
@@ -419,6 +451,10 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   }
 
   async function analyze() {
+    // detection.ready means the board maps to a real street AND the hand holds
+    // the right number of cards for it; without both, there is no position to
+    // analyse and the engine would be handed an unreachable one.
+    if (detection.street === null || !detection.ready) return
     if (yourHand.length === 0 || errors.length > 0) return
     if (cancelRef.current) cancelRef.current()
     setNoModel(false)
@@ -543,7 +579,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   }, [results, yourHand, lineAssign])
 
   const bestEV = results[0]?.ev ?? 0
-  const canAnalyze = errors.length === 0 && yourHand.length > 0
+  const canAnalyze = errors.length === 0 && yourHand.length > 0 && !!detection.ready
   const slots = orderedSlots(playerCount)
 
   // Group slots for display
@@ -572,13 +608,18 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-widest text-gray-500">Street</span>
-          <div className="flex gap-1">
-            {[0, 1, 2, 3, 4].map(s => (
-              <button key={s} onClick={() => setStreet(s)}
-                className={`px-3 py-1 text-xs rounded ${street === s ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-                {s + 1}
-              </button>
-            ))}
+          <div
+            title="Worked out from the position: your board holds 0, 5, 7, 9 or 11 cards before you act"
+            className={[
+              'px-3 py-1 text-xs rounded border tabular-nums',
+              detection.street === null
+                ? 'bg-red-950/40 text-red-300 border-red-800/60'
+                : detection.ready
+                  ? 'bg-indigo-950/40 text-indigo-300 border-indigo-800/60'
+                  : 'bg-gray-800 text-gray-400 border-gray-700',
+            ].join(' ')}
+          >
+            {detection.street === null ? 'unreachable' : `${detection.street + 1} of 5`}
           </div>
         </div>
         <div className="flex flex-col gap-1">
@@ -632,7 +673,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
           <div className="flex gap-1.5 flex-wrap">
             {youSlots.map(key => {
               const cur = slotCards(key, yourBoard, yourHand, oppBoards, deadCards)
-              const max = slotMax(key, street)
+              const max = slotMax(key, handMax)
               const isFull = cur.length >= max
               const isActive = activeSlot === key
               return (
@@ -678,7 +719,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
                 </span>
               ) : group.map(key => {
                 const cur = slotCards(key, yourBoard, yourHand, oppBoards, deadCards)
-                const max = slotMax(key, street)
+                const max = slotMax(key, handMax)
                 const isFull = cur.length >= max
                 const isActive = activeSlot === key
                 return (
@@ -724,7 +765,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
             { key: 'you-top', label: 'Top', cards: [...yourBoard.top], max: 3 },
             { key: 'you-mid', label: 'Mid', cards: [...yourBoard.middle], max: 5 },
             { key: 'you-bot', label: 'Bot', cards: [...yourBoard.bottom], max: 5 },
-            { key: 'you-hand', label: 'Hand', cards: yourHand, max: slotMax('you-hand', street) },
+            { key: 'you-hand', label: 'Hand', cards: yourHand, max: slotMax('you-hand', handMax) },
           ]}
           activeSlot={activeSlot}
           onRemove={removeFromSlot}
@@ -812,6 +853,17 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
           </div>
         </div>
       </div>
+
+      {errors.length === 0 && (detection.street === null || detection.pending) && (
+        <div className={[
+          'rounded-xl border p-3 text-xs',
+          detection.street === null
+            ? 'border-red-800/60 bg-red-950/30 text-red-300'
+            : 'border-gray-800 bg-gray-900/40 text-gray-400',
+        ].join(' ')}>
+          {detection.problem ?? detection.pending}
+        </div>
+      )}
 
       {errors.length > 0 && (
         <div className="rounded-xl border border-red-800/60 bg-red-950/30 p-3">
