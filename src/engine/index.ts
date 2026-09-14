@@ -1,7 +1,7 @@
 // Engine public boundary — the UI and worker import only from here.
 
-export type { Card, Rank, Suit, HandRank, Board, PartialBoard, BonusQualifier, PairResult } from './types'
-export { HandCategory } from './types'
+export type { Card, Rank, Suit, HandRank, Board, PartialBoard, BonusQualifier, PairResult, RuleSet } from './types'
+export { HandCategory, CLASSIC_RULES, VARIANT_RULES } from './types'
 
 export { Deck, FULL_DECK, RANKS, SUITS, parseCard, parseCards } from './deck'
 export { evaluate3, evaluate5, compareHandRank } from './evaluate'

@@ -1,5 +1,6 @@
 import { HandCategory } from './types'
-import type { Board, BonusQualifier, Card, HandRank } from './types'
+import type { Board, BonusQualifier, Card, HandRank, RuleSet } from './types'
+import { CLASSIC_RULES } from './types'
 import { evaluate3, evaluate5, compareHandRank } from './evaluate'
 import { fastEval3, fastEval5, fastRoyalties, cmpRank } from './fastEvaluate'
 
@@ -100,16 +101,27 @@ export function royalties(board: Board): number {
 // ── Bonus round ────────────────────────────────────────────────────────────
 
 // Returns the bonus qualifier for a non-bust board's top row, or null.
-export function bonusTrigger(board: Board): BonusQualifier | null {
+export function bonusTrigger(board: Board, rules: RuleSet = CLASSIC_RULES): BonusQualifier | null {
   let top: HandRank
+  let bot: HandRank | null = null
   if (isCompleteBoard(board)) {
     const ranks = rankRows(board)
     if (cmpRank(ranks.top, ranks.mid) > 0 || cmpRank(ranks.mid, ranks.bot) > 0) return null
     top = ranks.top
+    bot = ranks.bot
   } else {
     if (isFoul(board)) return null
     top = evaluate3(board.top)
   }
+
+  // Bottom straight flush or better deals 15 — the largest tier there is — so
+  // when it applies it wins outright and the top row needn't be consulted.
+  // (Royal flush sorts above straight flush, so >= covers both.)
+  if (rules.bonusFromBottomStraightFlush) {
+    const bottom = bot ?? evaluate5(board.bottom)
+    if (bottom.category >= HandCategory.StraightFlush) return 'AA_OR_TRIPS'
+  }
+
   if (top.category === HandCategory.Trips) return 'AA_OR_TRIPS'
   if (top.category === HandCategory.OnePair) {
     const pairRank = top.tiebreakers[0]!
@@ -191,13 +203,17 @@ export const BONUS_EV_AA_TRIPS = BONUS_NET.AA_OR_TRIPS.BASE
 // inconsistent in sign and small relative to the ~14-22 point scale of
 // BASE itself, i.e. not distinguishable from sampling noise. Both scenarios
 // use the same BASE constant; no separate "paired" constant was added.
-export function bonusGameValue(actorBoard: Board, opponentBoards: readonly Board[] = []): number {
-  const q = bonusTrigger(actorBoard)
+export function bonusGameValue(
+  actorBoard: Board,
+  opponentBoards: readonly Board[] = [],
+  rules: RuleSet = CLASSIC_RULES,
+): number {
+  const q = bonusTrigger(actorBoard, rules)
   if (!q) return 0
   if (opponentBoards.length === 0) return BONUS_NET[q].BASE
   let total = 0
   for (const oppBoard of opponentBoards) {
-    const oppQ = bonusTrigger(oppBoard)
+    const oppQ = bonusTrigger(oppBoard, rules)
     total += BONUS_NET[q][oppQ ?? 'BASE']
   }
   return total
