@@ -14,11 +14,14 @@
 //      game during the bonus round. Side players see each other's partial boards
 //      per turn (like the normal game) but never see bonus players' boards.
 //
-// No bonus-within-bonus recursion: per spec, allowBonusRecursion=false.
-// The bonus round scores boards with scoreTable only; it never re-triggers.
+// Bonus rounds chain when RuleSet.allowBonusRecursion is set: a SIDE-GAME
+// player who qualifies starts another bonus round, while a 13-15 card bonus
+// board never re-triggers. Under CLASSIC_RULES (the default) exactly one round
+// runs, as before.
 
 import { Deck } from './deck'
-import type { Card, PartialBoard, Board } from './types'
+import type { Card, PartialBoard, Board, BonusQualifier, RuleSet } from './types'
+import { CLASSIC_RULES } from './types'
 import { applyPlacement } from './placement'
 import { heuristicPlacement } from './heuristic'
 import { scoreTable } from './scoring'
@@ -55,110 +58,129 @@ export interface TrainSample {
 // bonus boards and return. The bonus boards themselves are never checked for
 // further bonus triggers.
 
-function runBonusRound(
+// Safety cap on chain length. The chain terminates almost surely on its own —
+// each round re-triggers only if a side-game player qualifies, which is well
+// under a 10% event — so this is not the mechanism that ends it, only a guard
+// against a pathological deal or a future rules change making qualification
+// near-certain. Reaching it would be a bug worth knowing about.
+const MAX_BONUS_ROUNDS = 32
+
+function runBonusRounds(
   normalBoards: Board[],
   seed: number,
-): { bonusOutcomes: number[], bonusSamples: TrainSample[] } | null {
-  const qualifiers: Array<[number, ReturnType<typeof bonusTrigger> & string]> = []
-  for (let p = 0; p < normalBoards.length; p++) {
-    const q = bonusTrigger(normalBoards[p]!)
-    if (q !== null) qualifiers.push([p, q])
-  }
-  if (qualifiers.length === 0) return null
+  rules: RuleSet = CLASSIC_RULES,
+): { bonusOutcomes: number[], bonusSamples: TrainSample[], rounds: number } | null {
+  const playerCount = normalBoards.length
+  let entry: (BonusQualifier | null)[] = normalBoards.map(b => bonusTrigger(b, rules))
+  if (entry.every(q => q === null)) return null
 
-  // Fresh deck per rules ("a fresh reshuffled 52-card deck for each bonus round").
-  const bonusSeed = ((seed ^ 0x1B2D3C4E) * 1664525 + 1013904223) >>> 0
-  const bonusDeck = new Deck(bonusSeed)
-  const bonusBoards: (Board | null)[] = new Array(normalBoards.length).fill(null)
+  const totals = new Array<number>(playerCount).fill(0)
+  const perRoundOutcomes: number[][] = []
+  // Samples are held until the chain ends: a decision's label must be the net
+  // from that round ONWARD, since a side-game decision determines both this
+  // round's score and whether another round happens at all.
+  const pending: Array<{ round: number, playerIdx: number, features: Float32Array, street: number }> = []
 
-  // ── Bonus game (qualifying players) ───────────────────────────────────────
-  // Placed all at once: bestBonusBoard finds the royalty-maximising legal 3-5-5.
-  // Training sample: encode the final board as street=4 (complete board),
-  // revealedOppBoards=[] (all bonus boards built simultaneously, none visible),
-  // discards=[] (no discard tracking in a one-shot deal).
-  const qualifierBoards: Map<number, Board> = new Map()
-  for (const [p, qualifier] of qualifiers) {
-    const n = bonusDealCount(qualifier)
-    const cards = bonusDeck.deal(n)
-    const board = bestBonusBoard(cards, n - 13)
-    bonusBoards[p] = board
-    qualifierBoards.set(p, board)
-  }
+  let roundSeed = ((seed ^ 0x1B2D3C4E) * 1664525 + 1013904223) >>> 0
+  let rounds = 0
 
-  // ── Side game (non-qualifying players) ────────────────────────────────────
-  // Side players see each other's partial boards per turn (exactly like the normal
-  // game) but never see bonus players' boards. Simulate all side players together,
-  // street by street, so each decision encodes the correct revealedOppBoards.
-  const sideSizes = [5, 3, 3, 3, 3] as const
-  type SideDecision = { boardAfter: PartialBoard; street: number; discards: Card[]; oppBoards: PartialBoard[] }
-  const sideDecisionsByPlayer: Map<number, SideDecision[]> = new Map()
+  for (let round = 0; round < MAX_BONUS_ROUNDS; round++) {
+    const deck = new Deck(roundSeed)
+    const boards: (Board | null)[] = new Array(playerCount).fill(null)
 
-  const sideIndices: number[] = []
-  for (let p = 0; p < normalBoards.length; p++) {
-    if (bonusBoards[p] === null) sideIndices.push(p)
-  }
-
-  const sideBoards: PartialBoard[] = sideIndices.map(() => ({ top: [], middle: [], bottom: [] }))
-  const sideDiscardLists: Card[][] = sideIndices.map(() => [])
-  for (const p of sideIndices) sideDecisionsByPlayer.set(p, [])
-
-  for (let s = 0; s < sideSizes.length; s++) {
-    // Snapshot every side player's board BEFORE this street's decisions.
-    const snapshots: PartialBoard[] = sideBoards.map(b =>
-      ({ top: [...b.top], middle: [...b.middle], bottom: [...b.bottom] })
-    )
-    // Deal hands and decide simultaneously, using the pre-street snapshots.
-    for (let i = 0; i < sideIndices.length; i++) {
-      const p = sideIndices[i]!
-      const hand = bonusDeck.deal(sideSizes[s]!)
-      const oppBoards = snapshots.filter((_, j) => j !== i)
-      const pl = heuristicPlacement(snapshots[i]!, hand, s, oppBoards)
-      const boardAfter = applyPlacement(snapshots[i]!, pl)
-      const disc = sideDiscardLists[i]!
-      const allDiscards = pl.discard ? [...disc, pl.discard] : [...disc]
-
-      sideDecisionsByPlayer.get(p)!.push({ boardAfter, street: s, discards: allDiscards, oppBoards })
-
-      if (pl.discard) disc.push(pl.discard)
-      sideBoards[i] = boardAfter
+    // ── Bonus game (qualifying players) ─────────────────────────────────────
+    // Placed all at once: bestBonusBoard finds the royalty-maximising legal 3-5-5.
+    const qualifierIdx: number[] = []
+    for (let p = 0; p < playerCount; p++) {
+      const q = entry[p]
+      if (!q) continue
+      const n = bonusDealCount(q)
+      if (deck.remaining < n) break // degenerate deal — stop the chain rather than throw
+      boards[p] = bestBonusBoard(deck.deal(n), n - 13)
+      qualifierIdx.push(p)
     }
-  }
 
-  for (let i = 0; i < sideIndices.length; i++) {
-    bonusBoards[sideIndices[i]!] = sideBoards[i] as Board
-  }
+    // ── Side game (non-qualifying players) ──────────────────────────────────
+    // Side players see each other's partial boards per turn (exactly like the
+    // normal game) but never see bonus players' boards.
+    const sideIndices: number[] = []
+    for (let p = 0; p < playerCount; p++) if (boards[p] === null) sideIndices.push(p)
 
-  // Score the bonus round (no re-triggering: just scoreTable, no bonusTrigger check).
-  const bonusOutcomes = scoreTable(bonusBoards as Board[])
+    const sideSizes = [5, 3, 3, 3, 3] as const
+    if (deck.remaining < sideIndices.length * 17) break // not enough deck left
 
-  // ── Training samples ───────────────────────────────────────────────────────
-  const bonusSamples: TrainSample[] = []
+    const sideBoards: PartialBoard[] = sideIndices.map(() => ({ top: [], middle: [], bottom: [] }))
+    const sideDiscardLists: Card[][] = sideIndices.map(() => [])
+    const sideDecisions: Array<{ playerIdx: number, boardAfter: PartialBoard, street: number, discards: Card[], oppBoards: PartialBoard[] }> = []
 
-  // Bonus game samples: final board at street=4, no opp boards, no discards.
-  // Label = bonus round outcome (what the qualifying player earned in the bonus round).
-  for (const [p, board] of qualifierBoards) {
-    bonusSamples.push({
-      features: encodeBoardState(board as PartialBoard, 4, [], []),
-      outcome: bonusOutcomes[p]!,
-      playerIdx: p,
-      street: 4,
-    })
-  }
+    for (let s = 0; s < sideSizes.length; s++) {
+      const snapshots: PartialBoard[] = sideBoards.map(b =>
+        ({ top: [...b.top], middle: [...b.middle], bottom: [...b.bottom] })
+      )
+      for (let i = 0; i < sideIndices.length; i++) {
+        const hand = deck.deal(sideSizes[s]!)
+        const oppBoards = snapshots.filter((_, j) => j !== i)
+        const pl = heuristicPlacement(snapshots[i]!, hand, s, oppBoards)
+        const boardAfter = applyPlacement(snapshots[i]!, pl)
+        const disc = sideDiscardLists[i]!
+        sideDecisions.push({
+          playerIdx: sideIndices[i]!,
+          boardAfter,
+          street: s,
+          discards: pl.discard ? [...disc, pl.discard] : [...disc],
+          oppBoards,
+        })
+        if (pl.discard) disc.push(pl.discard)
+        sideBoards[i] = boardAfter
+      }
+    }
+    for (let i = 0; i < sideIndices.length; i++) boards[sideIndices[i]!] = sideBoards[i] as Board
 
-  // Side game samples: each street decision with correct per-turn opponent boards.
-  // Label = bonus round outcome for this player (normal round already finished).
-  for (const [p, decisions] of sideDecisionsByPlayer) {
-    for (const d of decisions) {
-      bonusSamples.push({
-        features: encodeBoardState(d.boardAfter, d.street, d.oppBoards, d.discards),
-        outcome: bonusOutcomes[p]!,
-        playerIdx: p,
-        street: d.street,
+    // ── Score this round ────────────────────────────────────────────────────
+    const outcomes = scoreTable(boards as Board[])
+    perRoundOutcomes.push(outcomes)
+    for (let p = 0; p < playerCount; p++) totals[p]! += outcomes[p]!
+    rounds++
+
+    // Bonus-game samples: final board at street=4, no opp boards, no discards
+    // (all bonus boards are built simultaneously and none is visible).
+    for (const p of qualifierIdx) {
+      pending.push({
+        round, playerIdx: p, street: 4,
+        features: encodeBoardState(boards[p] as PartialBoard, 4, [], []),
       })
     }
+    for (const d of sideDecisions) {
+      pending.push({
+        round, playerIdx: d.playerIdx, street: d.street,
+        features: encodeBoardState(d.boardAfter, d.street, d.oppBoards, d.discards),
+      })
+    }
+
+    // ── Does the chain continue? ────────────────────────────────────────────
+    // Only a SIDE-GAME player can re-trigger: a 13-15 card bonus board never
+    // starts another round (docs/01_RULES_AND_SCORING.md section 8, extended
+    // by RuleSet.allowBonusRecursion).
+    if (!rules.allowBonusRecursion) break
+    const next: (BonusQualifier | null)[] = new Array(playerCount).fill(null)
+    let any = false
+    for (const p of sideIndices) {
+      const q = bonusTrigger(boards[p] as Board, rules)
+      if (q) { next[p] = q; any = true }
+    }
+    if (!any) break
+    entry = next
+    roundSeed = ((roundSeed ^ 0x9E3779B9) * 1664525 + 1013904223) >>> 0
   }
 
-  return { bonusOutcomes, bonusSamples }
+  // Label each decision with the net from its own round onward.
+  const bonusSamples: TrainSample[] = pending.map(s => {
+    let outcome = 0
+    for (let k = s.round; k < perRoundOutcomes.length; k++) outcome += perRoundOutcomes[k]![s.playerIdx]!
+    return { features: s.features, outcome, playerIdx: s.playerIdx, street: s.street }
+  })
+
+  return { bonusOutcomes: totals, bonusSamples, rounds }
 }
 
 // ── Main game ────────────────────────────────────────────────────────────────
@@ -169,6 +191,7 @@ export function runGame(
   playerCount: 2 | 3,
   seed: number,
   policy: SimPolicy,
+  rules: RuleSet = CLASSIC_RULES,
 ): { samples: TrainSample[], outcomes: number[] } {
   const deck = new Deck(seed)
   const streetSizes = [5, 3, 3, 3, 3]
@@ -242,7 +265,7 @@ export function runGame(
   const outcomes = scoreTable(boards as Board[])
 
   // Run bonus round and collect bonus training samples.
-  const bonusResult = runBonusRound(boards as Board[], seed)
+  const bonusResult = runBonusRounds(boards as Board[], seed, rules)
   if (bonusResult) {
     // Add bonus round scores to normal round outcomes (the combined total is the training label).
     for (let p = 0; p < playerCount; p++) {

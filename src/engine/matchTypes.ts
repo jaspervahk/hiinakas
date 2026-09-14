@@ -1,7 +1,7 @@
 // Types for bot-vs-bot arena match records.
 // All values are plain/serializable so records can cross the worker boundary.
 
-import type { Card, PartialBoard, Board, HandCategory } from './types'
+import type { Card, PartialBoard, Board, HandCategory, BonusQualifier } from './types'
 import type { Placement } from './placement'
 
 // A bot that can occupy either arena seat. `sims` means MCTS simulations for
@@ -48,14 +48,38 @@ export interface PlayerMatchRecord {
   sideRoyalties?: number
 }
 
+// One player's participation in a single bonus round: either a one-shot
+// 13-15 card board, or the 5-street side game played by non-qualifiers.
+export interface BonusRoundPlayerRecord {
+  qualifier: BonusQualifier | null   // null = played the side game this round
+  cards?: readonly Card[]            // dealt cards, when on a one-shot board
+  streets?: StreetSnap[]             // per-street play, when in the side game
+  board: Board
+  foul: boolean
+  royalties: number                  // 0 if foul
+}
+
+// One round of the bonus chain. Under CLASSIC_RULES there is at most one of
+// these; with allowBonusRecursion a qualifying SIDE-GAME board starts another.
+export interface BonusRoundRecord {
+  round: number                                            // 0-based
+  players: [BonusRoundPlayerRecord, BonusRoundPlayerRecord]
+  score: [number, number]                                  // net for this round alone
+}
+
 // Full record for one match hand (always 2-player, any bot pairing).
 export interface MatchHandRecord {
   idx: number                           // 0-based hand index
   seed: number
   players: [PlayerMatchRecord, PlayerMatchRecord]  // [seat A, seat B]
   normalScore: [number, number]         // net from normal game
-  bonusScore: [number, number]          // net from bonus round (0 if none)
+  bonusScore: [number, number]          // net summed over EVERY bonus round (0 if none)
   totalScore: [number, number]          // combined
   bonusTriggered: boolean               // any player triggered the bonus
-  bonusTriggerPlayer: -1 | 0 | 1 | 2   // which player(s) triggered (-1 = none, 2 = both)
+  bonusTriggerPlayer: -1 | 0 | 1 | 2   // which player(s) triggered the FIRST round (-1 = none, 2 = both)
+  // Every round of the chain, in order. Round 0 is also mirrored onto the
+  // per-player bonus*/side* fields above so existing readers (the Arena replay
+  // and its stats) keep working unchanged; rounds beyond the first appear only
+  // here, and bonusScore is the total across all of them.
+  bonusRounds?: BonusRoundRecord[]
 }

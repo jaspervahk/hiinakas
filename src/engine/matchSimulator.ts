@@ -12,9 +12,13 @@ import { getBotMove } from './mc'
 import type { InfoState } from './mc'
 import { royaltyMctsPickPlacement, royaltyNnMctsPickPlacement } from './royaltyMcts'
 import type { NNModel } from './wasmModel'
-import type { Card, PartialBoard, Board } from './types'
+import type { Card, PartialBoard, Board, BonusQualifier, RuleSet } from './types'
+import { CLASSIC_RULES } from './types'
 import type { Placement } from './placement'
-import type { MatchHandRecord, PlayerMatchRecord, StreetSnap, BotSpec } from './matchTypes'
+import type {
+  MatchHandRecord, PlayerMatchRecord, StreetSnap, BotSpec,
+  BonusRoundRecord, BonusRoundPlayerRecord,
+} from './matchTypes'
 
 function mulberry32(seed: number): () => number {
   let s = seed >>> 0
@@ -58,12 +62,18 @@ function pickPlacement(
   }
 }
 
+// Safety cap on chain length — see simulate.ts. The chain ends on its own
+// because re-triggering needs a side-game player to qualify; this only guards
+// against a pathological deal.
+const MAX_BONUS_ROUNDS = 32
+
 export function runMatchHand(
   idx: number,
   seed: number,
   botA: BotSpec,
   botB: BotSpec,
   models: MatchModels,
+  rules: RuleSet = CLASSIC_RULES,
 ): MatchHandRecord {
   const nnRng  = mulberry32((seed ^ 0x1A2B3C4D) >>> 0)
   const royRng = mulberry32((seed ^ 0x5E6F7A8B) >>> 0)
@@ -137,58 +147,80 @@ export function runMatchHand(
 
   // ── Bonus round ─────────────────────────────────────────────────────────────
 
-  const bonusSeed = ((seed ^ 0x1B2D3C4E) * 1664525 + 1013904223) >>> 0
-  const bonusDeck = new Deck(bonusSeed)
-  const bonusBoards: [Board | null, Board | null] = [null, null]
+  let roundSeed = ((seed ^ 0x1B2D3C4E) * 1664525 + 1013904223) >>> 0
 
-  const qual0 = !rec0.foul && bonusTrigger(finalBoards[0]) !== null
-  const qual1 = !rec1.foul && bonusTrigger(finalBoards[1]) !== null
-  const qualList: (0 | 1)[] = [...(qual0 ? [0 as const] : []), ...(qual1 ? [1 as const] : [])]
-  const sideList: (0 | 1)[] = qualList.length > 0
-    ? ([0, 1] as const).filter(p => !qualList.includes(p))
-    : []
+  const qual0 = !rec0.foul && bonusTrigger(finalBoards[0], rules) !== null
+  const qual1 = !rec1.foul && bonusTrigger(finalBoards[1], rules) !== null
 
-  if (qualList.length > 0) {
-    // Bonus players: exhaustive optimal one-shot placement.
-    for (const p of qualList) {
-      const q = bonusTrigger(finalBoards[p])!
+  const bonusRounds: BonusRoundRecord[] = []
+  let bonusScore: [number, number] = [0, 0]
+
+  // Who enters the next round on a one-shot board. Everyone else plays the
+  // side game. Only a side-game board can re-trigger: a 13-15 card bonus board
+  // never does (docs/01_RULES_AND_SCORING.md section 8, extended by
+  // RuleSet.allowBonusRecursion).
+  let entry: [BonusQualifier | null, BonusQualifier | null] = [
+    qual0 ? bonusTrigger(finalBoards[0], rules) : null,
+    qual1 ? bonusTrigger(finalBoards[1], rules) : null,
+  ]
+
+  for (let round = 0; round < MAX_BONUS_ROUNDS && (entry[0] || entry[1]); round++) {
+    const deck = new Deck(roundSeed)
+    const boards: [Board | null, Board | null] = [null, null]
+    const recs: [BonusRoundPlayerRecord | null, BonusRoundPlayerRecord | null] = [null, null]
+
+    // One-shot boards for this round's qualifiers.
+    for (const p of [0, 1] as const) {
+      const q = entry[p]
+      if (!q) continue
       const n = bonusDealCount(q)
-      const cards = bonusDeck.deal(n)
+      const cards = deck.deal(n)
       const board = bestBonusBoard(cards, n - 13)
-      bonusBoards[p] = board
-      const rec = p === 0 ? rec0 : rec1
-      rec.bonusCards = cards
-      rec.bonusBoard = board
-      rec.bonusFoul = isFoul(board)
-      rec.bonusRoyalties = rec.bonusFoul ? 0 : royalties(board)
+      boards[p] = board
+      const foul = isFoul(board)
+      recs[p] = { qualifier: q, cards, board, foul, royalties: foul ? 0 : royalties(board) }
     }
 
-    // Side game players see each other (no bonus players) and use their policy.
+    // Side game for everyone else. They see each other but never a bonus board.
+    const sideList = ([0, 1] as const).filter(p => entry[p] === null)
+    // The bonus-board players are invisible during play but are still scored
+    // against this side game at showdown. Passing their tiers is NOT optional:
+    // heads-up, a side-game player has no visible opponent at all, so without
+    // this every rollout scores a one-board table, scoreTable's pairwise loop
+    // never runs, and every candidate evaluates to exactly 0 — the bot would
+    // then return an arbitrary first candidate. Mirrors what the live game does
+    // (game/bonusBotResolver.ts).
+    const invisibleBonusOpponents = ([0, 1] as const)
+      .map(p => entry[p])
+      .filter((q): q is BonusQualifier => q !== null)
     if (sideList.length > 0) {
       const sideSizes = [5, 3, 3, 3, 3] as const
       const sideBoards: PartialBoard[] = sideList.map(() => ({ top: [], middle: [], bottom: [] }))
       const sideDisc: Card[][] = sideList.map(() => [])
       const sideSS: StreetSnap[][] = sideList.map(() => [])
 
-      for (let s = 0; s < sideSizes.length; s++) {
+      for (let st = 0; st < sideSizes.length; st++) {
         const snaps = sideBoards.map(b =>
           ({ top: [...b.top], middle: [...b.middle], bottom: [...b.bottom] })
         )
         for (let i = 0; i < sideList.length; i++) {
           const p = sideList[i]!
-          const hand = bonusDeck.deal(sideSizes[s]!)
+          const hand = deck.deal(sideSizes[st]!)
           const info = {
             board: snaps[i]!,
             hand,
-            street: s,
+            street: st,
             revealedOpponentBoards: snaps.filter((_, j) => j !== i),
             discards: sideDisc[i]!,
+            inBonusRound: true,
+            invisibleBonusOpponents,
+            rules,
           }
           const pl = p === 0
             ? pickPlacement(botA, info, nnRng, models)
             : pickPlacement(botB, info, royRng, models)
           sideBoards[i] = applyPlacement(snaps[i]!, pl)
-          sideSS[i]!.push({ hand, placement: pl, boardAfter: sideBoards[i] })
+          sideSS[i]!.push({ hand, placement: pl, boardAfter: sideBoards[i]! })
           if (pl.discard) sideDisc[i]!.push(pl.discard)
         }
       }
@@ -196,23 +228,46 @@ export function runMatchHand(
       for (let i = 0; i < sideList.length; i++) {
         const p = sideList[i]!
         const sb = sideBoards[i] as Board
-        bonusBoards[p] = sb
-        const rec = p === 0 ? rec0 : rec1
-        rec.sideStreets = sideSS[i]!
-        rec.sideBoard = sb
-        rec.sideFoul = isFoul(sb)
-        rec.sideRoyalties = rec.sideFoul ? 0 : royalties(sb)
+        boards[p] = sb
+        const foul = isFoul(sb)
+        recs[p] = { qualifier: null, streets: sideSS[i]!, board: sb, foul, royalties: foul ? 0 : royalties(sb) }
       }
     }
-  }
 
-  let bonusScore: [number, number] = [0, 0]
-  if (qualList.length > 0) {
-    const bScores = scoreTable([
-      bonusBoards[0] ?? finalBoards[0],
-      bonusBoards[1] ?? finalBoards[1],
-    ])
-    bonusScore = [bScores[0]!, bScores[1]!]
+    const nets = scoreTable([boards[0] as Board, boards[1] as Board])
+    const score: [number, number] = [nets[0]!, nets[1]!]
+    bonusScore = [bonusScore[0] + score[0], bonusScore[1] + score[1]]
+    bonusRounds.push({
+      round,
+      players: [recs[0] as BonusRoundPlayerRecord, recs[1] as BonusRoundPlayerRecord],
+      score,
+    })
+
+    // Mirror round 0 onto the flat per-player fields the Arena replay reads.
+    if (round === 0) {
+      for (const p of [0, 1] as const) {
+        const rec = p === 0 ? rec0 : rec1
+        const r = recs[p]!
+        if (r.qualifier) {
+          rec.bonusCards = r.cards
+          rec.bonusBoard = r.board
+          rec.bonusFoul = r.foul
+          rec.bonusRoyalties = r.royalties
+        } else {
+          rec.sideStreets = r.streets
+          rec.sideBoard = r.board
+          rec.sideFoul = r.foul
+          rec.sideRoyalties = r.royalties
+        }
+      }
+    }
+
+    if (!rules.allowBonusRecursion) break
+    entry = [
+      recs[0]!.qualifier === null ? bonusTrigger(boards[0] as Board, rules) : null,
+      recs[1]!.qualifier === null ? bonusTrigger(boards[1] as Board, rules) : null,
+    ]
+    roundSeed = ((roundSeed ^ 0x9E3779B9) * 1664525 + 1013904223) >>> 0
   }
 
   const bonusTriggerPlayer: MatchHandRecord['bonusTriggerPlayer'] =
@@ -225,7 +280,8 @@ export function runMatchHand(
     normalScore: [normalScores[0]!, normalScores[1]!],
     bonusScore,
     totalScore: [normalScores[0]! + bonusScore[0], normalScores[1]! + bonusScore[1]],
-    bonusTriggered: qualList.length > 0,
+    bonusTriggered: bonusRounds.length > 0,
     bonusTriggerPlayer,
+    ...(bonusRounds.length > 0 ? { bonusRounds } : {}),
   }
 }
