@@ -403,6 +403,14 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       }
       return rem
     })
+    // The discard is gone from the deck, not merely off the board. Without
+    // recording it the next street's analysis would deal it back out of the
+    // live deck — and stepping a position forward street by street is the main
+    // way discards accumulate here, so this is where they would go missing.
+    if (pl.discard) {
+      const d = pl.discard
+      setDeadCards(prev => prev.some(c => sameCard(c, d)) ? prev : [...prev, d])
+    }
     if (cancelRef.current) { cancelRef.current(); cancelRef.current = null }
     setResults([])
     setDoneRollouts(0)
