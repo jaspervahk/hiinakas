@@ -30,6 +30,21 @@ function cardLabel(c: Card): string {
 }
 function sameCard(a: Card, b: Card): boolean { return a.rank === b.rank && a.suit === b.suit }
 
+// Row membership is a set, not a sequence: two placements that put the same
+// cards in the same rows are the same line however they were ordered.
+function sameUnordered(a: readonly Card[], b: readonly Card[]): boolean {
+  if (a.length !== b.length) return false
+  const used = new Array<boolean>(b.length).fill(false)
+  for (const c of a) {
+    let found = false
+    for (let i = 0; i < b.length; i++) {
+      if (!used[i] && sameCard(c, b[i]!)) { used[i] = true; found = true; break }
+    }
+    if (!found) return false
+  }
+  return true
+}
+
 export default function AnalyzerPage({ onNavigate }: AnalyzerPageProps) {
   const [tab, setTab] = useState<Tab>('position')
 
@@ -340,6 +355,10 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
   const [computing, setComputing] = useState(false)
   const [doneRollouts, setDoneRollouts] = useState(0)
   const [noModel, setNoModel] = useState(false)
+  // Assignment of each dealt card to a row (or the discard) for the "what
+  // about this line?" lookup below — keyed by index into yourHand.
+  const [lineAssign, setLineAssign] = useState<Record<number, 'top' | 'mid' | 'bot' | 'disc'>>({})
+  const [showAllRows, setShowAllRows] = useState(false)
   const cancelRef = useRef<(() => void) | null>(null)
 
   function handleRulesChange(variant: boolean) {
@@ -348,6 +367,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setResults([])
     setDoneRollouts(0)
     setComputing(false)
+    setLineAssign({})
   }
 
   function handlePolicyChange(p: BotPolicy) {
@@ -357,6 +377,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setDoneRollouts(0)
     setComputing(false)
     setNoModel(false)
+    setLineAssign({})
   }
 
   function applyPlacement(pl: Placement) {
@@ -386,6 +407,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setResults([])
     setDoneRollouts(0)
     setComputing(false)
+    setLineAssign({})
   }
 
   async function analyze() {
@@ -433,6 +455,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setResults([])
     setComputing(true)
     setDoneRollouts(0)
+    setLineAssign({})
     const client = analyzerPolicy === 'royalty' ? royaltyWorkerClient : workerClient
     const totalRollouts = analyzerPolicy === 'royalty' ? 1000 : 2000
     // Heuristic MC streams a batch at a time over one continuous budget, so a
@@ -467,8 +490,49 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setDeadCards([])
     setResults([])
     setDoneRollouts(0)
+    setLineAssign({})
     setActiveSlot('you-hand')
   }
+
+  // The EV of one specific line, however far down the ranking it sits. The
+  // table only lists the best few, but the question a position analyser
+  // actually gets asked is "I was thinking of playing X — how much does it
+  // cost?", and X is usually not in the top 20.
+  //
+  // results holds every legal placement (runMC enumerates legalPlacements), so
+  // a complete legal assignment is always found; NN+MCTS can rank a narrowed
+  // candidate set, which is why 'missing' is reported separately from illegal.
+  const lineLookup = useMemo(() => {
+    if (yourHand.length === 0) return null
+    const top: Card[] = [], mid: Card[] = [], bot: Card[] = []
+    let disc: Card | null = null
+    let assigned = 0
+    yourHand.forEach((c, i) => {
+      const a = lineAssign[i]
+      if (!a) return
+      assigned++
+      if (a === 'top') top.push(c)
+      else if (a === 'mid') mid.push(c)
+      else if (a === 'bot') bot.push(c)
+      else disc = c
+    })
+    if (assigned < yourHand.length) {
+      return { status: 'incomplete' as const, assigned, total: yourHand.length }
+    }
+    if (results.length === 0) return { status: 'noResults' as const }
+    const idx = results.findIndex(sp => {
+      const p = sp.placement
+      const dOk = p.discard == null
+        ? disc == null
+        : disc != null && sameCard(p.discard, disc)
+      return dOk
+        && sameUnordered(p.topAdd, top)
+        && sameUnordered(p.middleAdd, mid)
+        && sameUnordered(p.bottomAdd, bot)
+    })
+    if (idx === -1) return { status: 'missing' as const }
+    return { status: 'found' as const, rank: idx + 1, sp: results[idx]!, total: results.length }
+  }, [results, yourHand, lineAssign])
 
   const bestEV = results[0]?.ev ?? 0
   const canAnalyze = errors.length === 0 && yourHand.length > 0
@@ -789,11 +853,100 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
             <span className={`text-xs uppercase tracking-widest font-semibold ${analyzerPolicy === 'royalty' ? 'text-amber-400' : 'text-gray-300'}`}>
               {analyzerPolicy === 'royalty' ? 'Royalty EV' : 'Ranked EV'}
             </span>
-            <span className="text-[10px] text-gray-500 tabular-nums">
-              {computing ? `${doneRollouts} sims…` : `${doneRollouts} sims`}
-              {yourHand.length > 0 && <span className="ml-2 text-gray-700">· click row to apply</span>}
+            <span className="text-[10px] text-gray-500 tabular-nums flex items-center gap-2">
+              <span>{computing ? `${doneRollouts} sims…` : `${doneRollouts} sims`}</span>
+              {results.length > 20 && (
+                <button
+                  onClick={() => setShowAllRows(v => !v)}
+                  className="px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800 text-gray-400 hover:text-gray-200"
+                >
+                  {showAllRows ? 'Top 20' : `All ${results.length}`}
+                </button>
+              )}
+              {yourHand.length > 0 && <span className="text-gray-700">· click row to apply</span>}
             </span>
           </div>
+          {yourHand.length > 0 && (
+            <div className="mb-3 rounded-lg border border-gray-800 bg-gray-950/40 p-2.5">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[10px] uppercase tracking-widest text-gray-500">Look up a line</span>
+                {Object.keys(lineAssign).length > 0 && (
+                  <button
+                    onClick={() => setLineAssign({})}
+                    className="px-2 py-0.5 text-[10px] rounded border border-gray-700 bg-gray-800 text-gray-500 hover:text-gray-300"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2.5">
+                {yourHand.map((c, i) => (
+                  <div key={i} className="flex items-center gap-1">
+                    <span className={`text-[11px] font-semibold w-6 ${suitColor(c.suit)}`}>{cardLabel(c)}</span>
+                    <div className="flex rounded overflow-hidden border border-gray-700">
+                      {(street === 0
+                        ? ([['top', 'T'], ['mid', 'M'], ['bot', 'B']] as const)
+                        : ([['top', 'T'], ['mid', 'M'], ['bot', 'B'], ['disc', '×']] as const)
+                      ).map(([slot, lbl]) => (
+                        <button
+                          key={slot}
+                          onClick={() => setLineAssign(prev => {
+                            const next = { ...prev }
+                            if (next[i] === slot) delete next[i]
+                            else next[i] = slot
+                            return next
+                          })}
+                          className={[
+                            'px-1.5 py-0.5 text-[10px] font-medium transition-colors',
+                            lineAssign[i] === slot
+                              ? (slot === 'disc' ? 'bg-rose-800 text-white' : 'bg-indigo-700 text-white')
+                              : 'bg-gray-800 text-gray-500 hover:text-gray-300',
+                          ].join(' ')}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {lineLookup && (
+                <div className="mt-2 text-[11px]">
+                  {lineLookup.status === 'incomplete' && (
+                    <span className="text-gray-600">
+                      Assign every card — {lineLookup.assigned}/{lineLookup.total} placed
+                    </span>
+                  )}
+                  {lineLookup.status === 'noResults' && (
+                    <span className="text-gray-600">Run Analyze to price this line.</span>
+                  )}
+                  {lineLookup.status === 'missing' && (
+                    <span className="text-amber-500/80">
+                      Not a legal line here{analyzerPolicy === 'nn' ? ', or outside the candidates NN + MCTS explored' : ''}.
+                    </span>
+                  )}
+                  {lineLookup.status === 'found' && (() => {
+                    const gap = lineLookup.sp.ev - bestEV
+                    return (
+                      <div className="flex items-center gap-3 tabular-nums">
+                        <span className="text-gray-500">
+                          rank <span className="text-gray-300 font-semibold">{lineLookup.rank}</span>
+                          <span className="text-gray-700">/{lineLookup.total}</span>
+                        </span>
+                        <span className={lineLookup.sp.ev > 0 ? 'text-green-400' : lineLookup.sp.ev < 0 ? 'text-red-400' : 'text-gray-300'}>
+                          EV <span className="font-semibold">{lineLookup.sp.ev > 0 ? '+' : ''}{lineLookup.sp.ev.toFixed(2)}</span>
+                        </span>
+                        <span className={gap < -0.005 ? 'text-red-400' : 'text-gray-500'}>
+                          {gap < -0.005 ? `${gap.toFixed(2)} vs best` : 'this is the best line'}
+                        </span>
+                        <span className="text-gray-700">{lineLookup.sp.n} sims</span>
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-[11px]">
               <thead>
@@ -808,7 +961,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
                 </tr>
               </thead>
               <tbody>
-                {results.slice(0, 20).map((sp, i) => {
+                {(showAllRows ? results : results.slice(0, 20)).map((sp, i) => {
                   const gap = sp.ev - bestEV
                   const isRoyalty = analyzerPolicy === 'royalty'
                   const displayEV = isRoyalty ? gap : sp.ev
