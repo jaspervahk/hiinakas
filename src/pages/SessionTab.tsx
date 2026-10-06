@@ -87,7 +87,7 @@ const MANY_PLAYERS = 4
 // ── Collapsible section ───────────────────────────────────────────────────────
 
 function Section({ title, meta, defaultOpen = true, right, children }: {
-  title: string
+  title: ReactNode
   meta?: ReactNode          // shown next to the title, visible while collapsed
   defaultOpen?: boolean
   right?: ReactNode         // controls that belong to the section header
@@ -135,16 +135,37 @@ function BoardMini({ board }: { board: PartialBoard }) {
 
 // ── Running score SVG chart (N players) ──────────────────────────────────────
 
-function RunningChart({ summaries, players, focus }: { summaries: GameSummary[]; players: string[]; focus: string | null }) {
-  const W = 560; const H = 130
-  const PL = 36; const PR = 8; const PT = 16; const PB = 20
+// Above this many visible hands the per-hand dots are omitted: they overlap
+// into noise and cost one SVG node per hand per player.
+const DOT_LIMIT = 150
 
-  const allValues = [0, ...summaries.flatMap(s => players.map(p => s.runs[p] ?? 0))]
+function RunningChart({ summaries, players, focus, from, to, W = 560, H = 130, hidden }: {
+  summaries: GameSummary[]
+  players: string[]
+  focus: string | null
+  // Visible window over hand indices; defaults to the whole session. Points
+  // are indexed 0..N where 0 is the pre-session zero line.
+  from?: number
+  to?: number
+  W?: number
+  H?: number
+  hidden?: Set<string>
+}) {
+  const PL = 36; const PR = 8; const PT = 16; const PB = 20
+  const lo = from ?? 0
+  const hi = to ?? summaries.length
+  const span = Math.max(1, hi - lo)
+
+  const vis = players.filter(p => !hidden?.has(p))
+  // The y-scale follows the visible window, so zooming in actually resolves
+  // detail instead of leaving every line flat against a session-wide range.
+  const windowSummaries = summaries.slice(Math.max(0, lo), hi)
+  const allValues = [0, ...windowSummaries.flatMap(s => vis.map(p => s.runs[p] ?? 0))]
   const yMin = Math.min(...allValues)
   const yMax = Math.max(0, ...allValues)
   const yRange = yMax - yMin || 1
 
-  const toX = (i: number) => PL + (i / summaries.length) * (W - PL - PR)
+  const toX = (i: number) => PL + ((i - lo) / span) * (W - PL - PR)
   const toY = (v: number) => PT + ((yMax - v) / yRange) * (H - PT - PB)
   const zeroY = toY(0)
   const yTicks = [yMin, 0, yMax].filter((v, i, a) => a.indexOf(v) === i && Math.abs(v) > 2)
@@ -166,9 +187,14 @@ function RunningChart({ summaries, players, focus }: { summaries: GameSummary[];
 
       {/* Line per player */}
       {players.map((p, pi) => {
+        if (hidden?.has(p)) return null
         const color = pc(pi)
         const values = [0, ...summaries.map(s => s.runs[p] ?? 0)]
-        const points = values.map((v, i) => `${toX(i)},${toY(v)}`).join(' ')
+        // Only the visible window is emitted, plus one point either side so the
+        // line still enters and leaves the viewport correctly.
+        const a = Math.max(0, Math.floor(lo) - 1)
+        const b = Math.min(values.length, Math.ceil(hi) + 2)
+        const points = values.slice(a, b).map((v, k) => `${toX(a + k)},${toY(v)}`).join(' ')
         // With a focus selected the other lines stay for context but recede,
         // which is the only way eleven overlapping series are readable.
         const faded = focus !== null && focus !== p
@@ -178,32 +204,35 @@ function RunningChart({ summaries, players, focus }: { summaries: GameSummary[];
         )
       })}
 
-      {/* Bust markers */}
-      {summaries.map((s, i) => {
-        const bustPlayers = players.filter(p => s.busts[p])
-        if (bustPlayers.length === 0) return null
-        return bustPlayers.map((p) => {
-          const pIdx = players.indexOf(p)
-          const y = toY(s.runs[p] ?? 0)
-          return <circle key={`${i}-${p}`} cx={toX(i + 1)} cy={y} r="2.5"
-            fill={pc(pIdx).stroke} stroke="#030712" strokeWidth="0.8" />
+      {/* Per-hand markers. Only drawn for the visible window, and only when
+          the window is sparse enough for them to mean anything — a full
+          1400-hand session at eleven players would otherwise mount ~15000
+          circles, which is what made this chart slow. Zooming in brings them
+          back. */}
+      {span <= DOT_LIMIT && windowSummaries.map((s, k) => {
+        const i = Math.max(0, lo) + k
+        return vis.map((p) => {
+          const pi = players.indexOf(p)
+          if (focus !== null && focus !== p) return null
+          const busted = s.busts[p]
+          return (
+            <circle key={`${i}-${p}`} cx={toX(i + 1)} cy={toY(s.runs[p] ?? 0)}
+              r={busted ? 2.5 : 1.5} fill={pc(pi).stroke}
+              stroke={busted ? '#030712' : undefined} strokeWidth={busted ? 0.8 : undefined} />
+          )
         })
       })}
 
-      {/* Regular dots */}
-      {summaries.map((s, i) => {
-        return players.map((p, pi) => {
-          if (s.busts[p]) return null
-          return <circle key={`${i}-${p}`} cx={toX(i + 1)} cy={toY(s.runs[p] ?? 0)} r="1.5" fill={pc(pi).stroke} />
-        })
-      })}
-
-      {/* X-axis labels */}
-      {summaries.map((_, i) => {
-        const n = i + 1
-        if (n !== 1 && n % 5 !== 0 && n !== summaries.length) return null
-        return <text key={i} x={toX(i + 1)} y={H - 4} textAnchor="middle" fontSize="7" fill="#4b5563">{n}</text>
-      })}
+      {/* X-axis labels, stepped so they never collide however far out we are */}
+      {(() => {
+        const step = Math.max(1, Math.ceil(span / 12))
+        const out = []
+        for (let n = Math.max(1, Math.ceil(lo)); n <= hi; n++) {
+          if (n !== 1 && n % step !== 0 && n !== summaries.length) continue
+          out.push(<text key={n} x={toX(n)} y={H - 4} textAnchor="middle" fontSize="7" fill="#4b5563">{n}</text>)
+        }
+        return out
+      })()}
 
       {/* Legend */}
       {players.map((p, pi) => (
@@ -213,6 +242,139 @@ function RunningChart({ summaries, players, focus }: { summaries: GameSummary[];
         </g>
       ))}
     </svg>
+  )
+}
+
+// ── Full-screen chart with pan and zoom ───────────────────────────────────────
+//
+// A 1400-hand session is about 0.4 px per hand in the inline strip, so the
+// detail is simply not there to read. This keeps a window over hand indices
+// and lets the wheel zoom it (around the cursor) and a drag pan it.
+
+function ChartOverlay({ summaries, players, focus, onClose }: {
+  summaries: GameSummary[]
+  players: string[]
+  focus: string | null
+  onClose: () => void
+}) {
+  const N = summaries.length
+  const MIN_SPAN = 5
+  const [view, setView] = useState<{ from: number; to: number }>({ from: 0, to: N })
+  const [hidden, setHidden] = useState<Set<string>>(new Set())
+  const dragRef = useRef<{ x: number; from: number; to: number } | null>(null)
+  const boxRef = useRef<HTMLDivElement | null>(null)
+
+  const span = view.to - view.from
+  const clampView = useCallback((from: number, to: number) => {
+    const s = Math.max(MIN_SPAN, Math.min(N, to - from))
+    const f = Math.max(0, Math.min(N - s, from))
+    return { from: f, to: f + s }
+  }, [N])
+
+  // Zoom about the cursor so the hand under the pointer stays put.
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const box = boxRef.current?.getBoundingClientRect()
+    if (!box) return
+    const frac = Math.max(0, Math.min(1, (e.clientX - box.left) / box.width))
+    const anchorIdx = view.from + frac * span
+    const factor = e.deltaY > 0 ? 1.25 : 0.8
+    const newSpan = Math.max(MIN_SPAN, Math.min(N, span * factor))
+    setView(clampView(anchorIdx - frac * newSpan, anchorIdx - frac * newSpan + newSpan))
+  }, [view, span, N, clampView])
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    dragRef.current = { x: e.clientX, from: view.from, to: view.to }
+    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+  }
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = dragRef.current
+    const box = boxRef.current?.getBoundingClientRect()
+    if (!d || !box) return
+    const shift = ((d.x - e.clientX) / box.width) * (d.to - d.from)
+    setView(clampView(d.from + shift, d.to + shift))
+  }
+  const onPointerUp = () => { dragRef.current = null }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key === '0') setView({ from: 0, to: N })
+      if (e.key === '+' || e.key === '=') setView(v => clampView(v.from, v.from + (v.to - v.from) * 0.8))
+      if (e.key === '-') setView(v => clampView(v.from, v.from + (v.to - v.from) * 1.25))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, N, clampView])
+
+  const zoomPct = Math.round((N / Math.max(1, span)) * 100)
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-950/95 flex flex-col p-4 gap-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-baseline gap-3">
+          <h3 className="text-gray-100 text-sm font-semibold">Running totals</h3>
+          <span className="text-gray-500 text-xs tabular-nums">
+            hands {Math.round(view.from) + 1}–{Math.round(view.to)} of {N} · {zoomPct}%
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 text-xs">
+          <button onClick={() => setView(v => clampView(v.from, v.from + (v.to - v.from) * 1.25))}
+            className="px-2 py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700">−</button>
+          <button onClick={() => setView(v => clampView(v.from, v.from + (v.to - v.from) * 0.8))}
+            className="px-2 py-1 rounded bg-gray-800 text-gray-300 hover:bg-gray-700">+</button>
+          <button onClick={() => setView({ from: 0, to: N })}
+            className="px-2 py-1 rounded bg-gray-800 text-gray-400 hover:bg-gray-700">Reset</button>
+          <button onClick={onClose} className="ml-2 px-2 py-1 rounded bg-gray-800 text-gray-400 hover:bg-gray-700">Close ✕</button>
+        </div>
+      </div>
+
+      {/* Legend doubles as per-player visibility toggles — with eleven series
+          that is the difference between a readable chart and a tangle. */}
+      <div className="flex flex-wrap gap-1.5">
+        {players.map((p, pi) => {
+          const off = hidden.has(p)
+          return (
+            <button key={p}
+              onClick={() => setHidden(h => { const n = new Set(h); if (n.has(p)) n.delete(p); else n.add(p); return n })}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border transition-colors ${
+                off ? 'border-gray-800 text-gray-600' : `border-gray-700 ${pc(pi).text}`
+              }`}
+            >
+              <span className="inline-block w-2 h-2 rounded-full"
+                style={{ background: off ? '#374151' : pc(pi).stroke }} />
+              {p}
+            </button>
+          )
+        })}
+        {hidden.size > 0 && (
+          <button onClick={() => setHidden(new Set())} className="px-2 py-0.5 text-[11px] text-gray-500 hover:text-gray-300">
+            show all
+          </button>
+        )}
+      </div>
+
+      <div
+        ref={boxRef}
+        onWheel={onWheel}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        className="flex-1 min-h-0 bg-gray-900 rounded-lg overflow-hidden cursor-grab active:cursor-grabbing touch-none"
+      >
+        <RunningChart
+          summaries={summaries} players={players} focus={focus}
+          from={view.from} to={view.to} W={1400} H={620} hidden={hidden}
+        />
+      </div>
+
+      <p className="text-[10px] text-gray-600">
+        Scroll to zoom · drag to pan · <span className="text-gray-500">+</span> / <span className="text-gray-500">−</span> zoom ·
+        <span className="text-gray-500"> 0</span> reset · <span className="text-gray-500">Esc</span> close
+        {span > DOT_LIMIT && <span className="ml-1">· zoom in past {DOT_LIMIT} hands to see per-hand dots</span>}
+      </p>
+    </div>
   )
 }
 
@@ -569,7 +731,7 @@ function BonusCard({ d, result, rank, gameNumber, onJumpToGame }: {
 // ── Summary stat card ─────────────────────────────────────────────────────────
 
 function StatCard({ label, value, sub, color, action }: {
-  label: string; value: string | number; sub?: string; color?: string; action?: ReactNode
+  label: string; value: string | number; sub?: ReactNode; color?: string; action?: ReactNode
 }) {
   return (
     <div className="bg-gray-900 rounded-lg p-3 flex flex-col gap-0.5">
@@ -583,13 +745,32 @@ function StatCard({ label, value, sub, color, action }: {
   )
 }
 
+// Win rate at one table size. Returned separately per size because heads-up
+// and three-handed baselines differ (~50% vs ~33%), so a blended rate mostly
+// reflects which tables someone sat at.
+function sizeRate(t: { games: number; wins: number; ties: number } | undefined) {
+  if (!t || t.games === 0) return null
+  return { ...t, pct: Math.round(100 * t.wins / t.games) }
+}
+
+function SizeRateCell({ t }: { t: { games: number; wins: number; ties: number } | undefined }) {
+  const r = sizeRate(t)
+  if (!r) return <span className="text-gray-700">—</span>
+  return (
+    <span title={`${r.wins} wins, ${r.ties} ties in ${r.games} games`}>
+      <span className="text-gray-300">{r.pct}%</span>
+      <span className="ml-1 text-[10px] text-gray-600">{r.wins}/{r.games}</span>
+    </span>
+  )
+}
+
 // ── Compact player table ──────────────────────────────────────────────────────
 //
 // One row per player instead of one card each. Eleven cards in a four-column
 // grid is three rows of boxes you have to read individually; this is scannable
 // and sortable, and it keeps the per-player actions reachable.
 
-type PlayerSort = 'total' | 'name' | 'busts' | 'ev' | 'games'
+type PlayerSort = 'total' | 'name' | 'busts' | 'ev' | 'games' | 'win2' | 'win3'
 
 // Declared at module level: nesting it inside PlayerTable gave it a new
 // component identity on every render.
@@ -611,6 +792,7 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
   stats: {
     finalRuns: Record<string, number>; wins: Record<string, number>; ties: Record<string, number>
     busts: Record<string, number>; bustCost: Record<string, number>; gamesPlayed: Record<string, number>
+    bySize: Record<string, Record<number, { games: number; wins: number; ties: number }>>
   }
   evTotals: Record<string, number> | null
   blunderCounts: Map<string, number>
@@ -628,6 +810,12 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
       if (sort === 'name') return a.localeCompare(b)
       if (sort === 'busts') return (stats.busts[b] ?? 0) - (stats.busts[a] ?? 0)
       if (sort === 'games') return (stats.gamesPlayed[b] ?? 0) - (stats.gamesPlayed[a] ?? 0)
+      if (sort === 'win2' || sort === 'win3') {
+        const size = sort === 'win2' ? 2 : 3
+        // Players with no games at that size sort last rather than as 0%.
+        const rate = (p: string) => sizeRate(stats.bySize[p]?.[size])?.pct ?? -1
+        return rate(b) - rate(a)
+      }
       if (sort === 'ev') return (evTotals?.[b] ?? 0) - (evTotals?.[a] ?? 0)
       return (stats.finalRuns[b] ?? 0) - (stats.finalRuns[a] ?? 0)
     })
@@ -642,7 +830,8 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
             <SortTh k="name" label="Player" align="left" sort={sort} setSort={setSort} />
             <SortTh k="games" label="Games" sort={sort} setSort={setSort} />
             <SortTh k="total" label="Total" sort={sort} setSort={setSort} />
-            <th className="py-1.5 px-2 font-normal text-right">W / T</th>
+            <SortTh k="win2" label="2p win" sort={sort} setSort={setSort} />
+            <SortTh k="win3" label="3p win" sort={sort} setSort={setSort} />
             <SortTh k="busts" label="Fouls" sort={sort} setSort={setSort} />
             <th className="py-1.5 px-2 font-normal text-right">Foul cost</th>
             {evTotals && <SortTh k="ev" label="EV lost" sort={sort} setSort={setSort} />}
@@ -667,17 +856,24 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
                     {p}
                   </button>
                 </td>
-                <td className="py-1.5 px-2 text-right tabular-nums text-gray-300">{games}</td>
+                <td className="py-1.5 px-2 text-right tabular-nums text-gray-300 whitespace-nowrap">
+                  {games}
+                  {(() => {
+                    const per = stats.bySize[p] ?? {}
+                    const parts = Object.keys(per).map(Number).sort()
+                      .filter(sz => (per[sz]?.games ?? 0) > 0)
+                    if (parts.length < 2) return null
+                    return <span className="ml-1 text-[10px] text-gray-600">({parts.map(sz => `${sz}p ${per[sz]!.games}`).join(' · ')})</span>
+                  })()}
+                </td>
                 <td className={`py-1.5 px-2 text-right tabular-nums font-semibold ${run >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                   {run > 0 ? '+' : ''}{run}
                 </td>
-                <td className="py-1.5 px-2 text-right tabular-nums text-gray-400">
-                  {stats.wins[p] ?? 0}{(stats.ties[p] ?? 0) > 0 ? ` / ${stats.ties[p]}` : ''}
-                  {games > 0 && (
-                    <span className="ml-1 text-[10px] text-gray-600">
-                      ({Math.round(100 * (stats.wins[p] ?? 0) / games)}%)
-                    </span>
-                  )}
+                <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">
+                  <SizeRateCell t={stats.bySize[p]?.[2]} />
+                </td>
+                <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap">
+                  <SizeRateCell t={stats.bySize[p]?.[3]} />
                 </td>
                 <td className="py-1.5 px-2 text-right tabular-nums text-gray-400">{stats.busts[p] ?? 0}</td>
                 <td className="py-1.5 px-2 text-right tabular-nums text-red-400/80">
@@ -885,6 +1081,7 @@ function SessionTabInner() {
   const [selectedGame, setSelectedGame] = useState<string | null>(null)
   const [focusPlayer, setFocusPlayer] = useState<string | null>(null)
   const [logPage, setLogPage] = useState(0)
+  const [chartFullscreen, setChartFullscreen] = useState(false)
   const [bonusAnalyzing, setBonusAnalyzing] = useState(false)
   const [bonusAnalyzeProgress, setBonusAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
   const [bonusAnalyzed, setBonusAnalyzed] = useState<Map<string, BonusAnalysisResult>>(new Map())
@@ -1419,7 +1616,17 @@ function SessionTabInner() {
               <StatCard key={p}
                 label={`${p} total`}
                 value={`${run > 0 ? '+' : ''}${run}`}
-                sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.busts[p] ?? 0} busts · ${stats.gamesPlayed[p] ?? 0} games`}
+                sub={
+                  <span className="flex flex-col gap-0.5">
+                    <span>{stats.gamesPlayed[p] ?? 0} games · {stats.ties[p] ?? 0} ties · {stats.busts[p] ?? 0} busts</span>
+                    <span className="text-[10px] text-gray-600">
+                      {[2, 3].map(sz => {
+                        const r = sizeRate(stats.bySize[p]?.[sz])
+                        return r ? `${sz}p ${r.wins}/${r.games} (${r.pct}%)` : null
+                      }).filter(Boolean).join(' · ') || 'no completed games'}
+                    </span>
+                  </span>
+                }
                 color={run >= 0 ? pc(pi).text : 'text-red-400'}
                 action={
                   <span className="flex items-center gap-2">
@@ -1477,7 +1684,17 @@ function SessionTabInner() {
 
       {/* Running chart */}
       {summaries.length > 0 && (
-        <Section title="Running totals" meta={`· ${summaries.length} hands`} defaultOpen={!big}>
+        <Section
+          title="Running totals"
+          meta={`· ${summaries.length} hands`}
+          defaultOpen={!big}
+          right={
+            <button onClick={() => setChartFullscreen(true)}
+              className="text-indigo-400 hover:text-indigo-300 text-xs">
+              Expand ⤢
+            </button>
+          }
+        >
           <div className="bg-gray-900 rounded-lg p-3">
             <RunningChart summaries={summaries} players={players} focus={focusPlayer} />
             <p className="text-[10px] text-gray-600 mt-1">
@@ -1650,12 +1867,11 @@ function SessionTabInner() {
 
       {/* Bonus rounds — the one-shot 13/14/15-card board, solved exhaustively */}
       {bonusDecisions.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-gray-300 text-sm font-medium">
-              Bonus Rounds
-              <span className="ml-2 text-gray-600 text-xs font-normal">· {bonusDecisions.length} boards</span>
-            </h3>
+        <Section
+          title="Bonus Rounds"
+          meta={`· ${bonusDecisions.length} boards`}
+          defaultOpen={false}
+          right={
             <div className="flex items-center gap-2">
               {bonusAnalyzing && bonusAnalyzeProgress && (
                 <span className="text-xs text-gray-400">
@@ -1675,28 +1891,37 @@ function SessionTabInner() {
                 </button>
               )}
             </div>
-          </div>
-
-          <div className={`grid gap-4 ${shown.length === 1 ? 'grid-cols-1' : shown.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+          }
+        >
+          {/* Each player's boards fold independently — one player can easily
+              have dozens, and a dozen players' worth of cards is most of the
+              page otherwise. */}
+          <div className="space-y-2">
             {shown.map((p) => {
               const pi = players.indexOf(p)
               const blist = bonusByPlayer.get(p) ?? []
               if (blist.length === 0) return null
               return (
-                <div key={p} className="space-y-2">
-                  <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — bonus boards</p>
-                  {blist.map((d, i) => (
-                    <BonusCard
-                      key={d.id} d={d} result={bonusAnalyzed.get(d.id)} rank={i + 1}
-                      gameNumber={gameNumberByGameId.get(d.gameId)}
-                      onJumpToGame={() => jumpToGame(d.gameId)}
-                    />
-                  ))}
-                </div>
+                <Section
+                  key={p}
+                  title={<span><span className={pc(pi).text}>{p}</span> — bonus boards</span>}
+                  meta={`· ${blist.length}`}
+                  defaultOpen={shown.length === 1 && blist.length <= 12}
+                >
+                  <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+                    {blist.map((d, i) => (
+                      <BonusCard
+                        key={d.id} d={d} result={bonusAnalyzed.get(d.id)} rank={i + 1}
+                        gameNumber={gameNumberByGameId.get(d.gameId)}
+                        onJumpToGame={() => jumpToGame(d.gameId)}
+                      />
+                    ))}
+                  </div>
+                </Section>
               )
             })}
           </div>
-        </div>
+        </Section>
       )}
 
       {/* Luck analysis */}
@@ -1762,6 +1987,13 @@ function SessionTabInner() {
 
       {showSentChallenges && (
         <SentChallengesList onClose={() => setShowSentChallenges(false)} />
+      )}
+
+      {chartFullscreen && (
+        <ChartOverlay
+          summaries={summaries} players={players} focus={focusPlayer}
+          onClose={() => setChartFullscreen(false)}
+        />
       )}
     </div>
   )

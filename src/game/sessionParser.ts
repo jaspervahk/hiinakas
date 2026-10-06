@@ -470,7 +470,16 @@ export interface SessionStats {
   // players can have very different denominators, and a raw win count means
   // nothing without it.
   gamesPlayed: Record<string, number>
+  // Wins/ties/games split by how many players were at the table that hand.
+  // A combined win rate mixes incomparable things: heads-up the baseline is
+  // ~50%, three-handed it is ~33%, so one blended number tells you more about
+  // which tables a player sat at than about how well they played.
+  // Keyed player -> table size, so an unexpected table size is counted rather
+  // than silently folded into 2- or 3-handed.
+  bySize: Record<string, Record<number, PerSizeTally>>
 }
+
+export interface PerSizeTally { games: number; wins: number; ties: number }
 
 // Aggregates wins/ties/busts across a session's hands, scoped per player so a
 // player who didn't participate in a hand never has it counted toward their
@@ -488,7 +497,15 @@ export function computeSessionStats(summaries: GameSummary[], allPlayers: string
   const bustCost: Record<string, number> = {}
   const allBustCount: Record<string, number> = {}
   const gamesPlayed: Record<string, number> = {}
-  for (const n of allPlayers) { wins[n] = 0; ties[n] = 0; busts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0; gamesPlayed[n] = 0 }
+  const bySize: Record<string, Record<number, PerSizeTally>> = {}
+  for (const n of allPlayers) {
+    wins[n] = 0; ties[n] = 0; busts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0; gamesPlayed[n] = 0
+    bySize[n] = {}
+  }
+  const tally = (p: string, size: number): PerSizeTally => {
+    const per = bySize[p] ?? (bySize[p] = {})
+    return per[size] ?? (per[size] = { games: 0, wins: 0, ties: 0 })
+  }
   let allBustHands = 0
 
   for (const s of summaries) {
@@ -496,7 +513,11 @@ export function computeSessionStats(summaries: GameSummary[], allPlayers: string
     const bustCount = gamePlayers.filter(p => s.busts[p]).length
     const isAllBustHand = bustCount === gamePlayers.length
 
-    for (const p of gamePlayers) gamesPlayed[p] = (gamesPlayed[p] ?? 0) + 1
+    const tableSize = gamePlayers.length
+    for (const p of gamePlayers) {
+      gamesPlayed[p] = (gamesPlayed[p] ?? 0) + 1
+      tally(p, tableSize).games++
+    }
 
     for (const p of gamePlayers) {
       if (s.busts[p]) {
@@ -516,11 +537,12 @@ export function computeSessionStats(summaries: GameSummary[], allPlayers: string
     const winners = gamePlayers.filter(p => (s.points[p] ?? 0) === maxScore)
     if (winners.length === 1) {
       wins[winners[0]!] = (wins[winners[0]!] ?? 0) + 1
+      tally(winners[0]!, tableSize).wins++
     } else {
-      for (const p of winners) ties[p] = (ties[p] ?? 0) + 1
+      for (const p of winners) { ties[p] = (ties[p] ?? 0) + 1; tally(p, tableSize).ties++ }
     }
   }
 
   const finalRuns = summaries.length > 0 ? summaries.at(-1)!.runs : {}
-  return { wins, ties, busts, bustCost, allBustHands, allBustCount, finalRuns, gamesPlayed }
+  return { wins, ties, busts, bustCost, allBustHands, allBustCount, finalRuns, gamesPlayed, bySize }
 }

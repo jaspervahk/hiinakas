@@ -119,6 +119,32 @@ describe('computeSessionStats', () => {
     expect(stats.ties.A).toBe(0)
   })
 
+  it('splits wins, ties and games by table size', () => {
+    const summaries = [
+      // heads-up: A wins, B loses
+      summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 3, B: -3 }, busts: { A: false, B: false } }),
+      // heads-up: tie
+      summary({ gameId: 'g2', playerNames: ['A', 'B'], points: { A: 0, B: 0 }, busts: { A: false, B: false } }),
+      // three-handed: C wins
+      summary({ gameId: 'g3', playerNames: ['A', 'B', 'C'], points: { A: -1, B: -1, C: 2 }, busts: { A: false, B: false, C: false } }),
+    ]
+    const stats = computeSessionStats(summaries, ['A', 'B', 'C'])
+    expect(stats.bySize.A![2]).toEqual({ games: 2, wins: 1, ties: 1 })
+    expect(stats.bySize.A![3]).toEqual({ games: 1, wins: 0, ties: 0 })
+    expect(stats.bySize.C![2]).toBeUndefined()        // never played heads-up
+    expect(stats.bySize.C![3]).toEqual({ games: 1, wins: 1, ties: 0 })
+    // the per-size games must add up to the overall count
+    expect(stats.gamesPlayed.A).toBe(stats.bySize.A![2]!.games + stats.bySize.A![3]!.games)
+  })
+
+  it('counts an all-bust hand in per-size games but not per-size wins', () => {
+    const summaries = [
+      summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 0, B: 0 }, busts: { A: true, B: true } }),
+    ]
+    const stats = computeSessionStats(summaries, ['A', 'B'])
+    expect(stats.bySize.A![2]).toEqual({ games: 1, wins: 0, ties: 0 })
+  })
+
   it('leaves a player who played nothing at zero rather than undefined', () => {
     const summaries = [
       summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 1, B: -1 }, busts: { A: false, B: false } }),
