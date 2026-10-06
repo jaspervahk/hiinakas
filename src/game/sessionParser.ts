@@ -465,6 +465,11 @@ export interface SessionStats {
   allBustHands: number
   allBustCount: Record<string, number>
   finalRuns: Record<string, number>
+  // Hands this player actually took part in. NOT summaries.length: each hand
+  // carries its own playerNames, so when the group changes mid-session two
+  // players can have very different denominators, and a raw win count means
+  // nothing without it.
+  gamesPlayed: Record<string, number>
 }
 
 // Aggregates wins/ties/busts across a session's hands, scoped per player so a
@@ -482,13 +487,16 @@ export function computeSessionStats(summaries: GameSummary[], allPlayers: string
   const busts: Record<string, number> = {}
   const bustCost: Record<string, number> = {}
   const allBustCount: Record<string, number> = {}
-  for (const n of allPlayers) { wins[n] = 0; ties[n] = 0; busts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0 }
+  const gamesPlayed: Record<string, number> = {}
+  for (const n of allPlayers) { wins[n] = 0; ties[n] = 0; busts[n] = 0; bustCost[n] = 0; allBustCount[n] = 0; gamesPlayed[n] = 0 }
   let allBustHands = 0
 
   for (const s of summaries) {
     const gamePlayers = s.playerNames.length > 0 ? s.playerNames : allPlayers
     const bustCount = gamePlayers.filter(p => s.busts[p]).length
     const isAllBustHand = bustCount === gamePlayers.length
+
+    for (const p of gamePlayers) gamesPlayed[p] = (gamesPlayed[p] ?? 0) + 1
 
     for (const p of gamePlayers) {
       if (s.busts[p]) {
@@ -514,5 +522,5 @@ export function computeSessionStats(summaries: GameSummary[], allPlayers: string
   }
 
   const finalRuns = summaries.length > 0 ? summaries.at(-1)!.runs : {}
-  return { wins, ties, busts, bustCost, allBustHands, allBustCount, finalRuns }
+  return { wins, ties, busts, bustCost, allBustHands, allBustCount, finalRuns, gamesPlayed }
 }

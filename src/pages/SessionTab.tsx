@@ -589,7 +589,7 @@ function StatCard({ label, value, sub, color, action }: {
 // grid is three rows of boxes you have to read individually; this is scannable
 // and sortable, and it keeps the per-player actions reachable.
 
-type PlayerSort = 'total' | 'name' | 'busts' | 'ev'
+type PlayerSort = 'total' | 'name' | 'busts' | 'ev' | 'games'
 
 // Declared at module level: nesting it inside PlayerTable gave it a new
 // component identity on every render.
@@ -608,7 +608,10 @@ function SortTh({ k, label, align = 'right', sort, setSort }: {
 
 function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus, onSimulate, onChallenge }: {
   players: string[]
-  stats: { finalRuns: Record<string, number>; wins: Record<string, number>; ties: Record<string, number>; busts: Record<string, number>; bustCost: Record<string, number> }
+  stats: {
+    finalRuns: Record<string, number>; wins: Record<string, number>; ties: Record<string, number>
+    busts: Record<string, number>; bustCost: Record<string, number>; gamesPlayed: Record<string, number>
+  }
   evTotals: Record<string, number> | null
   blunderCounts: Map<string, number>
   focus: string | null
@@ -624,6 +627,7 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
     r.sort((a, b) => {
       if (sort === 'name') return a.localeCompare(b)
       if (sort === 'busts') return (stats.busts[b] ?? 0) - (stats.busts[a] ?? 0)
+      if (sort === 'games') return (stats.gamesPlayed[b] ?? 0) - (stats.gamesPlayed[a] ?? 0)
       if (sort === 'ev') return (evTotals?.[b] ?? 0) - (evTotals?.[a] ?? 0)
       return (stats.finalRuns[b] ?? 0) - (stats.finalRuns[a] ?? 0)
     })
@@ -636,6 +640,7 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
         <thead>
           <tr className="text-gray-500 border-b border-gray-800">
             <SortTh k="name" label="Player" align="left" sort={sort} setSort={setSort} />
+            <SortTh k="games" label="Games" sort={sort} setSort={setSort} />
             <SortTh k="total" label="Total" sort={sort} setSort={setSort} />
             <th className="py-1.5 px-2 font-normal text-right">W / T</th>
             <SortTh k="busts" label="Fouls" sort={sort} setSort={setSort} />
@@ -649,6 +654,7 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
           {rows.map(p => {
             const pi = idx.get(p) ?? 0
             const run = stats.finalRuns[p] ?? 0
+            const games = stats.gamesPlayed[p] ?? 0
             const lost = evTotals?.[p] ?? 0
             const isFocus = focus === p
             return (
@@ -661,11 +667,17 @@ function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus,
                     {p}
                   </button>
                 </td>
+                <td className="py-1.5 px-2 text-right tabular-nums text-gray-300">{games}</td>
                 <td className={`py-1.5 px-2 text-right tabular-nums font-semibold ${run >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                   {run > 0 ? '+' : ''}{run}
                 </td>
                 <td className="py-1.5 px-2 text-right tabular-nums text-gray-400">
                   {stats.wins[p] ?? 0}{(stats.ties[p] ?? 0) > 0 ? ` / ${stats.ties[p]}` : ''}
+                  {games > 0 && (
+                    <span className="ml-1 text-[10px] text-gray-600">
+                      ({Math.round(100 * (stats.wins[p] ?? 0) / games)}%)
+                    </span>
+                  )}
                 </td>
                 <td className="py-1.5 px-2 text-right tabular-nums text-gray-400">{stats.busts[p] ?? 0}</td>
                 <td className="py-1.5 px-2 text-right tabular-nums text-red-400/80">
@@ -1407,7 +1419,7 @@ function SessionTabInner() {
               <StatCard key={p}
                 label={`${p} total`}
                 value={`${run > 0 ? '+' : ''}${run}`}
-                sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.busts[p] ?? 0} busts`}
+                sub={`${stats.wins[p] ?? 0}W · ${stats.ties[p] ?? 0} ties · ${stats.busts[p] ?? 0} busts · ${stats.gamesPlayed[p] ?? 0} games`}
                 color={run >= 0 ? pc(pi).text : 'text-red-400'}
                 action={
                   <span className="flex items-center gap-2">

@@ -87,6 +87,46 @@ function summary(overrides: Partial<GameSummary> & { gameId: string }): GameSumm
 }
 
 describe('computeSessionStats', () => {
+  // gamesPlayed is a per-player denominator, not summaries.length: each hand
+  // carries its own playerNames, so a player who sat out is not credited with
+  // the hand. Without this a win count is unreadable on a session where the
+  // group composition changed.
+  it('counts games per player, not hands in the session', () => {
+    const summaries = [
+      summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 1, B: -1 }, busts: { A: false, B: false } }),
+      summary({ gameId: 'g2', playerNames: ['A', 'B'], points: { A: -1, B: 1 }, busts: { A: false, B: false } }),
+      summary({ gameId: 'g3', playerNames: ['A', 'C'], points: { A: 2, C: -2 }, busts: { A: false, C: false } }),
+    ]
+    const stats = computeSessionStats(summaries, ['A', 'B', 'C'])
+    expect(stats.gamesPlayed.A).toBe(3)   // every hand
+    expect(stats.gamesPlayed.B).toBe(2)   // sat out g3
+    expect(stats.gamesPlayed.C).toBe(1)   // only g3
+    // ...and the win counts are only meaningful against those denominators
+    expect(stats.wins.A).toBe(2)
+    expect(stats.wins.B).toBe(1)
+    expect(stats.wins.C).toBe(0)
+  })
+
+  it('counts an all-bust hand toward games played', () => {
+    const summaries = [
+      summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 0, B: 0 }, busts: { A: true, B: true } }),
+    ]
+    const stats = computeSessionStats(summaries, ['A', 'B'])
+    // The hand is excluded from wins/ties but the players did play it.
+    expect(stats.gamesPlayed.A).toBe(1)
+    expect(stats.gamesPlayed.B).toBe(1)
+    expect(stats.wins.A).toBe(0)
+    expect(stats.ties.A).toBe(0)
+  })
+
+  it('leaves a player who played nothing at zero rather than undefined', () => {
+    const summaries = [
+      summary({ gameId: 'g1', playerNames: ['A', 'B'], points: { A: 1, B: -1 }, busts: { A: false, B: false } }),
+    ]
+    const stats = computeSessionStats(summaries, ['A', 'B', 'Z'])
+    expect(stats.gamesPlayed.Z).toBe(0)
+  })
+
   it('does not count an all-bust hand as a tie, but still counts it as a bust for each fouling player', () => {
     const summaries = [
       summary({
