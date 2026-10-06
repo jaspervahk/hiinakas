@@ -57,15 +57,60 @@ class SessionErrorBoundary extends Component<{ children: ReactNode }, { error: s
   }
 }
 
-// ── Player colour palette (up to 4 players) ───────────────────────────────────
+// ── Player colour palette ─────────────────────────────────────────────────────
+//
+// Twelve entries, because a real session can have eleven players and the old
+// four-colour palette made three separate people share a colour in the chart,
+// the log header and the per-player cards.
 
 const PLAYER_COLORS = [
   { text: 'text-indigo-400', bg: 'bg-indigo-900/20', border: 'border-indigo-800/40', dim: 'text-indigo-400/60', stroke: '#818cf8' },
   { text: 'text-amber-400',  bg: 'bg-amber-900/20',  border: 'border-amber-800/40',  dim: 'text-amber-400/60',  stroke: '#fbbf24' },
   { text: 'text-emerald-400',bg: 'bg-emerald-900/20',border: 'border-emerald-800/40',dim: 'text-emerald-400/60',stroke: '#34d399' },
   { text: 'text-rose-400',   bg: 'bg-rose-900/20',   border: 'border-rose-800/40',   dim: 'text-rose-400/60',   stroke: '#fb7185' },
+  { text: 'text-sky-400',    bg: 'bg-sky-900/20',    border: 'border-sky-800/40',    dim: 'text-sky-400/60',    stroke: '#38bdf8' },
+  { text: 'text-fuchsia-400',bg: 'bg-fuchsia-900/20',border: 'border-fuchsia-800/40',dim: 'text-fuchsia-400/60',stroke: '#e879f9' },
+  { text: 'text-lime-400',   bg: 'bg-lime-900/20',   border: 'border-lime-800/40',   dim: 'text-lime-400/60',   stroke: '#a3e635' },
+  { text: 'text-orange-400', bg: 'bg-orange-900/20', border: 'border-orange-800/40', dim: 'text-orange-400/60', stroke: '#fb923c' },
+  { text: 'text-cyan-400',   bg: 'bg-cyan-900/20',   border: 'border-cyan-800/40',   dim: 'text-cyan-400/60',   stroke: '#22d3ee' },
+  { text: 'text-violet-400', bg: 'bg-violet-900/20', border: 'border-violet-800/40', dim: 'text-violet-400/60', stroke: '#a78bfa' },
+  { text: 'text-teal-400',   bg: 'bg-teal-900/20',   border: 'border-teal-800/40',   dim: 'text-teal-400/60',   stroke: '#2dd4bf' },
+  { text: 'text-pink-400',   bg: 'bg-pink-900/20',   border: 'border-pink-800/40',   dim: 'text-pink-400/60',   stroke: '#f472b6' },
 ]
 function pc(i: number) { return PLAYER_COLORS[i % PLAYER_COLORS.length]! }
+
+// A session with many players renders far too much at once, so the heavy
+// sections collapse. Anything above this is treated as a "big" session: the
+// per-player card grids become one compact table and most sections start shut.
+const MANY_PLAYERS = 4
+
+// ── Collapsible section ───────────────────────────────────────────────────────
+
+function Section({ title, meta, defaultOpen = true, right, children }: {
+  title: string
+  meta?: ReactNode          // shown next to the title, visible while collapsed
+  defaultOpen?: boolean
+  right?: ReactNode         // controls that belong to the section header
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex items-center gap-1.5 text-gray-300 text-sm font-medium hover:text-gray-100 transition-colors"
+        >
+          <span className={`text-gray-600 text-[10px] transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
+          {title}
+          {meta && <span className="text-gray-600 text-xs font-normal">{meta}</span>}
+        </button>
+        {open && right}
+      </div>
+      {open && children}
+    </div>
+  )
+}
 
 // ── Board mini display ────────────────────────────────────────────────────────
 
@@ -90,7 +135,7 @@ function BoardMini({ board }: { board: PartialBoard }) {
 
 // ── Running score SVG chart (N players) ──────────────────────────────────────
 
-function RunningChart({ summaries, players }: { summaries: GameSummary[]; players: string[] }) {
+function RunningChart({ summaries, players, focus }: { summaries: GameSummary[]; players: string[]; focus: string | null }) {
   const W = 560; const H = 130
   const PL = 36; const PR = 8; const PT = 16; const PB = 20
 
@@ -124,7 +169,13 @@ function RunningChart({ summaries, players }: { summaries: GameSummary[]; player
         const color = pc(pi)
         const values = [0, ...summaries.map(s => s.runs[p] ?? 0)]
         const points = values.map((v, i) => `${toX(i)},${toY(v)}`).join(' ')
-        return <polyline key={p} points={points} fill="none" stroke={color.stroke} strokeWidth="1.2" />
+        // With a focus selected the other lines stay for context but recede,
+        // which is the only way eleven overlapping series are readable.
+        const faded = focus !== null && focus !== p
+        return (
+          <polyline key={p} points={points} fill="none" stroke={color.stroke}
+            strokeWidth={focus === p ? 2 : 1.2} opacity={faded ? 0.18 : 1} />
+        )
       })}
 
       {/* Bust markers */}
@@ -532,15 +583,130 @@ function StatCard({ label, value, sub, color, action }: {
   )
 }
 
+// ── Compact player table ──────────────────────────────────────────────────────
+//
+// One row per player instead of one card each. Eleven cards in a four-column
+// grid is three rows of boxes you have to read individually; this is scannable
+// and sortable, and it keeps the per-player actions reachable.
+
+type PlayerSort = 'total' | 'name' | 'busts' | 'ev'
+
+// Declared at module level: nesting it inside PlayerTable gave it a new
+// component identity on every render.
+function SortTh({ k, label, align = 'right', sort, setSort }: {
+  k: PlayerSort; label: string; align?: 'left' | 'right'
+  sort: PlayerSort; setSort: (s: PlayerSort) => void
+}) {
+  return (
+    <th className={`py-1.5 px-2 font-normal ${align === 'left' ? 'text-left' : 'text-right'}`}>
+      <button onClick={() => setSort(k)} className={`hover:text-gray-300 transition-colors ${sort === k ? 'text-gray-300' : ''}`}>
+        {label}{sort === k ? ' ▾' : ''}
+      </button>
+    </th>
+  )
+}
+
+function PlayerTable({ players, stats, evTotals, blunderCounts, focus, setFocus, onSimulate, onChallenge }: {
+  players: string[]
+  stats: { finalRuns: Record<string, number>; wins: Record<string, number>; ties: Record<string, number>; busts: Record<string, number>; bustCost: Record<string, number> }
+  evTotals: Record<string, number> | null
+  blunderCounts: Map<string, number>
+  focus: string | null
+  setFocus: (p: string | null) => void
+  onSimulate: (p: string) => void
+  onChallenge: (p: string) => void
+}) {
+  const [sort, setSort] = useState<PlayerSort>('total')
+  const idx = useMemo(() => new Map(players.map((p, i) => [p, i])), [players])
+
+  const rows = useMemo(() => {
+    const r = [...players]
+    r.sort((a, b) => {
+      if (sort === 'name') return a.localeCompare(b)
+      if (sort === 'busts') return (stats.busts[b] ?? 0) - (stats.busts[a] ?? 0)
+      if (sort === 'ev') return (evTotals?.[b] ?? 0) - (evTotals?.[a] ?? 0)
+      return (stats.finalRuns[b] ?? 0) - (stats.finalRuns[a] ?? 0)
+    })
+    return r
+  }, [players, sort, stats, evTotals])
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="text-gray-500 border-b border-gray-800">
+            <SortTh k="name" label="Player" align="left" sort={sort} setSort={setSort} />
+            <SortTh k="total" label="Total" sort={sort} setSort={setSort} />
+            <th className="py-1.5 px-2 font-normal text-right">W / T</th>
+            <SortTh k="busts" label="Fouls" sort={sort} setSort={setSort} />
+            <th className="py-1.5 px-2 font-normal text-right">Foul cost</th>
+            {evTotals && <SortTh k="ev" label="EV lost" sort={sort} setSort={setSort} />}
+            {evTotals && <th className="py-1.5 px-2 font-normal text-right">Blunders</th>}
+            <th className="py-1.5 px-2 font-normal text-right"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(p => {
+            const pi = idx.get(p) ?? 0
+            const run = stats.finalRuns[p] ?? 0
+            const lost = evTotals?.[p] ?? 0
+            const isFocus = focus === p
+            return (
+              <tr key={p}
+                className={`border-b border-gray-800/40 transition-colors ${isFocus ? 'bg-indigo-950/30' : 'hover:bg-gray-800/40'}`}>
+                <td className="py-1.5 px-2">
+                  <button onClick={() => setFocus(isFocus ? null : p)}
+                    title={isFocus ? 'Clear focus' : `Focus on ${p}`}
+                    className={`${pc(pi).text} font-medium hover:underline`}>
+                    {p}
+                  </button>
+                </td>
+                <td className={`py-1.5 px-2 text-right tabular-nums font-semibold ${run >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {run > 0 ? '+' : ''}{run}
+                </td>
+                <td className="py-1.5 px-2 text-right tabular-nums text-gray-400">
+                  {stats.wins[p] ?? 0}{(stats.ties[p] ?? 0) > 0 ? ` / ${stats.ties[p]}` : ''}
+                </td>
+                <td className="py-1.5 px-2 text-right tabular-nums text-gray-400">{stats.busts[p] ?? 0}</td>
+                <td className="py-1.5 px-2 text-right tabular-nums text-red-400/80">
+                  {(stats.bustCost[p] ?? 0) !== 0 ? stats.bustCost[p] : '—'}
+                </td>
+                {evTotals && (
+                  <td className="py-1.5 px-2 text-right tabular-nums text-amber-400/90">
+                    {lost !== 0 ? `−${lost.toFixed(1)}` : '—'}
+                  </td>
+                )}
+                {evTotals && (
+                  <td className="py-1.5 px-2 text-right tabular-nums text-gray-500">{blunderCounts.get(p) ?? 0}</td>
+                )}
+                <td className="py-1.5 px-2 text-right whitespace-nowrap">
+                  <button onClick={() => onSimulate(p)} className="text-[10px] text-teal-400 hover:text-teal-300">Simulate</button>
+                  <span className="text-gray-700 mx-1">·</span>
+                  <button onClick={() => onChallenge(p)} className="text-[10px] text-amber-400 hover:text-amber-300">Challenge</button>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 // ── Game log table ────────────────────────────────────────────────────────────
 
-function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, setSelectedGame }: {
+const LOG_PAGE_SIZE = 50
+
+function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, setSelectedGame, focus, page, setPage }: {
   summaries: GameSummary[]
   players: string[]
   analyzed: ReviewDecision[]
   decisions: ReviewDecision[]   // shell entries (board/hand, placeholder EV) for not-yet-analyzed rows
   selectedGame: string | null
   setSelectedGame: (gameId: string | null) => void
+  focus: string | null
+  page: number
+  setPage: (n: number) => void
 }) {
   const decisionsByGame = useMemo(() => {
     const map = new Map<string, ReviewDecision[]>()
@@ -569,29 +735,57 @@ function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, s
   }, [analyzed])
 
   const hasEV = analyzed.length > 0
-  const nPlayers = players.length
-  // columns: #, Time, [score per player], Bust, [EV per player if analysis], expand
-  const colSpan = 3 + nPlayers + (hasEV ? nPlayers : 0)
+  // Focusing a player narrows the log to their columns; eleven score columns
+  // plus eleven EV columns is wider than any screen.
+  const cols = focus && players.includes(focus) ? [focus] : players
+  const colSpan = 3 + cols.length + (hasEV ? cols.length : 0)
+
+  // Only one page of rows is mounted. All 1400 rows x 25 columns is ~35000
+  // cells, which makes the whole page sluggish to scroll and to re-render.
+  const pageCount = Math.max(1, Math.ceil(summaries.length / LOG_PAGE_SIZE))
+  const current = Math.min(page, pageCount - 1)
+  const from = current * LOG_PAGE_SIZE
+  const pageRows = summaries.slice(from, from + LOG_PAGE_SIZE)
 
   return (
+    <div className="space-y-2">
+    {pageCount > 1 && (
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-600">
+          hands {from + 1}–{Math.min(from + LOG_PAGE_SIZE, summaries.length)} of {summaries.length}
+        </span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage(0)} disabled={current === 0}
+            className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:text-gray-200">«</button>
+          <button onClick={() => setPage(current - 1)} disabled={current === 0}
+            className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:text-gray-200">‹</button>
+          <span className="text-gray-500 tabular-nums px-1">{current + 1} / {pageCount}</span>
+          <button onClick={() => setPage(current + 1)} disabled={current >= pageCount - 1}
+            className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:text-gray-200">›</button>
+          <button onClick={() => setPage(pageCount - 1)} disabled={current >= pageCount - 1}
+            className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 disabled:opacity-30 hover:text-gray-200">»</button>
+        </div>
+      </div>
+    )}
     <div className="overflow-x-auto">
       <table className="w-full text-xs border-collapse">
         <thead>
           <tr className="text-gray-500 border-b border-gray-800">
             <th className="text-left py-1.5 px-2 font-normal">#</th>
             <th className="text-left py-1.5 px-2 font-normal">Time</th>
-            {players.map((p, pi) => (
-              <th key={p} className={`text-right py-1.5 px-2 font-normal ${pc(pi).text}`}>{p}</th>
+            {cols.map((p) => (
+              <th key={p} className={`text-right py-1.5 px-2 font-normal ${pc(players.indexOf(p)).text}`}>{p}</th>
             ))}
             <th className="text-center py-1.5 px-2 font-normal">Bust</th>
-            {hasEV && players.map((p, pi) => (
-              <th key={`ev-${p}`} className={`text-right py-1.5 px-2 font-normal ${pc(pi).dim}`}>EV lost</th>
+            {hasEV && cols.map((p) => (
+              <th key={`ev-${p}`} className={`text-right py-1.5 px-2 font-normal ${pc(players.indexOf(p)).dim}`}>EV lost</th>
             ))}
             <th className="w-5"></th>
           </tr>
         </thead>
         <tbody>
-          {summaries.map((s, i) => {
+          {pageRows.map((s, pageIdx) => {
+            const i = from + pageIdx
             const ev = evByGame.get(s.gameId)
             const isSelected = selectedGame === s.gameId
             const gameDecs = decisionsByGame.get(s.gameId) ?? []
@@ -610,13 +804,15 @@ function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, s
                   <td className="py-1 px-2 text-gray-400">
                     {new Date(s.gameTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </td>
-                  {players.map((p, pi) => {
+                  {cols.map((p, ci) => {
                     const pts = s.points[p] ?? 0
-                    // Show running total in parentheses for first player only (to keep it compact)
+                    // Running total in parentheses when it fits: for the first
+                    // of two columns, or whenever a single player is focused.
+                    const showRun = cols.length === 1 || (ci === 0 && cols.length === 2)
                     return (
                       <td key={p} className={`py-1 px-2 text-right font-mono font-medium ${pts > 0 ? 'text-emerald-400' : pts < 0 ? 'text-red-400' : 'text-gray-500'}`}>
                         {pts > 0 ? '+' : ''}{pts}
-                        {pi === 0 && nPlayers === 2 && (
+                        {showRun && (
                           <span className={`ml-1 text-[10px] font-normal ${(s.runs[p] ?? 0) > 0 ? 'text-emerald-600' : 'text-red-600/70'}`}>
                             ({(s.runs[p] ?? 0) > 0 ? '+' : ''}{s.runs[p] ?? 0})
                           </span>
@@ -632,8 +828,8 @@ function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, s
                       ))
                     }
                   </td>
-                  {hasEV && players.map((p, pi) => (
-                    <td key={`ev-${p}`} className={`py-1 px-2 text-right font-mono ${pc(pi).dim}`}>
+                  {hasEV && cols.map((p) => (
+                    <td key={`ev-${p}`} className={`py-1 px-2 text-right font-mono ${pc(players.indexOf(p)).dim}`}>
                       {ev?.[p] != null ? `-${ev[p]!.toFixed(1)}` : '—'}
                     </td>
                   ))}
@@ -653,6 +849,7 @@ function GameLogTable({ summaries, players, analyzed, decisions, selectedGame, s
           })}
         </tbody>
       </table>
+    </div>
     </div>
   )
 }
@@ -674,6 +871,8 @@ function SessionTabInner() {
   const [sims, setSims] = useState(DEFAULT_SIMS_FOR.nn)
   const [rootTopK, setRootTopK] = useState(DEFAULT_ROOT_TOP_K)
   const [selectedGame, setSelectedGame] = useState<string | null>(null)
+  const [focusPlayer, setFocusPlayer] = useState<string | null>(null)
+  const [logPage, setLogPage] = useState(0)
   const [bonusAnalyzing, setBonusAnalyzing] = useState(false)
   const [bonusAnalyzeProgress, setBonusAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
   const [bonusAnalyzed, setBonusAnalyzed] = useState<Map<string, BonusAnalysisResult>>(new Map())
@@ -698,11 +897,6 @@ function SessionTabInner() {
   const [cacheWarning, setCacheWarning] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const gameLogRef = useRef<HTMLDivElement>(null)
-  const jumpToGame = useCallback((gameId: string) => {
-    setSelectedGame(gameId)
-    gameLogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }, [])
-
   const handleFile = useCallback((file: File) => {
     setError(''); setAnalyzed([]); setNoModel(false)
     setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setSelectedGame(null)
@@ -937,6 +1131,22 @@ function SessionTabInner() {
     return m
   }, [summaries])
 
+  // The log is paginated, so jumping to a hand must turn to its page first —
+  // otherwise "jump to game" from a blunder card scrolls to a log that does not
+  // contain the hand it just selected.
+  const gameIndexByGameId = useMemo(() => {
+    const m = new Map<string, number>()
+    summaries.forEach((s, i) => m.set(s.gameId, i))
+    return m
+  }, [summaries])
+
+  const jumpToGame = useCallback((gameId: string) => {
+    setSelectedGame(gameId)
+    const idx = gameIndexByGameId.get(gameId)
+    if (idx !== undefined) setLogPage(Math.floor(idx / LOG_PAGE_SIZE))
+    gameLogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [gameIndexByGameId])
+
   const blundersByPlayer = useMemo(() => {
     if ((!activeGroups && !savedView) || allPlayers.length === 0 || analyzed.length === 0) return new Map<string, ReviewDecision[]>()
     const map = new Map<string, ReviewDecision[]>()
@@ -1072,19 +1282,42 @@ function SessionTabInner() {
   // ── Full analysis ─────────────────────────────────────────────────────────
 
   const players = allPlayers
+  // Narrows every per-player section to one person. The alternative on an
+  // eleven-player session is eleven of everything on one page.
+  const shown = focusPlayer && players.includes(focusPlayer) ? [focusPlayer] : players
+  const big = players.length > MANY_PLAYERS
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-gray-100 font-semibold text-sm">
-            {players.map((p, i) => (
-              <span key={p}>
-                {i > 0 && <span className="text-gray-500 mx-2">vs</span>}
-                <span className={pc(i).text}>{p}</span>
-              </span>
-            ))}
+          <h2 className="text-gray-100 font-semibold text-sm flex items-center gap-2 flex-wrap">
+            {big ? (
+              <>
+                <span>{players.length} players</span>
+                <select
+                  value={focusPlayer ?? ''}
+                  onChange={e => { setFocusPlayer(e.target.value || null); setLogPage(0) }}
+                  className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-200 font-normal"
+                >
+                  <option value="">All players</option>
+                  {players.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+                {focusPlayer && (
+                  <button onClick={() => setFocusPlayer(null)} className="text-gray-500 hover:text-gray-300 text-xs font-normal">
+                    clear
+                  </button>
+                )}
+              </>
+            ) : (
+              players.map((p, i) => (
+                <span key={p}>
+                  {i > 0 && <span className="text-gray-500 mx-2">vs</span>}
+                  <span className={pc(i).text}>{p}</span>
+                </span>
+              ))
+            )}
           </h2>
           {summaries.length > 0 && (() => {
             const start = new Date(summaries[0]!.gameTime)
@@ -1157,8 +1390,16 @@ function SessionTabInner() {
         </div>
       </div>
 
-      {/* Summary stats — one card per player */}
-      {stats && (
+      {/* Summary stats — a table when there are many players, cards when few */}
+      {stats && big && (
+        <PlayerTable
+          players={players} stats={stats} evTotals={evTotalsByPlayer}
+          blunderCounts={new Map(players.map(p => [p, blundersByPlayer.get(p)?.length ?? 0]))}
+          focus={focusPlayer} setFocus={p => { setFocusPlayer(p); setLogPage(0) }}
+          onSimulate={setBotSimTarget} onChallenge={setHuubChallengeTarget}
+        />
+      )}
+      {stats && !big && (
         <div className={`grid gap-2 grid-cols-2 ${players.length === 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-4'}`}>
           {players.map((p, pi) => {
             const run = stats.finalRuns[p] ?? 0
@@ -1197,9 +1438,10 @@ function SessionTabInner() {
       )}
 
       {/* Bust context */}
-      {stats && players.some(p => (stats.busts[p] ?? 0) > 0) && (
+      {stats && shown.some(p => (stats.busts[p] ?? 0) > 0) && (
         <div className="bg-gray-900/60 rounded-lg px-4 py-3 text-xs text-gray-400 space-y-1">
-          {players.map((p, pi) => {
+          {shown.map((p) => {
+            const pi = players.indexOf(p)
             const n = stats.busts[p] ?? 0
             if (n === 0) return null
             const cost = stats.bustCost[p] ?? 0
@@ -1223,17 +1465,24 @@ function SessionTabInner() {
 
       {/* Running chart */}
       {summaries.length > 0 && (
-        <div className="bg-gray-900 rounded-lg p-3">
-          <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-2">Running totals</p>
-          <RunningChart summaries={summaries} players={players} />
-          <p className="text-[10px] text-gray-600 mt-1">Solid dots = regular hands · filled dot = bust</p>
-        </div>
+        <Section title="Running totals" meta={`· ${summaries.length} hands`} defaultOpen={!big}>
+          <div className="bg-gray-900 rounded-lg p-3">
+            <RunningChart summaries={summaries} players={players} focus={focusPlayer} />
+            <p className="text-[10px] text-gray-600 mt-1">
+              Solid dots = regular hands · filled dot = bust
+              {focusPlayer && <span className="ml-1 text-gray-500">· other players dimmed</span>}
+            </p>
+          </div>
+        </Section>
       )}
 
       {/* EV analysis */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-gray-300 text-sm font-medium">EV Analysis</h3>
+          <h3 className="text-gray-300 text-sm font-medium">
+            EV Analysis
+            {analyzed.length > 0 && <span className="ml-2 text-gray-600 text-xs font-normal">· {analyzed.length} decisions</span>}
+          </h3>
           {savedView ? (
             <span className="text-[10px] text-gray-500">
               Ground truth: {savedView.meta.analysisMode} @ {savedView.meta.sims} sims
@@ -1321,7 +1570,7 @@ function SessionTabInner() {
           </div>
         )}
 
-        {evTotalsByPlayer && (
+        {evTotalsByPlayer && !big && (
           <div className={`grid gap-2 ${players.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
             {players.map((p, pi) => {
               const lost = evTotalsByPlayer[p] ?? 0
@@ -1346,8 +1595,9 @@ function SessionTabInner() {
         )}
 
         {analyzed.length > 0 && (
-          <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
-            {players.map((p, pi) => {
+          <div className={`grid gap-4 ${shown.length === 1 ? 'grid-cols-1' : shown.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+            {shown.map((p) => {
+              const pi = players.indexOf(p)
               const blist = blundersByPlayer.get(p) ?? []
               const normalList = blist.filter(d => d.segment === 'normal_play')
               const sideList = blist.filter(d => d.segment === 'bonus_play')
@@ -1390,7 +1640,10 @@ function SessionTabInner() {
       {bonusDecisions.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-gray-300 text-sm font-medium">Bonus Rounds</h3>
+            <h3 className="text-gray-300 text-sm font-medium">
+              Bonus Rounds
+              <span className="ml-2 text-gray-600 text-xs font-normal">· {bonusDecisions.length} boards</span>
+            </h3>
             <div className="flex items-center gap-2">
               {bonusAnalyzing && bonusAnalyzeProgress && (
                 <span className="text-xs text-gray-400">
@@ -1412,8 +1665,9 @@ function SessionTabInner() {
             </div>
           </div>
 
-          <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
-            {players.map((p, pi) => {
+          <div className={`grid gap-4 ${shown.length === 1 ? 'grid-cols-1' : shown.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+            {shown.map((p) => {
+              const pi = players.indexOf(p)
               const blist = bonusByPlayer.get(p) ?? []
               if (blist.length === 0) return null
               return (
@@ -1445,15 +1699,18 @@ function SessionTabInner() {
 
       {/* Game log */}
       {summaries.length > 0 && (
-        <div ref={gameLogRef} className="space-y-2">
-          <div className="flex items-center gap-2">
-            <h3 className="text-gray-300 text-sm font-medium">Game Log</h3>
-            <span className="text-gray-600 text-xs">· click a row to see play-by-play</span>
-          </div>
-          <GameLogTable
-            summaries={summaries} players={players} analyzed={analyzed} decisions={savedView ? analyzed : decisionShells}
-            selectedGame={selectedGame} setSelectedGame={setSelectedGame}
-          />
+        <div ref={gameLogRef}>
+          <Section
+            title="Game Log"
+            meta={`· ${summaries.length} hands · click a row for play-by-play`}
+            defaultOpen={!big}
+          >
+            <GameLogTable
+              summaries={summaries} players={players} analyzed={analyzed} decisions={savedView ? analyzed : decisionShells}
+              selectedGame={selectedGame} setSelectedGame={setSelectedGame}
+              focus={focusPlayer} page={logPage} setPage={setLogPage}
+            />
+          </Section>
         </div>
       )}
 
