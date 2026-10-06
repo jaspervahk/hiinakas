@@ -1,3 +1,4 @@
+import { MIN_SIMS, MAX_SIMS, clampSims } from '../worker/botPolicyDefaults'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import type { AppPage } from '../App'
 import { arenaWorkerClient, ROYALTY_MODEL_URL } from '../worker/client'
@@ -32,21 +33,16 @@ const BOT_KIND_SHORT: Record<BotKind, string> = {
   'heuristic': 'Heur',
 }
 
-// Heuristic MC brute-forces every legal placement with a full rollout each —
-// no tree search or NN guidance — so it needs a far smaller sims budget than
-// the MCTS-based bots to stay usable (232 candidates on street 0 alone means
-// 500 sims there takes ~40s for a single decision).
+// Every bot kind uses the same [MIN_SIMS, MAX_SIMS] range as the rest of the
+// app — see botPolicyDefaults.ts for the measured reason the floor is 200.
+// Heuristic MC used to be pinned far lower here because 232 street-0
+// candidates made it unusably slow; the evaluator, scoring and opening-book
+// work since then cut a street-0 decision at 200 sims to about 1.9s.
 const DEFAULT_SIMS_FOR: Record<BotKind, number> = {
-  'nn-mcts': DEFAULT_SIMS,
-  'royalty-mcts': DEFAULT_SIMS,
-  'royalty-nn': DEFAULT_SIMS,
-  'heuristic': 20,
-}
-const MAX_SIMS_FOR: Record<BotKind, number> = {
-  'nn-mcts': 10_000,
-  'royalty-mcts': 10_000,
-  'royalty-nn': 10_000,
-  'heuristic': 500,
+  'nn-mcts': MIN_SIMS,
+  'royalty-mcts': MIN_SIMS,
+  'royalty-nn': MIN_SIMS,
+  'heuristic': MIN_SIMS,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -127,9 +123,10 @@ function BotConfigEditor({ label, cfg, onChange }: {
             type="number"
             className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
             value={cfg.sims}
-            min={1}
-            max={MAX_SIMS_FOR[cfg.kind]}
-            onChange={e => onChange({ ...cfg, sims: Math.max(1, Math.min(MAX_SIMS_FOR[cfg.kind], Number(e.target.value))) })}
+            min={MIN_SIMS}
+            max={MAX_SIMS}
+            step={50}
+            onChange={e => onChange({ ...cfg, sims: clampSims(Number(e.target.value)) })}
           />
           {cfg.kind === 'heuristic' && (
             <span className="text-[10px] text-amber-500 max-w-[8rem]">Brute-force rollouts — slow, keep low</span>

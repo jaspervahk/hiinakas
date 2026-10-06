@@ -1,3 +1,4 @@
+import { MIN_SIMS, clampSims } from '../worker/botPolicyDefaults'
 import {
   doc, setDoc, getDoc, collection, query, orderBy, limit as fbLimit, getDocs,
   increment, Timestamp,
@@ -115,14 +116,19 @@ export async function loadSettings(): Promise<AppSettings | null> {
       typeof data.coachEnabled === 'boolean' &&
       (data.playerCount === 2 || data.playerCount === 3)
     ) {
+      // The royalty-only modes are no longer offered in the UI, and stored
+      // sims may predate the [MIN_SIMS, MAX_SIMS] range, so both are migrated
+      // on load rather than leaving a saved setting with no matching control.
+      const migratePolicy = (v: unknown) =>
+        v === 'nn' || v === 'heuristic' ? v : 'heuristic'
       return {
         coachEnabled: data.coachEnabled,
         playerCount: data.playerCount,
-        botPolicy: data.botPolicy ?? 'nn',
-        coachMode: data.coachMode ?? 'nn',
-        botSims: data.botSims ?? 500,
+        botPolicy: migratePolicy(data.botPolicy),
+        coachMode: migratePolicy(data.coachMode),
+        botSims: clampSims(data.botSims ?? MIN_SIMS),
         botRootTopK: data.botRootTopK ?? 35,
-        coachSims: data.coachSims ?? 500,
+        coachSims: clampSims(data.coachSims ?? MIN_SIMS),
         coachRootTopK: data.coachRootTopK ?? 35,
       }
     }

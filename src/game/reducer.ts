@@ -1,3 +1,4 @@
+import { MIN_SIMS } from '../worker/botPolicyDefaults'
 import {
   Deck,
   heuristicPlacement, applyPlacement,
@@ -120,8 +121,10 @@ export function makeInitialState(): GameState {
     totalScores: [],
     currentStreetLogs: [],
     appSettings: {
-      coachEnabled: true, playerCount: 2, botPolicy: 'nn', coachMode: 'nn',
-      botSims: 500, botRootTopK: 35, coachSims: 500, coachRootTopK: 35,
+      // MC (the 'heuristic' policy) is the champion, so it is the default for
+      // both the opponent bot and the coach; NN + MCTS stays selectable.
+      coachEnabled: true, playerCount: 2, botPolicy: 'heuristic', coachMode: 'heuristic',
+      botSims: MIN_SIMS, botRootTopK: 35, coachSims: MIN_SIMS, coachRootTopK: 35,
     },
     replay: null,
   }

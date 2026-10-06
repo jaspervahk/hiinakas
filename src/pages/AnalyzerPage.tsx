@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppPage } from '../App'
 import type { Card, PartialBoard, ScoredPlacement, InfoState, Board, Placement, BonusQualifier } from '../engine/index'
 import { royalties, isFoul, CLASSIC_RULES, VARIANT_RULES } from '../engine/index'
+import { MAX_SIMS } from '../worker/botPolicyDefaults'
 import { CardPicker } from '../components/CardPicker'
 import { BoardView } from '../components/BoardView'
-import { workerClient, royaltyWorkerClient, MODEL_URLS } from '../worker/client'
-import type { BotPolicy } from '../worker/client'
+import { workerClient, MODEL_URLS } from '../worker/client'
 import { analyzerBridge } from '../game/analyzerBridge'
 import { SessionTab } from './SessionTab'
 
@@ -378,7 +378,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     return errs
   }, [used, yourBoard, oppBoards, oppIsBonus])
 
-  const [analyzerPolicy, setAnalyzerPolicy] = useState<BotPolicy>('heuristic')
+  const [analyzerPolicy, setAnalyzerPolicy] = useState<'heuristic' | 'nn'>('heuristic')
   // Which ruleset the position is analyzed under. Classic is v1 Hiinakas;
   // variant adds the bottom straight-flush bonus trigger, recursive bonus
   // rounds, and ordered placement within a street.
@@ -402,7 +402,7 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setLineAssign({})
   }
 
-  function handlePolicyChange(p: BotPolicy) {
+  function handlePolicyChange(p: 'heuristic' | 'nn') {
     if (cancelRef.current) { cancelRef.current(); cancelRef.current = null }
     setAnalyzerPolicy(p)
     setResults([])
@@ -500,8 +500,8 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
     setComputing(true)
     setDoneRollouts(0)
     setLineAssign({})
-    const client = analyzerPolicy === 'royalty' ? royaltyWorkerClient : workerClient
-    const totalRollouts = analyzerPolicy === 'royalty' ? 1000 : 2000
+    const client = workerClient
+    const totalRollouts = MAX_SIMS
     // Heuristic MC streams a batch at a time over one continuous budget, so a
     // smaller batch just paints the first ranking sooner (street 0's 232
     // candidates make each rollout pass expensive) — it doesn't change the
@@ -646,16 +646,14 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
         <div className="flex flex-col gap-1">
           <span className="text-[10px] uppercase tracking-widest text-gray-500">Mode</span>
           <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-            {([['heuristic', 'Heuristic MC'], ['nn', 'NN + MCTS'], ['royalty', 'Royalty']] as const).map(([p, lbl]) => (
+            {([['heuristic', 'MC'], ['nn', 'NN + MCTS']] as const).map(([p, lbl]) => (
               <button
                 key={p}
                 onClick={() => handlePolicyChange(p)}
                 className={[
                   'px-3 py-1 transition-colors',
                   analyzerPolicy === p
-                    ? (p === 'royalty'
-                        ? 'bg-amber-700 text-white'
-                        : p === 'heuristic' ? 'bg-emerald-700 text-white' : 'bg-indigo-700 text-white')
+                    ? (p === 'heuristic' ? 'bg-emerald-700 text-white' : 'bg-indigo-700 text-white')
                     : 'bg-gray-800 text-gray-400 hover:text-gray-200',
                 ].join(' ')}
               >
@@ -910,8 +908,8 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
       {results.length > 0 && (
         <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-3">
           <div className="flex items-center justify-between mb-2">
-            <span className={`text-xs uppercase tracking-widest font-semibold ${analyzerPolicy === 'royalty' ? 'text-amber-400' : 'text-gray-300'}`}>
-              {analyzerPolicy === 'royalty' ? 'Royalty EV' : 'Ranked EV'}
+            <span className="text-xs uppercase tracking-widest font-semibold text-gray-300">
+              Ranked EV
             </span>
             <span className="text-[10px] text-gray-500 tabular-nums flex items-center gap-2">
               <span>{computing ? `${doneRollouts} sims…` : `${doneRollouts} sims`}</span>
@@ -1016,15 +1014,14 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
                   <th className="px-1.5 py-1 font-medium">Mid</th>
                   <th className="px-1.5 py-1 font-medium">Bot</th>
                   <th className="px-1.5 py-1 font-medium">Disc</th>
-                  <th className="px-1.5 py-1 font-medium text-right">{analyzerPolicy === 'royalty' ? 'Gap' : 'EV'}</th>
-                  {analyzerPolicy !== 'royalty' && <th className="px-1.5 py-1 font-medium text-right">Gap</th>}
+                  <th className="px-1.5 py-1 font-medium text-right">EV</th>
+                  <th className="px-1.5 py-1 font-medium text-right">Gap</th>
                 </tr>
               </thead>
               <tbody>
                 {(showAllRows ? results : results.slice(0, 20)).map((sp, i) => {
                   const gap = sp.ev - bestEV
-                  const isRoyalty = analyzerPolicy === 'royalty'
-                  const displayEV = isRoyalty ? gap : sp.ev
+                  const displayEV = sp.ev
                   return (
                     <tr
                       key={i}
@@ -1040,16 +1037,11 @@ function PositionTab({ onNavigate }: { onNavigate: (p: AppPage) => void }) {
                       <td className="px-1.5 py-1">{sp.placement.bottomAdd.map(cardLabel).join(' ') || '—'}</td>
                       <td className="px-1.5 py-1 text-gray-400">{sp.placement.discard ? cardLabel(sp.placement.discard) : '—'}</td>
                       <td className={`px-1.5 py-1 text-right tabular-nums font-semibold ${
-                        isRoyalty
-                          ? (i === 0 ? 'text-gray-300' : 'text-red-400')
-                          : (displayEV > 0 ? 'text-green-400' : displayEV < 0 ? 'text-red-400' : 'text-gray-300')
+                        displayEV > 0 ? 'text-green-400' : displayEV < 0 ? 'text-red-400' : 'text-gray-300'
                       }`}>
-                        {isRoyalty
-                          ? (i === 0 ? 'best' : displayEV.toFixed(1))
-                          : `${displayEV > 0 ? '+' : ''}${displayEV.toFixed(2)}`
-                        }
+                        {`${displayEV > 0 ? '+' : ''}${displayEV.toFixed(2)}`}
                       </td>
-                      {!isRoyalty && (
+                      {(
                         <td className="px-1.5 py-1 text-right tabular-nums text-gray-500">
                           {i === 0 ? '—' : gap.toFixed(2)}
                         </td>

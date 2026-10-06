@@ -2,12 +2,13 @@ import { useGame } from '../game/useGame'
 import { GamePlayView } from '../components/GamePlayView'
 import type { AppPage } from '../App'
 import type { CoachMode } from '../game/types'
-import { DEFAULT_SIMS_FOR, MAX_SIMS_FOR } from '../worker/botPolicyDefaults'
+import { DEFAULT_SIMS_FOR, MIN_SIMS, MAX_SIMS, clampSims } from '../worker/botPolicyDefaults'
 
 // Default sims when a coach mode is first selected — the user can override
 // via the Sims field.
+// Every mode starts at the measured floor; see botPolicyDefaults.ts for why.
 const DEFAULT_COACH_SIMS_FOR: Record<CoachMode, number> = {
-  nn: 500, royalty: 1000, 'royalty-nn': 1000, heuristic: 20,
+  nn: MIN_SIMS, royalty: MIN_SIMS, 'royalty-nn': MIN_SIMS, heuristic: MIN_SIMS,
 }
 
 interface GamePageProps {
@@ -61,7 +62,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
         <div className="flex items-center justify-between">
           <span className="text-xs text-gray-400">Opponent bot</span>
           <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-            {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(p => (
+            {(['heuristic', 'nn'] as const).map(p => (
               <button
                 key={p}
                 onClick={() => onUpdateSettings({ botPolicy: p, botSims: DEFAULT_SIMS_FOR[p] })}
@@ -72,7 +73,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                     : 'bg-gray-800 text-gray-500 hover:text-gray-300',
                 ].join(' ')}
               >
-                {p === 'nn' ? 'NN + MCTS' : p === 'royalty' ? 'Royalty' : p === 'royalty-nn' ? 'Royalty NN' : 'Heuristic'}
+                {p === 'nn' ? 'NN + MCTS' : 'MC'}
               </button>
             ))}
           </div>
@@ -86,9 +87,10 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
               type="number"
               className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
               value={settings.botSims}
-              min={1}
-              max={MAX_SIMS_FOR[settings.botPolicy]}
-              onChange={e => onUpdateSettings({ botSims: Math.max(1, Math.min(MAX_SIMS_FOR[settings.botPolicy], Number(e.target.value))) })}
+              min={MIN_SIMS}
+              max={MAX_SIMS}
+              step={50}
+              onChange={e => onUpdateSettings({ botSims: clampSims(Number(e.target.value)) })}
             />
             {settings.botPolicy === 'nn' && (
               <>
@@ -128,7 +130,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
             <div className="flex items-center justify-between">
               <span className="text-xs text-gray-400">Coach mode</span>
               <div className="flex rounded overflow-hidden border border-gray-700 text-xs">
-                {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(m => (
+                {(['heuristic', 'nn'] as const).map(m => (
                   <button
                     key={m}
                     onClick={() => onUpdateSettings({ coachMode: m, coachSims: DEFAULT_COACH_SIMS_FOR[m] })}
@@ -139,7 +141,7 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                         : 'bg-gray-800 text-gray-500 hover:text-gray-300',
                     ].join(' ')}
                   >
-                    {m === 'nn' ? 'NN' : m === 'royalty' ? 'Royalty' : m === 'royalty-nn' ? 'Royalty NN' : 'Heuristic'}
+                    {m === 'nn' ? 'NN' : 'MC'}
                   </button>
                 ))}
               </div>
@@ -153,9 +155,10 @@ function SetupScreen({ onStart, settings, onUpdateSettings, onNavigate }: SetupS
                   type="number"
                   className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
                   value={settings.coachSims}
-                  min={1}
-                  max={settings.coachMode === 'heuristic' ? 500 : 10_000}
-                  onChange={e => onUpdateSettings({ coachSims: Math.max(1, Math.min(settings.coachMode === 'heuristic' ? 500 : 10_000, Number(e.target.value))) })}
+                  min={MIN_SIMS}
+                  max={MAX_SIMS}
+                  step={50}
+                  onChange={e => onUpdateSettings({ coachSims: clampSims(Number(e.target.value)) })}
                 />
                 {settings.coachMode === 'nn' && (
                   <>

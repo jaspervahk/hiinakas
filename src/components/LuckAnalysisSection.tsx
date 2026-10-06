@@ -12,7 +12,7 @@ import type { AnalyzePositionsFn } from '../game/luckAnalysis'
 import { buildReplayQueue } from '../game/replayBuilder'
 import { workerClient } from '../worker/client'
 import type { BotPolicy } from '../worker/client'
-import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR, MAX_SIMS_FOR } from '../worker/botPolicyDefaults'
+import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR, MIN_SIMS, MAX_SIMS, clampSims } from '../worker/botPolicyDefaults'
 import type { ReviewDecision } from '../game/sessionAnalysisTypes'
 import type { BonusDecisionPoint, GameSummary } from '../game/sessionParser'
 
@@ -125,9 +125,10 @@ export function LuckAnalysisSection({ players, summaries, streetDecisions, bonus
                   type="number"
                   className="w-14 bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-white text-[10px]"
                   value={sims}
-                  min={1}
-                  max={MAX_SIMS_FOR[policy]}
-                  onChange={e => setSims(Math.max(1, Math.min(MAX_SIMS_FOR[policy], Number(e.target.value))))}
+                  min={MIN_SIMS}
+                  max={MAX_SIMS}
+                  step={50}
+                  onChange={e => setSims(clampSims(Number(e.target.value)))}
                 />
               </label>
               {policy === 'nn' && (

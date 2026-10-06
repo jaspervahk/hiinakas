@@ -29,7 +29,7 @@ import { BotSimulationOverlay } from '../components/BotSimulationOverlay'
 import { LuckAnalysisSection } from '../components/LuckAnalysisSection'
 import { workerClient, MODEL_URLS } from '../worker/client'
 import type { BotPolicy, BonusAnalysisResult } from '../worker/client'
-import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR, MAX_SIMS_FOR } from '../worker/botPolicyDefaults'
+import { DEFAULT_ROOT_TOP_K, DEFAULT_SIMS_FOR, MIN_SIMS, MAX_SIMS, clampSims } from '../worker/botPolicyDefaults'
 
 // ── Error boundary ────────────────────────────────────────────────────────────
 
@@ -1269,9 +1269,10 @@ function SessionTabInner() {
                 type="number"
                 className="w-16 bg-gray-800 border border-gray-700 rounded px-1 py-0.5 text-white text-[10px]"
                 value={sims}
-                min={1}
-                max={MAX_SIMS_FOR[analysisMode]}
-                onChange={e => setSims(Math.max(1, Math.min(MAX_SIMS_FOR[analysisMode], Number(e.target.value))))}
+                min={MIN_SIMS}
+                max={MAX_SIMS}
+                step={50}
+                onChange={e => setSims(clampSims(Number(e.target.value)))}
               />
             </label>
             {analysisMode === 'nn' && (

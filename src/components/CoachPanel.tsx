@@ -188,7 +188,7 @@ export function CoachPanel({ result, mode, onModeChange, enabled, onToggle, onSe
           )}
           {/* Mode toggle */}
           <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
-            {(['nn', 'royalty', 'royalty-nn', 'heuristic'] as const).map(m => (
+            {(['heuristic', 'nn'] as const).map(m => (
               <button
                 key={m}
                 onClick={() => onModeChange(m)}
