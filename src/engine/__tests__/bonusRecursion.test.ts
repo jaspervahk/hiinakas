@@ -12,9 +12,17 @@ const hand = (idx: number, seed: number, rules = CLASSIC_RULES) =>
   runMatchHand(idx, seed, spec, spec, {}, rules)
 
 // Seeds found by search; each chains further under variant rules than classic.
+//
+// These are fixtures of the ROLLOUT POLICY as well as of sims: the bot's
+// side-game play decides whether a board qualifies and therefore whether the
+// chain continues. Re-found after opening.ts became the rollout policy's
+// street-0 decision; two of the four earlier seeds stopped chaining. If the
+// rollout policy changes again, re-run the search rather than loosening the
+// assertions — they are what proves the chain actually fires.
 const CHAIN_SEEDS = [
   { idx: 38, seed: 588467036, rounds: 2 },
-  { idx: 731, seed: 2730235503, rounds: 3 },
+  { idx: 65, seed: 1006585337, rounds: 2 },
+  { idx: 166, seed: 2570657500, rounds: 2 },
   { idx: 1022, seed: 2941654340, rounds: 2 },
   { idx: 1265, seed: 2409751753, rounds: 4 },
 ]

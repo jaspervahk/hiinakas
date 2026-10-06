@@ -13,6 +13,7 @@ export { scorePair, scoreTable } from './scoring'
 export type { Placement } from './placement'
 export { legalPlacements, applyPlacement } from './placement'
 export { heuristicPlacement } from './heuristic'
+export { openingPlacement } from './opening'
 export type { InfoState, ScoredPlacement, MCOptions, RNG } from './mc'
 export { computeEV, runMC, getBotMove } from './mc'
 

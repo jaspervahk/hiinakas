@@ -7,6 +7,7 @@ import type { Board } from './types'
 import { legalPlacements, applyPlacement } from './placement'
 import type { Placement } from './placement'
 import { heuristicPlacement } from './heuristic'
+import { openingOrNull } from './opening'
 import { sampleBonusOpponentBoard } from './bonusOpponentSamples'
 
 // Optional NN-guided policy replaces heuristicPlacement inside rollouts.
@@ -132,9 +133,15 @@ function rollout(
     top: [...b.top], middle: [...b.middle], bottom: [...b.bottom],
   }))
 
-  // Use NN policy if loaded, otherwise heuristic (now opponent-aware: forward
-  // the 4th arg so it can weigh visible opponent progress per row).
-  const pick = activePolicy ?? ((b, h, s, opp) => heuristicPlacement(b, h, s, opp))
+  // Use NN policy if loaded, otherwise the default simulator: the street-0
+  // opening book (opening.ts) for a five-card opening, and the opponent-aware
+  // greedy scorer for streets 1-4. The book exists because the opponent's
+  // street-0 placement is 232 of the 320 candidate-scorings in a street-0
+  // rollout; replacing it with a lookup measured 1.9x faster at no significant
+  // strength cost. heuristicPlacement itself is untouched, so its own
+  // behaviour lock still holds.
+  const pick = activePolicy ?? ((b, h, s, opp) =>
+    openingOrNull(b, h, s) ?? heuristicPlacement(b, h, s, opp))
 
   const cardsPerStreet = (s: number) => s === 0 ? 5 : 3
   const cardCount = (b: PartialBoard) => b.top.length + b.middle.length + b.bottom.length
