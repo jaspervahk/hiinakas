@@ -558,21 +558,33 @@ function HandDetail({ gameDecs, analyzedMap, players }: {
     )
   }
 
+  // Only the players who actually took part in THIS hand. The session's player
+  // list is the union across every hand, so on an eleven-player session a
+  // two-handed hand was rendering nine "No data" columns.
+  const present = players
+    .map((pname, pi) => ({
+      pname, pi,
+      decs: gameDecs.filter(d => d.username === pname).sort((a, b) => a.street - b.street),
+    }))
+    .filter(x => x.decs.length > 0)
+
+  if (present.length === 0) {
+    return (
+      <div className="bg-gray-950 border-t border-gray-800 px-4 py-3">
+        <p className="text-gray-600 text-xs italic">No play-by-play data for this hand.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="bg-gray-950 border-t border-gray-800 px-4 py-3">
-      <div className={`grid gap-4 ${players.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
-        {players.map((pname, pi) => {
-          const pDecs = gameDecs.filter(d => d.username === pname).sort((a, b) => a.street - b.street)
-          return (
-            <div key={pname}>
-              <p className={`${pc(pi).text} text-[10px] uppercase tracking-wider font-medium mb-2`}>{pname}</p>
-              {pDecs.length === 0
-                ? <p className="text-gray-600 text-xs italic">No data</p>
-                : pDecs.map(d => <HandDecisionRow key={d.id} dec={d} ev={analyzedMap.get(d.id)} />)
-              }
-            </div>
-          )
-        })}
+      <div className={`grid gap-4 ${present.length === 1 ? 'grid-cols-1' : present.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
+        {present.map(({ pname, pi, decs }) => (
+          <div key={pname}>
+            <p className={`${pc(pi).text} text-[10px] uppercase tracking-wider font-medium mb-2`}>{pname}</p>
+            {decs.map(d => <HandDecisionRow key={d.id} dec={d} ev={analyzedMap.get(d.id)} />)}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -1075,7 +1087,7 @@ function SessionTabInner() {
   const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number } | null>(null)
   const [analyzed, setAnalyzed] = useState<ReviewDecision[]>([])
   const [noModel, setNoModel] = useState(false)
-  const [analysisMode, setAnalysisMode] = useState<BotPolicy>('nn')
+  const [analysisMode, setAnalysisMode] = useState<'heuristic' | 'nn'>('heuristic')
   const [sims, setSims] = useState(DEFAULT_SIMS_FOR.nn)
   const [rootTopK, setRootTopK] = useState(DEFAULT_ROOT_TOP_K)
   const [selectedGame, setSelectedGame] = useState<string | null>(null)
@@ -1108,7 +1120,7 @@ function SessionTabInner() {
   const gameLogRef = useRef<HTMLDivElement>(null)
   const handleFile = useCallback((file: File) => {
     setError(''); setAnalyzed([]); setNoModel(false)
-    setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setSelectedGame(null)
+    setPickerKeys(new Set()); setActiveGroups(null); setAnalysisMode('heuristic'); setSims(DEFAULT_SIMS_FOR.heuristic); setSelectedGame(null)
     setBonusAnalyzed(new Map()); setBonusAnalyzeProgress(null); setSavedView(null); setCacheWarning(false)
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -1373,6 +1385,32 @@ function SessionTabInner() {
     }
     return map
   }, [analyzed, activeGroups, allPlayers, savedView])
+
+  // EV lost split by the kind of decision it came from. A normal-round street,
+  // a side-game street and a one-shot bonus board are different problems with
+  // different per-decision scales, so a single blended average hides which one
+  // is actually costing points.
+  const evBreakdown = useMemo(() => {
+    const blank = () => ({
+      normal: { n: 0, total: 0 }, side: { n: 0, total: 0 }, bonus: { n: 0, total: 0 },
+    })
+    const map: Record<string, ReturnType<typeof blank>> = {}
+    for (const p of allPlayers) map[p] = blank()
+    for (const d of analyzed) {
+      const e = map[d.username] ?? (map[d.username] = blank())
+      const k = d.segment === 'bonus_play' ? 'side' : 'normal'
+      e[k].n++
+      e[k].total += d.evLost
+    }
+    for (const bd of bonusDecisions) {
+      const res = bonusAnalyzed.get(bd.id)
+      if (!res) continue
+      const e = map[bd.username] ?? (map[bd.username] = blank())
+      e.bonus.n++
+      e.bonus.total += res.evLost
+    }
+    return map
+  }, [analyzed, bonusDecisions, bonusAnalyzed, allPlayers])
 
   const bonusByPlayer = useMemo(() => {
     if ((!activeGroups && !savedView) || allPlayers.length === 0) return new Map<string, BonusDecisionPoint[]>()
@@ -1722,22 +1760,17 @@ function SessionTabInner() {
             {/* Analysis mode selector */}
             <div className="flex rounded overflow-hidden border border-gray-700 text-[10px]">
               <button
+                onClick={() => { setAnalysisMode('heuristic'); setSims(DEFAULT_SIMS_FOR.heuristic); setAnalyzed([]); setNoModel(false) }}
+                className={`px-2 py-1 transition-colors ${analysisMode === 'heuristic' ? 'bg-emerald-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+              >
+                MC
+              </button>
+              <button
                 onClick={() => { setAnalysisMode('nn'); setSims(DEFAULT_SIMS_FOR.nn); setAnalyzed([]); setNoModel(false) }}
+                title="Experimental value network. Its output is unbounded and it does not reliably recognise a fouled board, so EVs can be wildly off."
                 className={`px-2 py-1 transition-colors ${analysisMode === 'nn' ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
               >
                 NN + MCTS
-              </button>
-              <button
-                onClick={() => { setAnalysisMode('royalty'); setSims(DEFAULT_SIMS_FOR.royalty); setAnalyzed([]); setNoModel(false) }}
-                className={`px-2 py-1 transition-colors ${analysisMode === 'royalty' ? 'bg-amber-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-              >
-                Royalty
-              </button>
-              <button
-                onClick={() => { setAnalysisMode('heuristic'); setSims(DEFAULT_SIMS_FOR.heuristic); setAnalyzed([]); setNoModel(false) }}
-                className={`px-2 py-1 transition-colors ${analysisMode === 'heuristic' ? 'bg-teal-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-              >
-                Heuristic
               </button>
             </div>
             {/* Sims / root top-K controls */}
@@ -1790,6 +1823,14 @@ function SessionTabInner() {
           )}
         </div>
 
+        {!savedView && analysisMode === 'nn' && (
+          <p className="text-amber-500/80 text-[11px]">
+            NN + MCTS is experimental: its value net is unbounded and does not reliably detect a
+            fouled board, so individual EVs can be far outside the range a hand can actually score.
+            MC is the reference.
+          </p>
+        )}
+
         {!savedView && noModel && (
           <div className="flex items-center justify-between bg-amber-900/20 rounded px-3 py-2">
             <p className="text-amber-400 text-xs">Model unavailable at /models/policy.bin — training may still be in progress.</p>
@@ -1799,53 +1840,77 @@ function SessionTabInner() {
           </div>
         )}
 
-        {evTotalsByPlayer && !big && (
-          <div className={`grid gap-2 ${players.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
-            {players.map((p, pi) => {
-              const lost = evTotalsByPlayer[p] ?? 0
-              const decCount = blundersByPlayer.get(p)?.length ?? 0
-              return (
-                <div key={p} className="bg-gray-900 rounded-lg p-3">
-                  <div className="flex items-center justify-between">
-                    <p className={`text-[10px] uppercase tracking-wider ${pc(pi).text}`}>{p} EV lost</p>
-                    <button
-                      onClick={() => setReplayTarget(p)}
-                      className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors"
-                    >
-                      Replay hands →
-                    </button>
-                  </div>
-                  <p className="text-xl font-bold text-red-400">-{lost.toFixed(1)}</p>
-                  <p className="text-xs text-gray-600">avg {(lost / (decCount || 1)).toFixed(2)}/decision</p>
-                </div>
-              )
-            })}
+        {evTotalsByPlayer && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-800">
+                  <th className="text-left py-1.5 px-2 font-normal">Player</th>
+                  <th className="text-right py-1.5 px-2 font-normal">EV lost</th>
+                  <th className="text-right py-1.5 px-2 font-normal">Normal <span className="text-gray-700">avg/dec</span></th>
+                  <th className="text-right py-1.5 px-2 font-normal">Side game <span className="text-gray-700">avg/dec</span></th>
+                  <th className="text-right py-1.5 px-2 font-normal">Bonus <span className="text-gray-700">avg/board</span></th>
+                  <th className="py-1.5 px-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((p) => {
+                  const pi = players.indexOf(p)
+                  const b = evBreakdown[p]
+                  const total = evTotalsByPlayer[p] ?? 0
+                  const Cell = ({ part }: { part?: { n: number; total: number } }) => {
+                    if (!part || part.n === 0) return <span className="text-gray-700">—</span>
+                    return (
+                      <span title={`${part.total.toFixed(1)} lost over ${part.n}`}>
+                        <span className="text-amber-400/90">−{(part.total / part.n).toFixed(2)}</span>
+                        <span className="ml-1 text-[10px] text-gray-600">n={part.n}</span>
+                      </span>
+                    )
+                  }
+                  return (
+                    <tr key={p} className="border-b border-gray-800/40">
+                      <td className={`py-1.5 px-2 ${pc(pi).text} font-medium`}>{p}</td>
+                      <td className="py-1.5 px-2 text-right tabular-nums font-semibold text-red-400">
+                        {total !== 0 ? `−${total.toFixed(1)}` : '—'}
+                      </td>
+                      <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap"><Cell part={b?.normal} /></td>
+                      <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap"><Cell part={b?.side} /></td>
+                      <td className="py-1.5 px-2 text-right tabular-nums whitespace-nowrap"><Cell part={b?.bonus} /></td>
+                      <td className="py-1.5 px-2 text-right">
+                        <button onClick={() => setReplayTarget(p)} className="text-[10px] text-indigo-400 hover:text-indigo-300">
+                          Replay →
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            {Object.values(evBreakdown).every(b => b.bonus.n === 0) && bonusDecisions.length > 0 && (
+              <p className="text-[10px] text-gray-600 mt-1">Bonus column fills in after running Bonus Analysis below.</p>
+            )}
           </div>
         )}
 
         {analyzed.length > 0 && (
-          <div className={`grid gap-4 ${shown.length === 1 ? 'grid-cols-1' : shown.length === 2 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
-            {shown.map((p) => {
-              const pi = players.indexOf(p)
-              const blist = blundersByPlayer.get(p) ?? []
-              const normalList = blist.filter(d => d.segment === 'normal_play')
-              const sideList = blist.filter(d => d.segment === 'bonus_play')
-              return (
-                <div key={p} className="space-y-3">
-                  <div className="space-y-2">
-                    <p className={`${pc(pi).text} text-xs font-medium uppercase tracking-wider`}>{p} — top mistakes</p>
-                    {normalList.slice(0, 5).map((d, i) => (
-                      <BlunderCard
-                        key={d.id} d={d} freshBoard={decisionsById.get(d.id)?.infoState.board} rank={i + 1}
-                        gameNumber={gameNumberByGameId.get(d.gameId)}
-                        onJumpToGame={() => jumpToGame(d.gameId)}
-                      />
-                    ))}
-                  </div>
-                  {sideList.length > 0 && (
-                    <div className="space-y-2">
-                      <p className="text-purple-400 text-xs font-medium uppercase tracking-wider">{p} — side-game mistakes</p>
-                      {sideList.slice(0, 5).map((d, i) => (
+          <Section title="Top mistakes" meta={`· worst 5 per player`} defaultOpen={false}>
+            <div className="space-y-2">
+              {shown.map((p) => {
+                const pi = players.indexOf(p)
+                const blist = blundersByPlayer.get(p) ?? []
+                const normalList = blist.filter(d => d.segment === 'normal_play')
+                const sideList = blist.filter(d => d.segment === 'bonus_play')
+                if (normalList.length === 0 && sideList.length === 0) return null
+                const worst = normalList[0]?.evLost ?? 0
+                return (
+                  <Section
+                    key={p}
+                    title={<span><span className={pc(pi).text}>{p}</span> — top mistakes</span>}
+                    meta={worst > 0 ? `· worst −${worst.toFixed(1)}` : undefined}
+                    defaultOpen={shown.length === 1}
+                  >
+                    <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+                      {normalList.slice(0, 5).map((d, i) => (
                         <BlunderCard
                           key={d.id} d={d} freshBoard={decisionsById.get(d.id)?.infoState.board} rank={i + 1}
                           gameNumber={gameNumberByGameId.get(d.gameId)}
@@ -1853,11 +1918,25 @@ function SessionTabInner() {
                         />
                       ))}
                     </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+                    {sideList.length > 0 && (
+                      <div className="mt-2 space-y-2">
+                        <p className="text-purple-400 text-[10px] font-medium uppercase tracking-wider">side-game mistakes</p>
+                        <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+                          {sideList.slice(0, 5).map((d, i) => (
+                            <BlunderCard
+                              key={d.id} d={d} freshBoard={decisionsById.get(d.id)?.infoState.board} rank={i + 1}
+                              gameNumber={gameNumberByGameId.get(d.gameId)}
+                              onJumpToGame={() => jumpToGame(d.gameId)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </Section>
+                )
+              })}
+            </div>
+          </Section>
         )}
       </div>
 
